@@ -1,0 +1,360 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Iterable
+
+from .models import Decision, Position
+
+
+SCHEMA = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS positions (
+    id TEXT PRIMARY KEY,
+    protocol TEXT NOT NULL,
+    chain TEXT NOT NULL,
+    pair TEXT NOT NULL,
+    status TEXT NOT NULL,
+    lower_price REAL NOT NULL,
+    upper_price REAL NOT NULL,
+    current_price REAL NOT NULL,
+    capital_value REAL NOT NULL,
+    current_value REAL NOT NULL,
+    unclaimed_fees REAL NOT NULL DEFAULT 0,
+    fees_today REAL NOT NULL DEFAULT 0,
+    fees_7d REAL NOT NULL DEFAULT 0,
+    fees_30d REAL NOT NULL DEFAULT 0,
+    realised_fees REAL NOT NULL DEFAULT 0,
+    estimated_il REAL NOT NULL DEFAULT 0,
+    gas_costs REAL NOT NULL DEFAULT 0,
+    apr_current REAL NOT NULL DEFAULT 0,
+    apr_7d REAL NOT NULL DEFAULT 0,
+    opened_at REAL NOT NULL,
+    token_id TEXT,
+    campaign_id TEXT,
+    source TEXT NOT NULL DEFAULT 'manual',
+    notes TEXT NOT NULL DEFAULT '',
+    strategy_sleeve TEXT NOT NULL DEFAULT 'TACTICAL_CAMPAIGN',
+    directional_bias TEXT NOT NULL DEFAULT 'NEUTRAL',
+    inventory_intent TEXT NOT NULL DEFAULT 'BALANCED',
+    target_hold_days REAL NOT NULL DEFAULT 3.0,
+    monitoring_class TEXT NOT NULL DEFAULT 'ACTIVE'
+);
+CREATE TABLE IF NOT EXISTS decisions (
+    id TEXT PRIMARY KEY,
+    position_id TEXT,
+    created_at REAL NOT NULL,
+    severity TEXT NOT NULL,
+    action TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    summary TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN'
+);
+CREATE TABLE IF NOT EXISTS actions (
+    id TEXT PRIMARY KEY,
+    position_id TEXT,
+    created_at REAL NOT NULL,
+    action_type TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS replay_runs (
+    id TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    scenario TEXT NOT NULL,
+    sleeve TEXT NOT NULL,
+    pair TEXT NOT NULL,
+    chain TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    result_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS outcome_audits (
+    id TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    horizon TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS position_snapshots (
+    position_id TEXT PRIMARY KEY,
+    updated_at REAL NOT NULL,
+    snapshot_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS opportunities (
+    id TEXT PRIMARY KEY,
+    chain TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    pair TEXT NOT NULL,
+    pool_address TEXT,
+    first_seen_at REAL NOT NULL,
+    last_seen_at REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'WATCH',
+    preferred_sleeve TEXT,
+    preferred_score REAL NOT NULL DEFAULT 0,
+    candidate_json TEXT NOT NULL,
+    evaluation_json TEXT NOT NULL
+);
+"""
+
+
+class Store:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init()
+
+    def connect(self) -> sqlite3.Connection:
+        con = sqlite3.connect(self.path, timeout=10)
+        con.row_factory = sqlite3.Row
+        return con
+
+    def _init(self) -> None:
+        with self.connect() as con:
+            con.executescript(SCHEMA)
+            self._migrate_positions(con)
+
+    @staticmethod
+    def _migrate_positions(con: sqlite3.Connection) -> None:
+        existing = {row[1] for row in con.execute("PRAGMA table_info(positions)").fetchall()}
+        additions = {
+            "strategy_sleeve": "TEXT NOT NULL DEFAULT 'TACTICAL_CAMPAIGN'",
+            "directional_bias": "TEXT NOT NULL DEFAULT 'NEUTRAL'",
+            "inventory_intent": "TEXT NOT NULL DEFAULT 'BALANCED'",
+            "target_hold_days": "REAL NOT NULL DEFAULT 3.0",
+            "monitoring_class": "TEXT NOT NULL DEFAULT 'ACTIVE'",
+        }
+        for name, ddl in additions.items():
+            if name not in existing:
+                con.execute(f"ALTER TABLE positions ADD COLUMN {name} {ddl}")
+
+    def upsert_position(self, position: Position) -> None:
+        data = position.to_dict()
+        cols = list(data)
+        marks = ",".join("?" for _ in cols)
+        updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "id")
+        sql = f"INSERT INTO positions ({','.join(cols)}) VALUES ({marks}) ON CONFLICT(id) DO UPDATE SET {updates}"
+        with self.connect() as con:
+            con.execute(sql, [data[c] for c in cols])
+
+    def list_positions(self, status: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            if status:
+                rows = con.execute("SELECT * FROM positions WHERE status=? ORDER BY opened_at DESC", (status,)).fetchall()
+            else:
+                rows = con.execute("SELECT * FROM positions ORDER BY CASE status WHEN 'OPEN' THEN 0 ELSE 1 END, opened_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def get_position(self, position_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row = con.execute("SELECT * FROM positions WHERE id=?", (position_id,)).fetchone()
+        return dict(row) if row else None
+
+    def close_position_record(self, position_id: str) -> bool:
+        with self.connect() as con:
+            cur = con.execute("UPDATE positions SET status='CLOSED' WHERE id=?", (position_id,))
+        return bool(cur.rowcount)
+
+    def add_decision(self, decision: Decision) -> None:
+        d = decision.to_dict()
+        with self.connect() as con:
+            con.execute(
+                "INSERT OR REPLACE INTO decisions(id,position_id,created_at,severity,action,confidence,summary,rationale,trigger,status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                tuple(d[k] for k in ("id","position_id","created_at","severity","action","confidence","summary","rationale","trigger","status")),
+            )
+
+    def list_decisions(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute("SELECT * FROM decisions ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_action(self, *, position_id: str | None, action_type: str, mode: str, status: str, payload: dict[str, Any], result: dict[str, Any] | None = None) -> dict[str, Any]:
+        row = {
+            "id": uuid.uuid4().hex,
+            "position_id": position_id,
+            "created_at": time.time(),
+            "action_type": action_type,
+            "mode": mode,
+            "status": status,
+            "payload_json": json.dumps(payload, sort_keys=True),
+            "result_json": json.dumps(result or {}, sort_keys=True),
+        }
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO actions(id,position_id,created_at,action_type,mode,status,payload_json,result_json) VALUES (?,?,?,?,?,?,?,?)",
+                tuple(row[k] for k in ("id","position_id","created_at","action_type","mode","status","payload_json","result_json")),
+            )
+        return row
+
+    def list_actions(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute("SELECT * FROM actions ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        out = []
+        for r in rows:
+            row = dict(r)
+            row["payload"] = json.loads(row.pop("payload_json") or "{}")
+            row["result"] = json.loads(row.pop("result_json") or "{}")
+            out.append(row)
+        return out
+
+    def upsert_opportunity(self, *, candidate: dict[str, Any], evaluation: dict[str, Any], status: str = "WATCH") -> dict[str, Any]:
+        now = time.time()
+        pool = str(candidate.get("pool_address") or "").lower()
+        key = pool or f"{candidate.get('chain')}|{candidate.get('protocol')}|{candidate.get('pair')}"
+        opp_id = uuid.uuid5(uuid.NAMESPACE_URL, key).hex
+        with self.connect() as con:
+            existing = con.execute("SELECT first_seen_at FROM opportunities WHERE id=?", (opp_id,)).fetchone()
+            first_seen = float(existing[0]) if existing else now
+            con.execute(
+                """INSERT INTO opportunities(id,chain,protocol,pair,pool_address,first_seen_at,last_seen_at,status,preferred_sleeve,preferred_score,candidate_json,evaluation_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET last_seen_at=excluded.last_seen_at,status=excluded.status,preferred_sleeve=excluded.preferred_sleeve,preferred_score=excluded.preferred_score,candidate_json=excluded.candidate_json,evaluation_json=excluded.evaluation_json""",
+                (opp_id, str(candidate.get("chain") or ""), str(candidate.get("protocol") or ""), str(candidate.get("pair") or ""), candidate.get("pool_address"), first_seen, now, status, evaluation.get("preferred_sleeve"), float(evaluation.get("preferred_score") or 0.0), json.dumps(candidate, sort_keys=True), json.dumps(evaluation, sort_keys=True)),
+            )
+        return {"id": opp_id, "first_seen_at": first_seen, "last_seen_at": now, "status": status, "preferred_sleeve": evaluation.get("preferred_sleeve"), "preferred_score": evaluation.get("preferred_score")}
+
+    def list_opportunities(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute("SELECT * FROM opportunities ORDER BY preferred_score DESC,last_seen_at DESC LIMIT ?", (limit,)).fetchall()
+        out=[]
+        for r in rows:
+            row=dict(r)
+            row["candidate"] = json.loads(row.pop("candidate_json") or "{}")
+            row["evaluation"] = json.loads(row.pop("evaluation_json") or "{}")
+            out.append(row)
+        return out
+
+    def get_opportunity(self, opportunity_id: str) -> dict[str, Any] | None:
+        rows = [r for r in self.list_opportunities(1000) if r["id"] == opportunity_id]
+        return rows[0] if rows else None
+
+    def set_opportunity_status(self, opportunity_id: str, status: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            cur = con.execute("UPDATE opportunities SET status=?,last_seen_at=? WHERE id=?", (status, time.time(), opportunity_id))
+        if not cur.rowcount:
+            return None
+        return self.get_opportunity(opportunity_id)
+
+    def save_replay_run(self, result: dict[str, Any], *, scenario: str = "CUSTOM") -> dict[str, Any]:
+        row = {
+            "id": str(result.get("id") or uuid.uuid4().hex),
+            "created_at": float(result.get("created_at") or time.time()),
+            "scenario": str(scenario or "CUSTOM"),
+            "sleeve": str(result.get("sleeve") or ""),
+            "pair": str(result.get("pair") or ""),
+            "chain": str(result.get("chain") or ""),
+            "protocol": str(result.get("protocol") or ""),
+            "summary_json": json.dumps(result.get("summary") or {}, sort_keys=True),
+            "result_json": json.dumps(result, sort_keys=True),
+        }
+        with self.connect() as con:
+            con.execute(
+                "INSERT OR REPLACE INTO replay_runs(id,created_at,scenario,sleeve,pair,chain,protocol,summary_json,result_json) VALUES (?,?,?,?,?,?,?,?,?)",
+                tuple(row[k] for k in ("id","created_at","scenario","sleeve","pair","chain","protocol","summary_json","result_json")),
+            )
+        return {k: row[k] for k in ("id","created_at","scenario","sleeve","pair","chain","protocol")} | {"summary": result.get("summary") or {}}
+
+    def list_replay_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute("SELECT id,created_at,scenario,sleeve,pair,chain,protocol,summary_json FROM replay_runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        out=[]
+        for r in rows:
+            row=dict(r); row["summary"]=json.loads(row.pop("summary_json") or "{}")
+            out.append(row)
+        return out
+
+    def get_replay_run(self, replay_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row=con.execute("SELECT result_json FROM replay_runs WHERE id=?", (replay_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def record_outcome_audit(self, *, subject_type: str, subject_id: str, horizon: str, verdict: str, payload: dict[str, Any]) -> dict[str, Any]:
+        row={"id":uuid.uuid4().hex,"created_at":time.time(),"subject_type":subject_type,"subject_id":subject_id,"horizon":horizon,"verdict":verdict,"payload_json":json.dumps(payload,sort_keys=True)}
+        with self.connect() as con:
+            con.execute("INSERT INTO outcome_audits(id,created_at,subject_type,subject_id,horizon,verdict,payload_json) VALUES (?,?,?,?,?,?,?)", tuple(row[k] for k in ("id","created_at","subject_type","subject_id","horizon","verdict","payload_json")))
+        return {**row, "payload": payload}
+
+    def list_outcome_audits(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows=con.execute("SELECT * FROM outcome_audits ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        out=[]
+        for r in rows:
+            row=dict(r); row["payload"]=json.loads(row.pop("payload_json") or "{}"); out.append(row)
+        return out
+
+    def set_setting(self, key: str, value: Any) -> None:
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO settings(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
+                (key, json.dumps(value, sort_keys=True), time.time()),
+            )
+
+    def get_setting(self, key: str, default: Any = None) -> Any:
+        with self.connect() as con:
+            row = con.execute("SELECT value_json FROM settings WHERE key=?", (key,)).fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return default
+
+    def save_position_snapshot(self, position_id: str, snapshot: dict[str, Any]) -> None:
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO position_snapshots(position_id,updated_at,snapshot_json) VALUES (?,?,?) ON CONFLICT(position_id) DO UPDATE SET updated_at=excluded.updated_at,snapshot_json=excluded.snapshot_json",
+                (position_id, time.time(), json.dumps(snapshot, sort_keys=True)),
+            )
+
+    def get_position_snapshot(self, position_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row = con.execute("SELECT updated_at,snapshot_json FROM position_snapshots WHERE position_id=?", (position_id,)).fetchone()
+        if not row:
+            return None
+        payload = json.loads(row[1] or "{}")
+        payload["stored_at"] = float(row[0])
+        return payload
+
+    def live_token_ids(self, chain: str) -> set[int]:
+        with self.connect() as con:
+            rows = con.execute("SELECT token_id FROM positions WHERE source='live_chain' AND chain=? AND token_id IS NOT NULL", (chain,)).fetchall()
+        out=set()
+        for row in rows:
+            try: out.add(int(row[0]))
+            except Exception: pass
+        return out
+
+    def close_missing_live_positions(self, chain: str, seen_ids: set[str]) -> int:
+        with self.connect() as con:
+            rows = con.execute("SELECT id FROM positions WHERE source='live_chain' AND chain=? AND status='OPEN'", (chain,)).fetchall()
+            missing = [str(r[0]) for r in rows if str(r[0]) not in seen_ids]
+            for pid in missing:
+                con.execute("UPDATE positions SET status='CLOSED',notes=notes || ? WHERE id=?", ("\nClosed by live reconciliation: NFT no longer owned by configured wallet.", pid))
+        return len(missing)
+
+    def purge_demo_positions(self) -> int:
+        with self.connect() as con:
+            rows = con.execute("SELECT id FROM positions WHERE source='demo'").fetchall()
+            ids = [str(r[0]) for r in rows]
+            for pid in ids:
+                con.execute("DELETE FROM position_snapshots WHERE position_id=?", (pid,))
+            cur = con.execute("DELETE FROM positions WHERE source='demo'")
+        return int(cur.rowcount or 0)
+
+    def count_positions(self) -> int:
+        with self.connect() as con:
+            return int(con.execute("SELECT COUNT(*) FROM positions").fetchone()[0])

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LP Manager</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">LP</div>
+        <div>
+          <div class="brand-title">LP Manager</div>
+          <div class="brand-sub">v0.5 live · read-only control plane</div>
+        </div>
+      </div>
+      <nav>
+        <button class="nav active" data-section="overview">Overview</button>
+        <button class="nav" data-section="positions">Positions</button>
+        <button class="nav" data-section="opportunities">Opportunities</button>
+        <button class="nav" data-section="replay">Replay Lab</button>
+        <button class="nav" data-section="decisions">Decisions</button>
+        <button class="nav" data-section="automation">Automation</button>
+        <button class="nav" data-section="system">System</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="safety-card">
+          <span class="dot amber"></span>
+          <div>
+            <strong>Build-only</strong>
+            <small>Signing & broadcasting disabled</small>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">Portfolio Overview</h1>
+          <p id="page-subtitle">Fees, range risk, decisions and prepared actions in one place.</p>
+        </div>
+        <div class="top-actions">
+          <button id="import-btn" class="btn secondary">Import Village/Bot positions</button>
+          <button id="refresh-btn" class="btn">Refresh</button>
+        </div>
+      </header>
+
+      <section id="overview-section" class="section active">
+        <div id="live-banner" class="panel"></div>
+        <div id="summary-grid" class="summary-grid"></div>
+
+        <div class="panel target-panel">
+          <div class="panel-head"><div><h2>Performance target</h2><p>Reporting benchmark only — never a reason to increase range risk.</p></div><div class="top-actions"><label class="meta" for="target-rate">Monthly %</label><input id="target-rate" type="number" min="0" step="0.5" value="10" style="width:80px"><button id="target-calc-btn" class="btn small">Calculate</button></div></div>
+          <div id="target-result" class="summary-grid"></div>
+        </div>
+
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Open positions</h2>
+                <p>Live operating view with range status and economics.</p>
+              </div>
+              <button class="btn small" id="new-position-btn">Prepare open</button>
+            </div>
+            <div id="positions-list" class="position-list"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Attention queue</h2>
+                <p>Highest deterministic edge risk first.</p>
+              </div>
+            </div>
+            <div id="attention-list" class="attention-list"></div>
+          </div>
+        </div>
+
+        <div class="two-col lower">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Recent decisions</h2>
+                <p>Explainable plan history.</p>
+              </div>
+            </div>
+            <div id="decisions-list" class="timeline"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Prepared actions</h2>
+                <p>Audit trail for close, collect and open intentions.</p>
+              </div>
+            </div>
+            <div id="actions-list" class="timeline"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="positions-section" class="section">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>All positions</h2>
+              <p>Open and closed positions with explicit range state.</p>
+            </div>
+            <button class="btn" id="new-position-btn-2">Prepare open</button>
+          </div>
+          <div id="all-positions-table"></div>
+        </div>
+      </section>
+
+      <section id="opportunities-section" class="section">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Two-sleeve scout</h2><p>Core income and tactical campaigns are screened, scored and managed differently.</p></div></div>
+          <div id="strategy-sleeves" class="position-list"></div>
+        </div>
+        <div class="panel lower">
+          <div class="panel-head"><div><h2>Live pool browser</h2><p>Current Uniswap V3 pools from market data. Open a pool for TVL, volume, price movement, OHLC and live replay.</p></div><div class="top-actions"><select id="live-scout-chain"><option>BASE</option><option>ETHEREUM</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option><option>ROBINHOOD_CHAIN</option></select><button id="live-scout-btn" class="btn small">Load live pools</button></div></div>
+          <div id="live-pool-list" class="position-list"><div class="empty-state">Choose a chain and load live pools.</div></div>
+        </div>
+        <div class="two-col lower">
+          <div class="panel"><div class="panel-head"><div><h2>Cross-chain universe</h2><p>Discovery is no longer Robinhood-only. Protocol adapters feed a common candidate model.</p></div></div><div id="scout-universe" class="attention-list"></div></div>
+          <div class="panel"><div class="panel-head"><div><h2>Scout pipeline</h2><p>Headline APR never gets direct authority.</p></div></div>
+            <div class="roadmap"><span>Multi-chain discover</span><b>→</b><span>Quality gates</span><b>→</b><span>Core + tactical scoring</span><b>→</b><span>Range durability</span><b>→</b><span>Sentiment where required</span><b>→</b><span>Approve</span></div>
+            <p class="meta">Core prioritises asset conviction, liquidity/fee stability, long-horizon range residence and low lifecycle drag. Tactical prioritises short-horizon net yield, momentum/sentiment, campaign economics and rapid exit/redeployment.</p>
+          </div>
+          <div class="panel"><div class="panel-head"><div><h2>Opportunity book</h2><p>Persistent candidates, including rejects, so we can measure whether scout decisions age well.</p></div></div><div id="opportunity-book" class="attention-list"></div></div>
+        </div>
+      </section>
+
+      <section id="replay-section" class="section">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Replay Lab</h2><p>Walk-forward historical testing through the same deterministic strategy path. Range selection cannot see future candles.</p></div><div class="top-actions"><button id="replay-core-btn" class="btn small">Run Core demo</button><button id="replay-tactical-btn" class="btn secondary small">Run Tactical demo</button></div></div>
+          <div class="roadmap"><span>Warm-up history</span><b>→</b><span>Select range</span><b>→</b><span>Replay candle-by-candle</span><b>→</b><span>Wake strategy/AI</span><b>→</b><span>Audit decisions</span></div>
+          <p class="meta">OHLC-only runs test behaviour and range survival. Exact historical LP profit remains unavailable until fee-growth/liquidity/token-inventory history is connected; the replay refuses to fabricate it.</p>
+        </div>
+        <div class="two-col lower">
+          <div class="panel"><div class="panel-head"><div><h2>Replay runs</h2><p>Persisted scenarios and summary metrics.</p></div></div><div id="replay-runs" class="attention-list"></div></div>
+          <div class="panel"><div class="panel-head"><div><h2>Outcome audit</h2><p>Was the manager's historical decision supported by what happened next?</p></div></div><div id="outcome-audits" class="attention-list"></div></div>
+        </div>
+      </section>
+
+      <section id="decisions-section" class="section">
+        <div class="panel"><div class="panel-head"><div><h2>Decision journal</h2><p>Every material strategy decision and its trigger.</p></div></div><div id="decision-journal" class="timeline"></div></div>
+      </section>
+
+      <section id="automation-section" class="section">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Autonomy ladder</h2><p>Capability is deliberately staged.</p></div></div>
+          <div class="autonomy-grid">
+            <div class="auto-stage active"><b>0</b><strong>Observe</strong><span>Live/read-only data</span></div>
+            <div class="auto-stage active"><b>1</b><strong>Recommend</strong><span>Plans & decision tickets</span></div>
+            <div class="auto-stage active"><b>2</b><strong>Prepare</strong><span>Unsigned transaction plans</span></div>
+            <div class="auto-stage"><b>3</b><strong>Approve</strong><span>Manual wallet confirmation</span></div>
+            <div class="auto-stage"><b>4</b><strong>Policy auto</strong><span>Bounded collection/rebalance</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="system-section" class="section">
+        <div class="panel"><div class="panel-head"><div><h2>Live data configuration</h2><p>Only configuration presence is shown; secret values are never returned to the browser.</p></div><button id="live-refresh-btn-system" class="btn small">Refresh wallet now</button></div><div id="live-status"></div></div>
+        <div class="two-col lower">
+          <div class="panel"><div class="panel-head"><div><h2>Execution boundary</h2></div><button id="support-bundle-btn" class="btn secondary small">Build support bundle</button></div><pre id="execution-json"></pre></div>
+          <div class="panel"><div class="panel-head"><div><h2>Legacy sources</h2></div></div><pre id="legacy-json"></pre></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <button class="modal-close" id="modal-close">×</button>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
