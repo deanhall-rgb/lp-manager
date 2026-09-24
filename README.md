@@ -1,3 +1,27 @@
+# LP Manager v0.8.6 Profit Engine Preview
+
+This build is deliberately layered on top of the frozen v0.8.5 live-accounting/execution candidate. It does **not** widen execution authority. It adds a money-first decision layer while preserving build-only/manual-wallet safety.
+
+## What v0.8.6 adds
+
+- **Profit Lab**: ask the practical question directly: *for this pool, capital and holding period, what range is expected to maximise net LP fee profit?*
+- **Holding-period-specific optimisation**: 1d / 3d / 7d / 14d / 30d changes the range search itself rather than merely relabelling a generic Core/Tactical result.
+- **Walk-forward range validation**: older historical windows inform range selection; a more recent holdout is shown separately as validation evidence.
+- **Live fee calibration**: observed fee accrual from LPs actually owned by the configured wallet can correct model forecasts. Exact-pool evidence is weighted most strongly; young/noisy samples are deliberately down-weighted.
+- **Profit scoreboard**: observed 24h/7d/30d fee production, monthly fee run-rate, capital currently earning and cost-basis evidence coverage.
+- **Explicit target gap**: target returns remain benchmarks. The engine reports expected cash profit, downside/upside bands and target attainment instead of inventing yield to hit a chosen target.
+- **Evidence stack**: on-chain pool metadata, historical provider/source, historical volume availability, current TVL/volume, regime and live-fee calibration confidence are shown separately.
+- **Directional alternatives**: single-sided upper/lower triggered plans can be surfaced when regime evidence is directional; they are not assumed to earn fees before price enters the range.
+
+## Core objective
+
+The range winner is no longer primarily “the range that stays active the longest.” The ranking is driven by expected net fee cashflow over the requested holding period, regularised by historical range behaviour and current regime. Risk gates remain guardrails rather than a reason to leave capital idle by default.
+
+## Important modelling boundary
+
+Historical active tick-liquidity is not yet fully reconstructed. Walk-forward fee tests use observed historical pool volume plus the current active-liquidity-share estimate. This limitation is explicit in the UI and is the next major accuracy frontier after live v0.8.5 fee calibration has accumulated enough real observations.
+
+---
 # LP Manager v0.8.5
 
 ## V0.8.5 live accounting + execution UX patch

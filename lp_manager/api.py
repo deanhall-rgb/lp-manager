@@ -45,6 +45,9 @@ from .portfolio_advisor import rank_opportunities
 from .models import Decision
 from .historical_import import import_delta_pool_history
 from .pool_chain import read_v3_pool_metadata
+from .profit_engine import recommend_profit_range
+from .profit_dashboard import portfolio_profit_scorecard
+from .profit_calibration import fee_calibration_for_pool, calibration_samples
 
 
 class ScoutIntent(BaseModel):
@@ -187,6 +190,26 @@ class StrategyLabIntent(BaseModel):
     days: int = 90
     capital: float = 1000.0
     target_monthly_pct: float = 10.0
+
+
+class ProfitRangeIntent(BaseModel):
+    chain: str
+    pool_address: str
+    horizon_days: float = 7.0
+    capital: float = 1000.0
+    sleeve: str = "AUTO"
+    monthly_target_pct: float = 10.0
+    history_days: int | None = None
+
+
+class ProfitSearchIntent(BaseModel):
+    available_capital: float = 1000.0
+    horizon_days: float = 7.0
+    sleeve: str = "AUTO"
+    monthly_target_pct: float = 10.0
+    reserve_pct: float = 10.0
+    chains: list[str] | None = None
+    max_candidates: int = 4
 
 
 class PortfolioAdvisorIntent(BaseModel):
@@ -343,7 +366,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.8.5", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.8.6", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -355,7 +378,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.8.5",
+            "version": "0.8.6",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -398,7 +421,107 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "live": live.status(),
             "ai": intelligence.status(),
             "automation": get_automation_policy(store),
+            "profit_scorecard": portfolio_profit_scorecard(store),
+            "profit_last_recommendation": store.get_setting("profit:last_recommendation", None),
         }
+
+    @app.get("/api/profit/scorecard")
+    def profit_scorecard():
+        return portfolio_profit_scorecard(store)
+
+    @app.get("/api/profit/calibration")
+    def profit_calibration():
+        return {"samples": calibration_samples(store)}
+
+    @app.post("/api/profit/recommend")
+    def profit_recommend(intent: ProfitRangeIntent):
+        if not live.market:
+            raise HTTPException(503, "Market data is disabled")
+        pool_fallback=None
+        for op in store.list_opportunities(300):
+            candidate=dict(op.get("candidate") or {})
+            if str(candidate.get("pool_address") or "").lower()==str(intent.pool_address or "").lower() and str(candidate.get("chain") or op.get("chain") or "").upper()==intent.chain.upper():
+                pool_fallback=candidate; break
+        try:
+            result=recommend_profit_range(
+                live.market, store, intent.chain.upper(), intent.pool_address,
+                horizon_days=max(1/24.0,min(90.0,float(intent.horizon_days))),
+                capital=max(1.0,float(intent.capital)), sleeve=intent.sleeve,
+                monthly_target_pct=max(0.0,float(intent.monthly_target_pct)),
+                history_days=intent.history_days, pool_fallback=pool_fallback,
+            )
+            result["generated_at"]=time.time()
+            result["data_status"]="LIVE_OR_FRESH_HISTORY"
+            store.set_setting("profit:last_recommendation", result)
+            cache_key=f"profit:last:{intent.chain.upper()}:{intent.pool_address.lower()}:{round(float(intent.horizon_days),3)}:{str(intent.sleeve).upper()}"
+            store.set_setting(cache_key,result)
+            return result
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(503,f"Profit recommendation unavailable: {str(exc)[:280]}") from exc
+
+    @app.post("/api/profit/search")
+    def profit_search(intent: ProfitSearchIntent):
+        if not live.market:
+            raise HTTPException(503, "Market data is disabled")
+        capital=max(1.0,float(intent.available_capital))
+        chains=[str(x).upper() for x in (intent.chains or ["ETHEREUM","BASE","ARBITRUM","ROBINHOOD_CHAIN"])]
+        prelim=[]; errors=[]
+        for chain in chains[:5]:
+            try:
+                pools, discovery_errors=_discover_scout_pools(chain,max_pages=1)
+                errors.extend({"chain":chain,"error":e} for e in discovery_errors[:2])
+            except Exception as exc:
+                errors.append({"chain":chain,"error":str(exc)[:180]}); continue
+            for pool in pools:
+                if str(pool.get("protocol") or "").upper()!="UNISWAP_V3": continue
+                ev=preliminary_pool_evaluation(pool)
+                sleeve_pref=str(intent.sleeve or "AUTO").upper()
+                if sleeve_pref in {"AUTO","ANY",""}:
+                    score=max(float(ev.get("core_pre_score") or 0),float(ev.get("tactical_pre_score") or 0))
+                elif sleeve_pref=="CORE_INCOME": score=float(ev.get("core_pre_score") or 0)
+                else: score=float(ev.get("tactical_pre_score") or 0)
+                prelim.append((score,float(pool.get("tvl_usd") or 0),pool,ev))
+        prelim.sort(key=lambda x:(x[0],x[1]),reverse=True)
+        deep=[]
+        for score,_tvl,pool,ev in prelim[:max(1,min(8,int(intent.max_candidates)))]:
+            try:
+                r=recommend_profit_range(
+                    live.market,store,str(pool.get("chain") or "").upper(),str(pool.get("pool_address") or ""),
+                    horizon_days=max(1/24.0,min(90.0,float(intent.horizon_days))),capital=capital,
+                    sleeve=intent.sleeve,monthly_target_pct=max(0.0,float(intent.monthly_target_pct)),pool_fallback=pool,
+                )
+                b=r.get("recommended_range") or {}; f=b.get("forecast") or {}
+                deep.append({
+                    "chain":r.get("chain"),"pair":r.get("pair"),"pool_address":r.get("pool_address"),"sleeve":r.get("sleeve"),
+                    "confidence":r.get("confidence"),"profit_score":b.get("profit_score"),"range":{"lower":b.get("lower"),"upper":b.get("upper"),"price_lens":b.get("price_lens")},
+                    "expected_net_usd":f.get("expected_net_usd"),"expected_net_pct":f.get("expected_net_pct"),"expected_fees_usd":f.get("expected_fees_usd"),
+                    "low_net_usd":f.get("low_net_usd"),"high_net_usd":f.get("high_net_usd"),"target_attainment_pct":f.get("target_attainment_pct"),
+                    "pre_score":round(score,1),"recommendation":r,
+                })
+            except Exception as exc:
+                errors.append({"chain":str(pool.get("chain") or ""),"pair":str(pool.get("pair") or ""),"error":str(exc)[:200]})
+        conf_rank={"HIGH":3,"MODERATE":2,"LOW":1}
+        deep.sort(key=lambda r:(float(r.get("expected_net_pct") or -999),conf_rank.get(str(r.get("confidence")),0),float(r.get("profit_score") or 0)),reverse=True)
+        reserve=capital*max(0.0,min(90.0,float(intent.reserve_pct)))/100.0
+        deployable=max(0.0,capital-reserve)
+        allocations=[]
+        eligible=[r for r in deep if float(r.get("expected_net_usd") or 0)>0]
+        if eligible and deployable>0:
+            weights=[max(0.01,float(r.get("expected_net_pct") or 0))*max(0.5,float(r.get("profit_score") or 50)/100.0) for r in eligible[:3]]
+            tw=sum(weights) or 1.0
+            remaining=deployable
+            for i,(row,w) in enumerate(zip(eligible[:3],weights)):
+                # Core may carry more portfolio capital; tactical remains capped.
+                cap=deployable*(0.70 if row.get("sleeve")=="CORE_INCOME" else 0.35)
+                amt=min(cap,deployable*w/tw,remaining)
+                if amt<1: continue
+                allocations.append({"rank":i+1,"chain":row.get("chain"),"pair":row.get("pair"),"pool_address":row.get("pool_address"),"sleeve":row.get("sleeve"),"amount":round(amt,2),"expected_net_for_hold":round(float(row.get("expected_net_usd") or 0)*amt/capital,2)})
+                remaining-=amt
+        result={"capital":capital,"horizon_days":float(intent.horizon_days),"reserve":round(reserve,2),"deployable":round(deployable,2),"ranked":deep,"allocations":allocations,"errors":errors[:12],"candidate_count":len(prelim),"deep_analysed":len(deep),"best":deep[0] if deep else None,"note":"Deep ranking uses the same Profit Lab engine for each candidate. Provider limits cap the number of simultaneous deep analyses."}
+        store.set_setting("profit:last_search",result)
+        return result
 
     @app.get("/api/wallet")
     def wallet_view():
@@ -790,7 +913,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def support_bundle():
         path = build_support_bundle(
             store, output_dir=settings.data_dir / "support",
-            extra={"version":"0.8.5", "execution":executor.capabilities(), "scout_universe":scout_universe()},
+            extra={"version":"0.8.6", "execution":executor.capabilities(), "scout_universe":scout_universe()},
         )
         return {"ok": True, "filename": path.name, "download": f"/api/support/bundle/{path.name}"}
 
