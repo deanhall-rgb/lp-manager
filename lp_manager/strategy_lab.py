@@ -71,8 +71,11 @@ def _pool_from_onchain(chain: str, address: str, onchain: dict[str, Any], fallba
         quote_sym,base_sym=[x.strip() for x in unit_label.split(" per ",1)]
     else:
         base_sym=str(token0.get("symbol") or "TOKEN0"); quote_sym=str(token1.get("symbol") or "TOKEN1")
-    base_token=dict(base.get("base_token") or by_symbol.get(base_sym.upper()) or {"symbol":base_sym})
-    quote_token=dict(base.get("quote_token") or by_symbol.get(quote_sym.upper()) or {"symbol":quote_sym})
+    # On-chain execution orientation wins over provider "base/quote" naming.
+    # A USDG/WETH provider row must become WETH/USDG when the human lens is
+    # "USDG per WETH", otherwise token USD (~1) can leak into pool-price maths.
+    base_token=dict(by_symbol.get(base_sym.upper()) or base.get("base_token") or {"symbol":base_sym})
+    quote_token=dict(by_symbol.get(quote_sym.upper()) or base.get("quote_token") or {"symbol":quote_sym})
     current=_f(lens.get("current"))
     result={
         **base,
