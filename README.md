@@ -22,6 +22,30 @@ V0.8.7 is a financial-correctness and profitability release built on v0.8.6. It 
 
 LP-vs-HODL divergence is a separate economic comparison, not a synthetic monthly expense or extra cash return.
 
+## Upgrade from V0.8.6
+
+Extract V0.8.7 into a new folder, then run:
+
+```powershell
+cd "C:\Users\deano\Documents\lp_manager_v0_8_7"
+Set-ExecutionPolicy -Scope Process Bypass
+.\upgrade_from_v086.ps1 -V086Path "C:\Users\deano\Documents\lp_manager_v0_8_6"
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python .\start_lp_manager.py
+```
+
+The upgrade copies the existing `.env` and `data` state forward without modifying V0.8.6, and normalises the configured display currency to GBP. No private key or seed phrase is introduced.
+
+## V0.8.7 hard acceptance gates
+
+The release test suite includes explicit gates for:
+
+1. **WETH/USDC, £1,000, 7 days:** compare relevant V3 fee tiers, select the strongest expected-net pool, enforce range guardrails, expose fee maths, APR distinctions and boundary inventory.
+2. **WETH/USDG:** execution units must be stable-per-WETH in a plausible ETH-price range; a ~1 USD stable mark cannot pass as the WETH execution price.
+3. **P4/P5/P6 accounting:** NFTs 1289953 / 1290067 / 1290077 must retain P4 / P5 / P6 identity, supplied opening references, reconstructed opening capital/time evidence, fee-inclusive P/L and LP-vs-HODL accounting where marks are available.
+
 ---
 # LP Manager v0.8.6 Profit Engine Preview
 
