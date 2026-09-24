@@ -1,123 +1,135 @@
-# LP Manager v0.5 Live
 
-LP Manager is a local, safety-first control plane for concentrated-liquidity positions.
+## V0.8.4 reliability patch
 
-## V0.5 live-data milestone
+- Corrects Robinhood Chain Blockscout v2 endpoint to `https://robinhoodchain.blockscout.com/api/v2`.
+- Adds Alchemy NFT ownership as a second current-state discovery source for Uniswap V3 positions.
+- Keeps transfer-log discovery and `ownerOf`/`positions()` RPC verification as independent checks.
+- Uses Alchemy Prices API for wallet/current-token marks when configured, preserving GeckoTerminal quota for pool-specific data.
+- Strategy Lab falls back to Alchemy historical token-price points when GeckoTerminal pool OHLC is rate-limited; the UI marks that evidence source explicitly.
+- Strategy Lab reuses persisted Scout pool context instead of making a redundant pool request before OHLC.
+- Stale successful Strategy Lab results remain available during provider outages.
 
-V0.5 replaces the demo-only operating surface with a live read-only path:
+# LP Manager v0.8.4
 
-- loads configuration from the LP Manager `.env` and can fall back to the legacy bot `.env` without copying secrets;
-- uses only a **public wallet address** for ownership discovery;
-- supports Ethereum, Base, Arbitrum, Optimism, Polygon and Robinhood Chain adapters;
-- discovers recent Uniswap V3 NFT positions from PositionManager Transfer logs, verifies ownership with `ownerOf`, and reads position/pool state directly from chain;
-- reads tick range, current tick, liquidity, estimated token inventory and claimable fees;
-- uses GeckoTerminal as the first cross-chain pool/TVL/volume/OHLC provider;
-- exposes a live Uniswap V3 pool browser with pool detail and 30/90-day replay;
-- reconciles live positions into SQLite rather than replacing cost-basis/history records;
-- builds and `eth_call`-simulates V3 Collect and full Decrease+Collect close calls for live positions;
-- never signs or broadcasts transactions.
+V0.8 is the **decision + execution workspace** release. It keeps the read-only/live data and advisory intelligence boundaries from V0.7, fixes the current-vs-historical position authority problems exposed by the DELTA tests, improves wallet/scout/economics reliability, and adds a manual-wallet Uniswap V3 Execution Desk.
+
+## What changed in V0.8
+
+- **Current chain state wins.** Old campaign ledgers and uploaded research files are historical evidence only. A historical `OPEN` flag cannot create a live position; only current NFT ownership/active liquidity can do that.
+- **DELTA research import.** The Positions page can import the reconstructed DELTA pool-history JSON and record P1/P2/P3 as historical campaigns with explicit `DELTA_PER_WETH` execution ranges, time-in-range, exits/re-entries and reconstructed fee lower bounds.
+- **Explicit price units.** DELTA/WETH is shown as DELTA per WETH (e.g. ~180k–240k), rather than ambiguous `$14 → $16` numbers. USD/token-price or market-cap lenses are only shown when sourced independently.
+- **Replay clarity.** Synthetic regression runs are labelled as synthetic tests; historical DELTA campaign replays use observed pool evidence. Detached outcome-audit clutter is removed and summarised inside each replay.
+- **Replay economics.** Live-pool replays model fee income from observed volume plus transparent TVL/range assumptions. Imported DELTA history uses reconstructed WETH fee lower bounds rather than invented USD marks.
+- **Wallet discovery/pricing.** Alchemy token discovery is used even when a different primary RPC is configured. Robinhood also has a Blockscout discovery fallback. GeckoTerminal token prices are batched, and obvious claim/spam tokens plus priced sub-$1 dust are quarantined by default.
+- **Scout resilience.** GeckoTerminal calls are rate-shaped, retried, version-pinned and cached; provider failures fall back to the persisted opportunity book instead of blanking the page with a 502.
+- **Profit-oriented economics.** Opportunity/Strategy views show daily/weekly/monthly fee estimates, gross APR, regime/IL allowance, lifecycle cost, a conservative monthly net estimate and a modelled range. Hot 24h activity receives a persistence haircut before it is treated as a monthly forecast.
+- **Portfolio Advisor controls.** Compare Core only, Tactical only or best overall, in diversified or best-single-opportunity mode. Unused capital is redistributed within concentration limits instead of being left idle by first-pass weights.
+- **Decision Journal grouping.** The latest decision for each open position/opportunity is shown first; older decisions are collapsed into history. Filters separate opportunities, open positions, Core and Tactical.
+- **Balanced AI cadence.** Cheap monitoring remains deterministic. Core routine strategy/AI checkpoints are 12h/24h; Tactical 4h/12h, with material range/regime events able to wake them earlier. User-triggered and pre-execution analysis can always wake AI.
+- **AI spend visibility.** The System page tracks AI calls, input/output token usage and estimated token cost by day/purpose. Separately billed web-search tool charges are explicitly not included in that estimate.
+- **Legacy page clarified.** Missing old bot helper files are marked as optional/not needed; the campaign ledger is migration history, never live authority.
+- **Execution Desk.** Read pool metadata directly from chain, enter a range/token amounts/slippage, build exact V3 approval/wrap/mint calls, simulate the mint when prerequisites permit, then explicitly sign each call with the browser wallet. The server never receives a private key.
 
 ## Safety boundary
 
-**Never put a seed phrase or private key in this project.** V0.5 does not need one.
+V0.8 does **not** enable autonomous fund movement:
 
-`LP_MANAGER_EXECUTION_MODE=build_only` remains the supported mode. Signing and broadcasting are hard-disabled in the control plane.
+- no private-key or seed-phrase storage
+- no server-side signing
+- no autonomous broadcasting
+- browser-wallet submission requires an explicit user confirmation checkbox
+- the connected browser account must match the configured LP Manager wallet
+- chain switching is explicit
+- mint signing is blocked until the prepared mint simulation passes
+- after prerequisite approval/wrap transactions, the plan is rebuilt against fresh allowances/balances
 
-## First run
+Collect/close preparation remains build/simulation-first. Wider policy-bound automation is deliberately still a later stage.
+
+## Upgrade from V0.7 (Windows PowerShell)
+
+Extract V0.8 to a new folder, then:
 
 ```powershell
-python -m venv .venv
+cd C:\Users\deano\Documents\lp_manager_v0_8
 Set-ExecutionPolicy -Scope Process Bypass
+.\upgrade_from_v07.ps1 -V07Path "C:\Users\deano\Documents\lp_manager_v0_7"
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python .\start_lp_manager.py
 ```
 
-Open <http://127.0.0.1:8765>.
+Open `http://127.0.0.1:8765`.
 
-## Make it live
+The upgrade helper copies the local `.env` and SQLite state forward without modifying V0.7. V0.8 then re-imports legacy history using the stricter historical-vs-live authority rules on startup.
 
-Run:
+## DELTA historical evidence
 
-```powershell
-.\configure_live.ps1
-```
+On **Positions**, use **Import DELTA research history** and select the supplied `DELTA_LP_POOL_HISTORY(1).json` file. The importer only needs the file's metadata and position summaries; the large swap/event body remains source evidence and is not duplicated into the database.
 
-That creates `.env` from `.env.example` and opens it in Notepad.
+The imported records are historical unless a current chain scan proves the corresponding NFT is still owned/active.
 
-At minimum configure:
+## Recommended `.env`
 
 ```env
 LP_MANAGER_DEMO_SEED=false
-WALLET_ADDRESS=0xYOUR_PUBLIC_WALLET
-BASE_RPC_URL=...
-RH_RPC_URL=...
-```
-
-Only configure the chains you use. Missing chain RPCs are displayed as unavailable and do not stop other chains from working.
-
-Restart LP Manager after changing `.env`, then use **Refresh wallet**. The System page shows which chains are configured without returning RPC URLs/API secrets to the browser.
-
-### Existing bot reuse
-
-If your existing project remains at:
-
-```text
-C:\Users\deano\Documents\crypto-lp-bot
-```
-
-set:
-
-```env
+LP_MANAGER_EXECUTION_MODE=build_only
+LP_MANAGER_CURRENCY=GBP
+WALLET_ADDRESS=0xYOUR_PUBLIC_WALLET_ADDRESS
+ALCHEMY_API_KEY=...
+RH_RPC_URL=...                # optional explicit working Robinhood RPC; overrides Alchemy for primary RPC reads
 LP_MANAGER_LEGACY_ROOT=C:\Users\deano\Documents\crypto-lp-bot
+GECKOTERMINAL_ENABLED=true
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-5.6-terra
+LP_MANAGER_AI_ENABLED=true
+LP_MANAGER_AI_WEB_SEARCH=true
+LP_MANAGER_WALLET_MIN_VISIBLE_USD=1
 ```
 
-The LP Manager `.env` takes precedence; the legacy `.env` is fallback-only.
+No seed phrase or private key belongs in this file.
 
-## Position discovery notes
+## Release validation
 
-V0.5 scans a recent PositionManager event window rather than indexing the full history of every chain. Default:
+V0.8 release gate:
 
-```env
-LP_MANAGER_POSITION_SCAN_BLOCKS=500000
-```
+- Python compilation passes
+- browser JavaScript syntax check passes
+- **73 tests pass**
+- **1 Web3-specific test is skipped only in dependency-light environments where Web3 is not installed**
+- API smoke test confirms V0.8 health/overview and imports the supplied DELTA history as three closed `DELTA_PER_WETH` campaigns
 
-Per-chain overrides are supported, for example:
+## Still intentionally incomplete
 
-```env
-LP_MANAGER_BASE_SCAN_BLOCKS=1500000
-LP_MANAGER_ROBINHOOD_CHAIN_SCAN_BLOCKS=300000
-```
+- exact historical LP-vs-HODL P&L for every arbitrary pool still needs historical active-tick/liquidity reconstruction; estimates are labelled as estimates
+- exact DELTA fee reconstruction excludes boundary-crossing fee allocation unless reconstructed tick-by-tick; imported fee evidence is labelled a lower bound
+- server-side/autonomous transaction signing remains unavailable by design
+- browser-wallet Execution Desk currently focuses on Uniswap V3 opening; collect/close signing remains a later explicit-wallet extension after more live testing
 
-If an old NFT predates the scan window, increase the relevant scan window. Every discovered token ID is still verified with `ownerOf`, so old transferred-away NFTs are not treated as owned.
 
-## Live Scout
+## v0.8.4 live-position discovery patch
 
-The Opportunities page can load live Uniswap V3 pools by chain. Pool cards show current TVL, 24h volume, price movement and transparent Core/Tactical **pre-scores**. These are intentionally preliminary: final approval should include historical replay/range durability rather than treating current APR/volume as authority.
+V0.8.4 makes newly-opened Uniswap V3 positions a first-class live input rather than relying on legacy/manual import.
 
-Pool detail can run 30/90-day OHLC replay through the same no-lookahead strategy engine used by Replay Lab.
+- Current V3 position NFTs are discovered from the wallet's Blockscout-owned-NFT inventory on Robinhood Chain, then independently verified through `ownerOf`, `positions()` and pool RPC reads.
+- Transfer-log scanning remains active and checkpointed, so positions opened while LP Manager is running or offline are picked up automatically.
+- New live records preserve the human execution lens (`WETH/USDG`, `WETH/DELTA`, `WETH/HOOKR`) and are assigned operator sequence labels after historical LP1-LP3 (P4, P5, P6, ...).
+- Opening block/transaction evidence is retained when the transfer log is available.
+- A `Rescan wallet LPs` control forces immediate discovery.
+- `Import opening tx` is a deterministic recovery path: paste one or more opening transaction hashes and LP Manager resolves only V3 NFT transfers to the configured wallet, verifies current ownership and hydrates the position.
+- A transient RPC/read failure no longer falsely closes an existing live LP. Closure requires explicit ownership evidence.
+- The safety boundary is unchanged: discovery and transaction import are read-only; server signing and autonomous broadcast remain blocked.
 
-## Accounting honesty
+## v0.8.2 profit/correctness patch
 
-A live position discovered without a matching historical ledger has unknown historical cost basis. V0.5 uses first-observed value as a temporary baseline and labels the snapshot accordingly rather than fabricating historic P/L. Existing imported cost basis is preserved during chain reconciliation.
+This is deliberately a patch release rather than v0.9. It corrects the evidence and economics issues found during live V0.8 testing:
 
-Fee-day/week/month and realised APR remain incomplete until snapshot history/claim events provide enough observations. Claimable fee state is live; historical fee performance is not invented.
-
-## Execution status
-
-- Observe live positions: **implemented**
-- Live Scout / pool data: **implemented**
-- Live historical OHLC replay: **implemented**
-- Prepare/simulate V3 Collect: **implemented**
-- Prepare/simulate V3 Close (decrease all + collect): **implemented**
-- Generic V3 Open/mint: **still build-only intent**; live pool/tick/token split validation is the next execution milestone
-- Browser-wallet signing: **disabled / next authority stage**
-- Server-side private-key signing: **not planned**
-
-## Tests
-
-```powershell
-pytest -q
-```
-
-GitHub Actions is also configured to compile and run the test suite in a clean environment.
+- fee operating income is separated from LP-vs-HODL/divergence risk instead of subtracting a modelled risk allowance as if it were a monthly cash bill;
+- hypothetical V3 fee share uses current active liquidity when an exact candidate range and on-chain liquidity are available;
+- extreme 24h turnover/price anomalies are haircut and blocked from auto-allocation until investigated;
+- the supplied DELTA pool reconstruction is bundled as a compact authoritative history summary so the real NFT identities/ranges replace misleading legacy LP1/LP2/LP3 labels;
+- unpriced ERC-20s stay in the hidden wallet diagnostic drawer;
+- Decision Journal defaults to active positions/opportunities and links opportunity decisions directly into Strategy Lab;
+- Strategy Lab alternative ranges are individually comparable and display fee-operating economics;
+- Execution Desk auto-balances the paired token amount and refreshes the live pool price while the desk is open;
+- Portfolio Advisor returns near-miss candidates and rejection reasons instead of a blank result.

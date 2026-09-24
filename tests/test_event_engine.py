@@ -3,7 +3,7 @@ from lp_manager.event_engine import detect_material_event, review_due
 
 def test_core_ai_is_quieter_than_strategy_review():
     now=100000
-    row=review_due(strategy_sleeve="CORE_INCOME", last_strategy_review_at=now-5*3600, last_ai_review_at=now-5*3600, now=now)
+    row=review_due(strategy_sleeve="CORE_INCOME", last_strategy_review_at=now-13*3600, last_ai_review_at=now-13*3600, now=now)
     assert row["strategy_due"] is True
     assert row["ai_due"] is False
 

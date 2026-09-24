@@ -7,180 +7,101 @@
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark">LP</div>
-        <div>
-          <div class="brand-title">LP Manager</div>
-          <div class="brand-sub">v0.5 live · read-only control plane</div>
-        </div>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.8.4 · live-position + market-data reliability patch</div></div></div>
+    <nav>
+      <button class="nav active" data-section="overview"><span>⌂</span> Overview</button>
+      <button class="nav" data-section="wallet"><span>◈</span> Wallet</button>
+      <button class="nav" data-section="positions"><span>▦</span> Positions</button>
+      <button class="nav" data-section="opportunities"><span>⌕</span> Opportunities</button>
+      <button class="nav" data-section="strategy"><span>◇</span> Strategy Lab</button>
+      <button class="nav" data-section="execution"><span>⇄</span> Execution Desk</button>
+      <button class="nav" data-section="replay"><span>↶</span> Replay</button>
+      <button class="nav" data-section="decisions"><span>✦</span> Decisions</button>
+      <button class="nav" data-section="automation"><span>⚙</span> Automation</button>
+      <button class="nav" data-section="system"><span>☷</span> System</button>
+    </nav>
+    <div class="sidebar-bottom"><div class="safety-card"><span class="dot amber"></span><div><strong>Build-only authority</strong><small>No autonomous signing or broadcast</small></div></div></div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div><h1 id="page-title">Portfolio Overview</h1><p id="page-subtitle">What is earning, what needs attention, and what LP Manager recommends next.</p></div>
+      <div class="top-actions"><span id="live-chip" class="status-chip">Loading…</span><span id="ai-chip" class="status-chip">AI…</span><button id="refresh-btn" class="btn">Refresh</button></div>
+    </header>
+
+    <section id="overview-section" class="section active">
+      <div id="overview-alert" class="notice"></div>
+      <div id="summary-grid" class="metric-grid"></div>
+      <div class="two-col wide-left lower">
+        <div class="panel"><div class="panel-head"><div><h2>Positions</h2><p>Your live LP book, prioritised by management need.</p></div><button class="btn small" id="new-position-btn">Prepare position</button></div><div id="overview-positions" class="card-list"></div></div>
+        <div class="panel ai-panel"><div class="panel-head"><div><h2>Portfolio intelligence</h2><p>AI is advisory only; deterministic controls remain authoritative.</p></div><button class="btn small" id="portfolio-brief-btn">Generate brief</button></div><div id="portfolio-brief" class="empty-state">Generate a portfolio brief when you want an interpreted view.</div></div>
       </div>
-      <nav>
-        <button class="nav active" data-section="overview">Overview</button>
-        <button class="nav" data-section="positions">Positions</button>
-        <button class="nav" data-section="opportunities">Opportunities</button>
-        <button class="nav" data-section="replay">Replay Lab</button>
-        <button class="nav" data-section="decisions">Decisions</button>
-        <button class="nav" data-section="automation">Automation</button>
-        <button class="nav" data-section="system">System</button>
-      </nav>
-      <div class="sidebar-bottom">
-        <div class="safety-card">
-          <span class="dot amber"></span>
-          <div>
-            <strong>Build-only</strong>
-            <small>Signing & broadcasting disabled</small>
-          </div>
-        </div>
+      <div class="two-col lower">
+        <div class="panel"><div class="panel-head"><div><h2>Attention queue</h2><p>Only positions where the deterministic engine sees material risk.</p></div></div><div id="attention-list" class="card-list compact"></div></div>
+        <div class="panel"><div class="panel-head"><div><h2>Performance</h2><p>Targets are reporting references, never instructions to increase risk.</p></div><div class="inline-controls"><label class="inline-label" for="target-rate">Monthly target %</label><input id="target-rate" type="number" min="0" step="0.5" value="10"><button id="target-calc-btn" class="btn small">Update</button></div></div><div id="target-result" class="metric-grid small-grid"></div></div>
       </div>
-    </aside>
+    </section>
 
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h1 id="page-title">Portfolio Overview</h1>
-          <p id="page-subtitle">Fees, range risk, decisions and prepared actions in one place.</p>
-        </div>
-        <div class="top-actions">
-          <button id="import-btn" class="btn secondary">Import Village/Bot positions</button>
-          <button id="refresh-btn" class="btn">Refresh</button>
-        </div>
-      </header>
+    <section id="wallet-section" class="section">
+      <div class="section-hero"><div><h2>Wallet</h2><p>Liquid assets, LP capital and chain connectivity from your configured public wallet.</p></div><button id="wallet-refresh-btn" class="btn">Refresh wallet</button></div>
+      <div id="wallet-metrics" class="metric-grid"></div>
+      <div class="panel lower"><div class="panel-head"><div><h2>Assets</h2><p>Live balances and prices. Obvious spam/claim tokens and sub-$1 dust are hidden by default.</p></div><button id="wallet-hidden-btn" class="btn secondary small">Show hidden</button></div><div id="wallet-assets"></div><div id="wallet-hidden" class="hidden lower"></div></div>
+    </section>
 
-      <section id="overview-section" class="section active">
-        <div id="live-banner" class="panel"></div>
-        <div id="summary-grid" class="summary-grid"></div>
+    <section id="positions-section" class="section">
+      <div class="section-hero"><div><h2>Positions & campaigns</h2><p>Every LP follows the same lifecycle record: thesis → range → monitoring → decisions → outcome.</p><div id="position-discovery-status" class="meta lower-tight">Owned V3 NFTs are auto-discovered from wallet ownership + transfer logs and verified on-chain.</div></div><div class="top-actions"><input id="delta-history-file" type="file" accept="application/json,.json" class="hidden"><button id="position-rescan-btn" class="btn secondary">Rescan wallet LPs</button><button id="position-tx-import-btn" class="btn secondary">Import opening tx</button><button id="delta-history-btn" class="btn secondary">Import DELTA research history</button><button id="legacy-import-btn" class="btn secondary">Sync old bot ledger</button><button id="new-position-btn-2" class="btn">Prepare position</button></div></div>
+      <div class="filter-row"><button class="pill active" data-position-filter="OPEN">Open</button><button class="pill" data-position-filter="ALL">All</button><button class="pill" data-position-filter="CLOSED">Closed</button></div>
+      <div id="positions-grid" class="positions-grid"></div>
+    </section>
 
-        <div class="panel target-panel">
-          <div class="panel-head"><div><h2>Performance target</h2><p>Reporting benchmark only — never a reason to increase range risk.</p></div><div class="top-actions"><label class="meta" for="target-rate">Monthly %</label><input id="target-rate" type="number" min="0" step="0.5" value="10" style="width:80px"><button id="target-calc-btn" class="btn small">Calculate</button></div></div>
-          <div id="target-result" class="summary-grid"></div>
-        </div>
+    <section id="opportunities-section" class="section">
+      <div class="section-hero"><div><h2>Opportunity Scout</h2><p>Discover first, investigate second, recommend a range third. APR alone never creates a position.</p></div></div>
+      <div class="panel"><div class="panel-head"><div><h2>Live pools</h2><p>Current Uniswap V3 market structure with Core and Tactical pre-scores.</p></div><div class="inline-controls"><select id="live-scout-chain"><option>BASE</option><option>ETHEREUM</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option><option>ROBINHOOD_CHAIN</option></select><button id="live-scout-btn" class="btn">Scan pools</button></div></div><div id="live-pool-list" class="opportunity-grid"><div class="empty-state">Choose a chain and scan live pools.</div></div></div>
+      <div class="panel lower"><div class="panel-head"><div><h2>Portfolio Advisor</h2><p>Compare opportunities against each other and allocate only where the expected risk-adjusted return earns capital.</p></div><div class="inline-controls advisor-controls"><label class="inline-label" for="advisor-capital">Capital</label><input id="advisor-capital" type="number" min="0" step="50" value="1000"><label class="inline-label" for="advisor-reserve">Reserve %</label><input id="advisor-reserve" type="number" min="0" max="90" step="5" value="10"><label class="inline-label" for="advisor-sleeve">Sleeve</label><select id="advisor-sleeve"><option value="ANY">Best overall</option><option value="CORE_INCOME">Core only</option><option value="TACTICAL_CAMPAIGN">Tactical only</option></select><label class="inline-label" for="advisor-mode">Mode</label><select id="advisor-mode"><option value="DIVERSIFIED">Diversified</option><option value="BEST_ONLY">Best single opportunity</option></select><button id="advisor-run-btn" class="btn">Rank & allocate</button></div></div><div id="advisor-result"><div class="empty-state">Run the advisor after or before a pool scan. It will compare current candidates across supported chains and keep a reserve rather than forcing capital into weak opportunities.</div></div></div>
+      <div class="two-col lower"><div class="panel"><div class="panel-head"><div><h2>What LP Manager is looking for</h2></div></div><div id="strategy-sleeves" class="card-list"></div></div><div class="panel"><div class="panel-head"><div><h2>Opportunity book</h2><p>Candidates retained so we can measure whether approvals and rejects age well.</p></div></div><div id="opportunity-book" class="card-list compact"></div></div></div>
+    </section>
 
-        <div class="two-col">
-          <div class="panel">
-            <div class="panel-head">
-              <div>
-                <h2>Open positions</h2>
-                <p>Live operating view with range status and economics.</p>
-              </div>
-              <button class="btn small" id="new-position-btn">Prepare open</button>
-            </div>
-            <div id="positions-list" class="position-list"></div>
-          </div>
+    <section id="strategy-section" class="section">
+      <div class="section-hero"><div><h2>Strategy Lab</h2><p>Turn a pool into an actionable Core or Tactical plan with historical range evidence.</p></div></div>
+      <div class="panel strategy-form"><div class="form-grid"><div class="field"><label>Chain</label><select id="lab-chain"><option>BASE</option><option>ETHEREUM</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option><option>ROBINHOOD_CHAIN</option></select></div><div class="field grow"><label>Pool address</label><input id="lab-address" placeholder="Select a pool from Opportunities or paste address"></div><div class="field"><label>Style</label><select id="lab-sleeve"><option value="CORE_INCOME">Core income</option><option value="TACTICAL_CAMPAIGN">Tactical campaign</option></select></div><div class="field"><label>History</label><select id="lab-days"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option></select></div><div class="field"><label>Capital (USD basis)</label><input id="lab-capital" type="number" value="5000" min="1"></div><div class="field"><label>Monthly target %</label><input id="lab-target" type="number" value="10" min="0" step="0.5"></div><div class="field action-field"><button id="lab-run-btn" class="btn">Generate strategy</button></div></div></div>
+      <div id="lab-result" class="lower"><div class="empty-state">Select an opportunity and choose Core or Tactical. The Lab will recommend ranges and show why.</div></div>
+    </section>
 
-          <div class="panel">
-            <div class="panel-head">
-              <div>
-                <h2>Attention queue</h2>
-                <p>Highest deterministic edge risk first.</p>
-              </div>
-            </div>
-            <div id="attention-list" class="attention-list"></div>
-          </div>
-        </div>
+    <section id="execution-section" class="section">
+      <div class="section-hero"><div><h2>Execution Desk</h2><p>Build and simulate a Uniswap V3 position here when the Uniswap UI is unavailable. Your browser wallet signs; LP Manager never receives a private key.</p></div><div class="top-actions"><span id="execution-wallet-chip" class="status-chip">Wallet not connected</span><button id="execution-connect-btn" class="btn secondary">Connect browser wallet</button></div></div>
+      <div class="panel"><div class="panel-head"><div><h2>1. Load pool</h2><p>Use a pool selected by Scout/Strategy Lab or paste its address.</p></div></div><div class="form-grid"><div class="field"><label>Chain</label><select id="exec-chain"><option>BASE</option><option>ETHEREUM</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option><option>ROBINHOOD_CHAIN</option></select></div><div class="field grow"><label>Pool address</label><input id="exec-pool" placeholder="0x…"></div><div class="field action-field"><button id="exec-load-btn" class="btn">Load pool</button></div></div><div id="exec-pool-info" class="lower"></div></div>
+      <div class="two-col wide-left lower"><div class="panel"><div class="panel-head"><div><h2>2. Position builder</h2><p>Set an execution range. Enter either token amount and LP Manager will quote the paired amount from the live V3 price/range.</p></div><span id="exec-live-price" class="status-chip warn">Live quote idle</span></div><div class="form-grid"><div class="field"><label id="exec-lower-label">Lower range</label><input id="exec-lower" type="number" step="any"></div><div class="field"><label id="exec-upper-label">Upper range</label><input id="exec-upper" type="number" step="any"></div><div class="field"><label id="exec-amount0-label">Token 0 amount</label><input id="exec-amount0" type="number" step="any" value="0"></div><div class="field"><label id="exec-amount1-label">Token 1 amount</label><input id="exec-amount1" type="number" step="any" value="0"></div><div class="field"><label>Optional native ETH to wrap</label><input id="exec-wrap" type="number" step="any" value="0"></div><div class="field"><label>Slippage bps</label><input id="exec-slippage" type="number" value="100" min="0" max="5000"></div><div class="field action-field"><button id="exec-build-btn" class="btn">Build & simulate</button></div></div><div class="notice lower"><b>Auto-balance:</b> the most recently edited token amount is treated as authoritative. The other side is recalculated from the current tick and selected range; the final mint is still simulated before signing.</div><div id="exec-build-result" class="lower"></div></div><div class="panel"><div class="panel-head"><div><h2>3. Manual wallet authority</h2></div></div><div class="feature-card"><b>Safety model</b><span>LP Manager constructs and simulates calls. You explicitly approve each browser-wallet transaction. Server signing and autonomous broadcast remain blocked.</span></div><label class="confirm-row lower"><input id="exec-confirm" type="checkbox"> I have reviewed the token amounts, range, chain and contract calls.</label><div id="exec-sign-area" class="lower"><div class="empty-state">Build a transaction plan first.</div></div></div></div>
+    </section>
 
-        <div class="two-col lower">
-          <div class="panel">
-            <div class="panel-head">
-              <div>
-                <h2>Recent decisions</h2>
-                <p>Explainable plan history.</p>
-              </div>
-            </div>
-            <div id="decisions-list" class="timeline"></div>
-          </div>
-          <div class="panel">
-            <div class="panel-head">
-              <div>
-                <h2>Prepared actions</h2>
-                <p>Audit trail for close, collect and open intentions.</p>
-              </div>
-            </div>
-            <div id="actions-list" class="timeline"></div>
-          </div>
-        </div>
-      </section>
+    <section id="replay-section" class="section">
+      <div class="section-hero"><div><h2>Replay</h2><p>Would the manager have behaved sensibly with only information available at the time?</p></div><div class="top-actions"><button id="replay-core-btn" class="btn secondary">Core regression demo</button><button id="replay-tactical-btn" class="btn secondary">Tactical regression demo</button></div></div>
+      <div class="four-col" id="replay-explainer"><div class="feature-card"><b>1. Warm-up</b><span>Only historical candles known before entry choose the range.</span></div><div class="feature-card"><b>2. Walk forward</b><span>Price advances candle-by-candle through the same risk/event engine.</span></div><div class="feature-card"><b>3. Economics</b><span>Where volume/TVL data exists, fee and net-return estimates are calculated with assumptions shown.</span></div><div class="feature-card"><b>4. Audit</b><span>Each decision is compared with what happened next.</span></div></div>
+      <div class="panel lower"><div class="panel-head"><div><h2>Replay runs</h2><p>Historical/campaign tests and synthetic regression checks. Audit verdicts are summarised inside each replay rather than as a detached list.</p></div></div><div id="replay-runs" class="card-list"></div></div>
+    </section>
 
-      <section id="positions-section" class="section">
-        <div class="panel">
-          <div class="panel-head">
-            <div>
-              <h2>All positions</h2>
-              <p>Open and closed positions with explicit range state.</p>
-            </div>
-            <button class="btn" id="new-position-btn-2">Prepare open</button>
-          </div>
-          <div id="all-positions-table"></div>
-        </div>
-      </section>
+    <section id="decisions-section" class="section">
+      <div class="section-hero"><div><h2>Decision Journal</h2><p>Latest actionable view first; older messages stay available as history rather than repeating in the main feed.</p></div></div>
+      <div class="filter-row"><button class="pill active" data-decision-filter="ALL">Active + opportunities</button><button class="pill" data-decision-filter="OPEN_POSITION">Open positions</button><button class="pill" data-decision-filter="OPPORTUNITY">Opportunities</button><button class="pill" data-decision-filter="CLOSED_POSITION">Closed history</button><button class="pill" data-decision-sleeve="CORE_INCOME">Core</button><button class="pill" data-decision-sleeve="TACTICAL_CAMPAIGN">Tactical</button></div>
+      <div id="decision-journal" class="decision-list"></div>
+    </section>
 
-      <section id="opportunities-section" class="section">
-        <div class="panel">
-          <div class="panel-head"><div><h2>Two-sleeve scout</h2><p>Core income and tactical campaigns are screened, scored and managed differently.</p></div></div>
-          <div id="strategy-sleeves" class="position-list"></div>
-        </div>
-        <div class="panel lower">
-          <div class="panel-head"><div><h2>Live pool browser</h2><p>Current Uniswap V3 pools from market data. Open a pool for TVL, volume, price movement, OHLC and live replay.</p></div><div class="top-actions"><select id="live-scout-chain"><option>BASE</option><option>ETHEREUM</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option><option>ROBINHOOD_CHAIN</option></select><button id="live-scout-btn" class="btn small">Load live pools</button></div></div>
-          <div id="live-pool-list" class="position-list"><div class="empty-state">Choose a chain and load live pools.</div></div>
-        </div>
-        <div class="two-col lower">
-          <div class="panel"><div class="panel-head"><div><h2>Cross-chain universe</h2><p>Discovery is no longer Robinhood-only. Protocol adapters feed a common candidate model.</p></div></div><div id="scout-universe" class="attention-list"></div></div>
-          <div class="panel"><div class="panel-head"><div><h2>Scout pipeline</h2><p>Headline APR never gets direct authority.</p></div></div>
-            <div class="roadmap"><span>Multi-chain discover</span><b>→</b><span>Quality gates</span><b>→</b><span>Core + tactical scoring</span><b>→</b><span>Range durability</span><b>→</b><span>Sentiment where required</span><b>→</b><span>Approve</span></div>
-            <p class="meta">Core prioritises asset conviction, liquidity/fee stability, long-horizon range residence and low lifecycle drag. Tactical prioritises short-horizon net yield, momentum/sentiment, campaign economics and rapid exit/redeployment.</p>
-          </div>
-          <div class="panel"><div class="panel-head"><div><h2>Opportunity book</h2><p>Persistent candidates, including rejects, so we can measure whether scout decisions age well.</p></div></div><div id="opportunity-book" class="attention-list"></div></div>
-        </div>
-      </section>
+    <section id="automation-section" class="section">
+      <div class="section-hero"><div><h2>Automation Centre</h2><p>Control what the manager may monitor, analyse and prepare. Signing remains structurally blocked.</p></div></div>
+      <div class="two-col wide-left"><div class="panel"><div class="panel-head"><div><h2>Authority policy</h2></div></div><div id="automation-controls" class="automation-list"></div></div><div class="panel"><div class="panel-head"><div><h2>Safety boundary</h2></div></div><div id="automation-safety"></div></div></div>
+      <div class="panel lower"><div class="panel-head"><div><h2>Scheduled and event-driven work</h2><p>Cheap deterministic monitoring runs on cadence. Strategy/AI wake on material changes or much slower sleeve checkpoints so we react quickly without paying AI to repeat itself.</p></div></div><div id="automation-jobs"></div></div>
+    </section>
 
-      <section id="replay-section" class="section">
-        <div class="panel">
-          <div class="panel-head"><div><h2>Replay Lab</h2><p>Walk-forward historical testing through the same deterministic strategy path. Range selection cannot see future candles.</p></div><div class="top-actions"><button id="replay-core-btn" class="btn small">Run Core demo</button><button id="replay-tactical-btn" class="btn secondary small">Run Tactical demo</button></div></div>
-          <div class="roadmap"><span>Warm-up history</span><b>→</b><span>Select range</span><b>→</b><span>Replay candle-by-candle</span><b>→</b><span>Wake strategy/AI</span><b>→</b><span>Audit decisions</span></div>
-          <p class="meta">OHLC-only runs test behaviour and range survival. Exact historical LP profit remains unavailable until fee-growth/liquidity/token-inventory history is connected; the replay refuses to fabricate it.</p>
-        </div>
-        <div class="two-col lower">
-          <div class="panel"><div class="panel-head"><div><h2>Replay runs</h2><p>Persisted scenarios and summary metrics.</p></div></div><div id="replay-runs" class="attention-list"></div></div>
-          <div class="panel"><div class="panel-head"><div><h2>Outcome audit</h2><p>Was the manager's historical decision supported by what happened next?</p></div></div><div id="outcome-audits" class="attention-list"></div></div>
-        </div>
-      </section>
-
-      <section id="decisions-section" class="section">
-        <div class="panel"><div class="panel-head"><div><h2>Decision journal</h2><p>Every material strategy decision and its trigger.</p></div></div><div id="decision-journal" class="timeline"></div></div>
-      </section>
-
-      <section id="automation-section" class="section">
-        <div class="panel">
-          <div class="panel-head"><div><h2>Autonomy ladder</h2><p>Capability is deliberately staged.</p></div></div>
-          <div class="autonomy-grid">
-            <div class="auto-stage active"><b>0</b><strong>Observe</strong><span>Live/read-only data</span></div>
-            <div class="auto-stage active"><b>1</b><strong>Recommend</strong><span>Plans & decision tickets</span></div>
-            <div class="auto-stage active"><b>2</b><strong>Prepare</strong><span>Unsigned transaction plans</span></div>
-            <div class="auto-stage"><b>3</b><strong>Approve</strong><span>Manual wallet confirmation</span></div>
-            <div class="auto-stage"><b>4</b><strong>Policy auto</strong><span>Bounded collection/rebalance</span></div>
-          </div>
-        </div>
-      </section>
-
-      <section id="system-section" class="section">
-        <div class="panel"><div class="panel-head"><div><h2>Live data configuration</h2><p>Only configuration presence is shown; secret values are never returned to the browser.</p></div><button id="live-refresh-btn-system" class="btn small">Refresh wallet now</button></div><div id="live-status"></div></div>
-        <div class="two-col lower">
-          <div class="panel"><div class="panel-head"><div><h2>Execution boundary</h2></div><button id="support-bundle-btn" class="btn secondary small">Build support bundle</button></div><pre id="execution-json"></pre></div>
-          <div class="panel"><div class="panel-head"><div><h2>Legacy sources</h2></div></div><pre id="legacy-json"></pre></div>
-        </div>
-      </section>
-    </main>
-  </div>
-
-  <div id="modal" class="modal hidden">
-    <div class="modal-card">
-      <button class="modal-close" id="modal-close">×</button>
-      <div id="modal-content"></div>
-    </div>
-  </div>
-
-  <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js"></script>
+    <section id="system-section" class="section">
+      <div class="section-hero"><div><h2>System</h2><p>Provider health, execution limits and diagnostics without exposing secrets.</p></div><div class="top-actions"><button id="support-bundle-btn" class="btn secondary">Support bundle</button><button id="system-refresh-btn" class="btn">Refresh live data</button></div></div>
+      <div class="two-col"><div class="panel"><div class="panel-head"><div><h2>RPC & providers</h2></div><button id="rpc-test-btn-2" class="btn secondary small">Run health test</button></div><div id="system-rpcs" class="card-list compact"></div></div><div class="panel"><div class="panel-head"><div><h2>AI intelligence</h2></div></div><div id="system-ai"></div></div></div>
+      <div class="two-col lower"><div class="panel"><div class="panel-head"><div><h2>Execution authority</h2></div></div><div id="system-execution"></div></div><div class="panel"><div class="panel-head"><div><h2>Legacy integration</h2></div></div><div id="system-legacy"></div></div></div>
+    </section>
+  </main>
+</div>
+<div id="modal" class="modal hidden"><div class="modal-card"><button id="modal-close" class="modal-close">×</button><div id="modal-content"></div></div></div>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
 </body>
 </html>

@@ -41,7 +41,20 @@ CREATE TABLE IF NOT EXISTS positions (
     directional_bias TEXT NOT NULL DEFAULT 'NEUTRAL',
     inventory_intent TEXT NOT NULL DEFAULT 'BALANCED',
     target_hold_days REAL NOT NULL DEFAULT 3.0,
-    monitoring_class TEXT NOT NULL DEFAULT 'ACTIVE'
+    monitoring_class TEXT NOT NULL DEFAULT 'ACTIVE',
+    display_name TEXT NOT NULL DEFAULT '',
+    campaign_label TEXT NOT NULL DEFAULT '',
+    entry_thesis TEXT NOT NULL DEFAULT '',
+    exit_goal TEXT NOT NULL DEFAULT '',
+    lifecycle_stage TEXT NOT NULL DEFAULT 'ACTIVE',
+    cost_basis_quality TEXT NOT NULL DEFAULT 'UNKNOWN',
+    strategy_version TEXT NOT NULL DEFAULT 'v0.8',
+    pool_address TEXT NOT NULL DEFAULT '',
+    range_unit TEXT NOT NULL DEFAULT 'TOKEN_PRICE_USD',
+    closed_at REAL NOT NULL DEFAULT 0,
+    reported_net_pnl REAL NOT NULL DEFAULT 0,
+    reported_net_pnl_pct REAL NOT NULL DEFAULT 0,
+    pnl_quality TEXT NOT NULL DEFAULT 'UNKNOWN'
 );
 CREATE TABLE IF NOT EXISTS decisions (
     id TEXT PRIMARY KEY,
@@ -53,7 +66,9 @@ CREATE TABLE IF NOT EXISTS decisions (
     summary TEXT NOT NULL,
     rationale TEXT NOT NULL,
     trigger TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'OPEN'
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    source TEXT NOT NULL DEFAULT 'DETERMINISTIC',
+    evidence_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS actions (
     id TEXT PRIMARY KEY,
@@ -95,6 +110,11 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
     updated_at REAL NOT NULL,
     snapshot_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS wallet_snapshots (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    updated_at REAL NOT NULL,
+    snapshot_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS opportunities (
     id TEXT PRIMARY KEY,
     chain TEXT NOT NULL,
@@ -127,6 +147,7 @@ class Store:
         with self.connect() as con:
             con.executescript(SCHEMA)
             self._migrate_positions(con)
+            self._migrate_decisions(con)
 
     @staticmethod
     def _migrate_positions(con: sqlite3.Connection) -> None:
@@ -137,10 +158,34 @@ class Store:
             "inventory_intent": "TEXT NOT NULL DEFAULT 'BALANCED'",
             "target_hold_days": "REAL NOT NULL DEFAULT 3.0",
             "monitoring_class": "TEXT NOT NULL DEFAULT 'ACTIVE'",
+            "display_name": "TEXT NOT NULL DEFAULT ''",
+            "campaign_label": "TEXT NOT NULL DEFAULT ''",
+            "entry_thesis": "TEXT NOT NULL DEFAULT ''",
+            "exit_goal": "TEXT NOT NULL DEFAULT ''",
+            "lifecycle_stage": "TEXT NOT NULL DEFAULT 'ACTIVE'",
+            "cost_basis_quality": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+            "strategy_version": "TEXT NOT NULL DEFAULT 'v0.8'",
+            "pool_address": "TEXT NOT NULL DEFAULT ''",
+            "range_unit": "TEXT NOT NULL DEFAULT 'TOKEN_PRICE_USD'",
+            "closed_at": "REAL NOT NULL DEFAULT 0",
+            "reported_net_pnl": "REAL NOT NULL DEFAULT 0",
+            "reported_net_pnl_pct": "REAL NOT NULL DEFAULT 0",
+            "pnl_quality": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
         }
         for name, ddl in additions.items():
             if name not in existing:
                 con.execute(f"ALTER TABLE positions ADD COLUMN {name} {ddl}")
+
+    @staticmethod
+    def _migrate_decisions(con: sqlite3.Connection) -> None:
+        existing = {row[1] for row in con.execute("PRAGMA table_info(decisions)").fetchall()}
+        additions = {
+            "source": "TEXT NOT NULL DEFAULT 'DETERMINISTIC'",
+            "evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for name, ddl in additions.items():
+            if name not in existing:
+                con.execute(f"ALTER TABLE decisions ADD COLUMN {name} {ddl}")
 
     def upsert_position(self, position: Position) -> None:
         data = position.to_dict()
@@ -173,14 +218,21 @@ class Store:
         d = decision.to_dict()
         with self.connect() as con:
             con.execute(
-                "INSERT OR REPLACE INTO decisions(id,position_id,created_at,severity,action,confidence,summary,rationale,trigger,status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                tuple(d[k] for k in ("id","position_id","created_at","severity","action","confidence","summary","rationale","trigger","status")),
+                "INSERT OR REPLACE INTO decisions(id,position_id,created_at,severity,action,confidence,summary,rationale,trigger,status,source,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (d["id"],d["position_id"],d["created_at"],d["severity"],d["action"],d["confidence"],d["summary"],d["rationale"],d["trigger"],d["status"],d.get("source") or "DETERMINISTIC",json.dumps(d.get("evidence") or {},sort_keys=True)),
             )
 
     def list_decisions(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as con:
             rows = con.execute("SELECT * FROM decisions ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
-        return [dict(r) for r in rows]
+        out=[]
+        for r in rows:
+            row=dict(r)
+            if "evidence_json" in row:
+                try: row["evidence"] = json.loads(row.pop("evidence_json") or "{}")
+                except Exception: row["evidence"] = {}
+            out.append(row)
+        return out
 
     def record_action(self, *, position_id: str | None, action_type: str, mode: str, status: str, payload: dict[str, Any], result: dict[str, Any] | None = None) -> dict[str, Any]:
         row = {
@@ -313,6 +365,34 @@ class Store:
         except Exception:
             return default
 
+
+    def find_position_by_token(self, chain: str, token_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row = con.execute("SELECT * FROM positions WHERE chain=? AND token_id=? ORDER BY CASE source WHEN 'live_chain' THEN 0 WHEN 'historical_pool_reconstruction' THEN 1 WHEN 'legacy_campaign_ledger' THEN 2 ELSE 3 END LIMIT 1", (chain, str(token_id))).fetchone()
+        return dict(row) if row else None
+
+    def update_position_metadata(self, position_id: str, **fields: Any) -> dict[str, Any] | None:
+        allowed = {"display_name","campaign_label","entry_thesis","exit_goal","lifecycle_stage","cost_basis_quality","strategy_version","strategy_sleeve","directional_bias","inventory_intent","target_hold_days","monitoring_class","notes"}
+        payload = {k:v for k,v in fields.items() if k in allowed}
+        if not payload:
+            return self.get_position(position_id)
+        sql = "UPDATE positions SET " + ",".join(f"{k}=?" for k in payload) + " WHERE id=?"
+        with self.connect() as con:
+            cur=con.execute(sql, [*payload.values(), position_id])
+        return self.get_position(position_id) if cur.rowcount else None
+
+    def save_wallet_snapshot(self, snapshot: dict[str, Any]) -> None:
+        with self.connect() as con:
+            con.execute("INSERT INTO wallet_snapshots(id,updated_at,snapshot_json) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at,snapshot_json=excluded.snapshot_json", (time.time(), json.dumps(snapshot,sort_keys=True)))
+
+    def get_wallet_snapshot(self) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row=con.execute("SELECT updated_at,snapshot_json FROM wallet_snapshots WHERE id=1").fetchone()
+        if not row: return None
+        payload=json.loads(row[1] or "{}")
+        payload["stored_at"]=float(row[0])
+        return payload
+
     def save_position_snapshot(self, position_id: str, snapshot: dict[str, Any]) -> None:
         with self.connect() as con:
             con.execute(
@@ -331,7 +411,7 @@ class Store:
 
     def live_token_ids(self, chain: str) -> set[int]:
         with self.connect() as con:
-            rows = con.execute("SELECT token_id FROM positions WHERE source='live_chain' AND chain=? AND token_id IS NOT NULL", (chain,)).fetchall()
+            rows = con.execute("SELECT token_id FROM positions WHERE chain=? AND token_id IS NOT NULL AND (status='OPEN' OR source='live_chain')", (chain,)).fetchall()
         out=set()
         for row in rows:
             try: out.add(int(row[0]))
@@ -345,6 +425,29 @@ class Store:
             for pid in missing:
                 con.execute("UPDATE positions SET status='CLOSED',notes=notes || ? WHERE id=?", ("\nClosed by live reconciliation: NFT no longer owned by configured wallet.", pid))
         return len(missing)
+
+    def archive_superseded_legacy_delta(self, authoritative_token_ids: set[str]) -> int:
+        """Keep old campaign-ledger rows for audit but remove them from active product views.
+
+        The legacy bot auto-numbered DELTA records independently of the later
+        pool reconstruction, so calling them LP1/LP2/LP3 creates false identity.
+        Once authoritative research history is imported, unmatched legacy rows
+        are marked archived rather than deleted.
+        """
+        keep={str(x) for x in authoritative_token_ids if str(x)}
+        with self.connect() as con:
+            rows=con.execute("SELECT id,token_id,display_name FROM positions WHERE source='legacy_campaign_ledger' AND upper(pair) LIKE '%DELTA%'").fetchall()
+            changed=0
+            for row in rows:
+                token=str(row[1] or '')
+                if token and token in keep:
+                    continue
+                name=str(row[2] or 'Legacy DELTA campaign')
+                if not name.startswith('Legacy '):
+                    name='Legacy '+name
+                con.execute("UPDATE positions SET monitoring_class='ARCHIVED_SUPERSEDED',display_name=?,campaign_label='LEGACY_ARCHIVE',notes=notes || ? WHERE id=?",(name,"\nSuperseded in product views by imported DELTA pool-history reconstruction.",str(row[0])))
+                changed+=1
+        return changed
 
     def purge_demo_positions(self) -> int:
         with self.connect() as con:

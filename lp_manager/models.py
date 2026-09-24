@@ -35,6 +35,20 @@ class Position:
     inventory_intent: str = "BALANCED"
     target_hold_days: float = 3.0
     monitoring_class: str = "ACTIVE"
+    # v0.6 product metadata. Defaults keep the v0.5 constructor/API compatible.
+    display_name: str = ""
+    campaign_label: str = ""
+    entry_thesis: str = ""
+    exit_goal: str = ""
+    lifecycle_stage: str = "ACTIVE"
+    cost_basis_quality: str = "UNKNOWN"
+    strategy_version: str = "v0.8"
+    pool_address: str = ""
+    range_unit: str = "TOKEN_PRICE_USD"
+    closed_at: float = 0.0
+    reported_net_pnl: float = 0.0
+    reported_net_pnl_pct: float = 0.0
+    pnl_quality: str = "UNKNOWN"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -52,6 +66,10 @@ class Decision:
     rationale: str
     trigger: str
     status: str = "OPEN"
+    source: str = "DETERMINISTIC"
+    evidence: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        out["evidence"] = out.get("evidence") or {}
+        return out

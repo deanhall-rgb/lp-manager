@@ -21,6 +21,11 @@ class Settings:
     thegraph_api_key: str = ""
     live_refresh_seconds: int = 60
     position_scan_blocks: int = 500_000
+    auto_import_legacy: bool = True
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5.6-terra"
+    ai_web_search: bool = False
+    ai_enabled: bool = True
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -31,8 +36,6 @@ def _bool(name: str, default: bool) -> bool:
 
 
 def _load_env_files(root: Path) -> Path:
-    # Priority: existing process environment > LP Manager .env > legacy bot .env.
-    # Blank values in the LP Manager .env do not erase a working legacy value.
     process_keys = set(os.environ)
     root_values = dotenv_values(root / ".env") if (root / ".env").exists() else {}
     legacy_hint = os.getenv("LP_MANAGER_LEGACY_ROOT") or root_values.get("LP_MANAGER_LEGACY_ROOT") or str(root.parent)
@@ -44,10 +47,10 @@ def _load_env_files(root: Path) -> Path:
         os.environ[str(key)] = str(value)
     return Path(os.getenv("LP_MANAGER_LEGACY_ROOT", str(legacy_root))).resolve()
 
+
 def load_settings(project_root: Path | None = None) -> Settings:
     root = Path(project_root or Path(__file__).resolve().parents[1]).resolve()
     legacy_root = _load_env_files(root)
-
     data_dir = Path(os.getenv("LP_MANAGER_DATA_DIR", str(root / "data"))).resolve()
     return Settings(
         project_root=root,
@@ -62,4 +65,9 @@ def load_settings(project_root: Path | None = None) -> Settings:
         thegraph_api_key=os.getenv("THEGRAPH_API_KEY", "").strip(),
         live_refresh_seconds=max(15, int(os.getenv("LP_MANAGER_LIVE_REFRESH_SECONDS", "60"))),
         position_scan_blocks=max(1000, int(os.getenv("LP_MANAGER_POSITION_SCAN_BLOCKS", "500000"))),
+        auto_import_legacy=_bool("LP_MANAGER_AUTO_IMPORT_LEGACY", True),
+        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-terra").strip() or "gpt-5.6-terra",
+        ai_web_search=_bool("LP_MANAGER_AI_WEB_SEARCH", False),
+        ai_enabled=_bool("LP_MANAGER_AI_ENABLED", True),
     )

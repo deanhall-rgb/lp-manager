@@ -52,12 +52,20 @@ def position_economics(position: dict[str, Any]) -> dict[str, float]:
     il = _f(position.get("estimated_il"))
     gas = _f(position.get("gas_costs"))
     principal_change = current - capital
-    net = principal_change + unclaimed + realised + il - gas
+    calculated_net = principal_change + unclaimed + realised + il - gas
+    quality = str(position.get("pnl_quality") or "UNKNOWN").upper()
+    reported = _f(position.get("reported_net_pnl"))
+    reported_pct = _f(position.get("reported_net_pnl_pct"))
+    use_reported = quality not in {"", "UNKNOWN", "CALCULATED_ONLY"}
+    net = reported if use_reported else calculated_net
+    net_pct = reported_pct if use_reported and reported_pct != 0 else ((net / capital * 100.0) if capital > 0 else 0.0)
     return {
         "principal_change": principal_change,
         "fees_total": unclaimed + realised,
         "net_profit": net,
-        "net_return_pct": (net / capital * 100.0) if capital > 0 else 0.0,
+        "net_return_pct": net_pct,
+        "pnl_quality": quality if use_reported else "CALCULATED_ONLY",
+        "calculated_net_profit": calculated_net,
     }
 
 

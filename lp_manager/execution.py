@@ -13,8 +13,9 @@ from .transaction_plan import TransactionPlan, validate_transaction_plan
 class ExecutionService:
     """Safety boundary between dashboard intent and fund-moving code.
 
-    v0.1 is BUILD ONLY. It can call legacy deterministic builders that create
-    inspectable unsigned transaction plans, but it will not sign or broadcast.
+    Server-side execution remains build-only. V0.8 can prepare/simulate calls and
+    hand an explicitly approved transaction to the browser wallet; private keys
+    never enter the server process and autonomous broadcast remains unavailable.
     """
 
     def __init__(self, settings: Settings, store: Store):
@@ -29,10 +30,10 @@ class ExecutionService:
             "prepare_close": True,
             "prepare_collect": True,
             "prepare_open": True,
-            "manual_wallet_stage_available": False,
+            "manual_wallet_stage_available": True,
             "live_v3_collect_simulation": True,
             "live_v3_close_simulation": True,
-            "safety_message": "V0.5 reads live positions and can build/simulate V3 collect/close calls. It never signs or broadcasts blockchain transactions.",
+            "safety_message": "V0.8 can build/simulate V3 open/collect/close calls. Explicitly approved open calls may be signed by the connected browser wallet; the server never stores keys or autonomously signs/broadcasts.",
         }
 
     def _legacy_import(self, module_name: str):

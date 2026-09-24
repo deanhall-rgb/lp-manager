@@ -10,6 +10,10 @@ from .event_engine import detect_material_event, review_due
 from .outcome_audit import audit_decision, audit_range_outcome
 from .range_lab import candle_activity_fraction, rank_range_candidates
 from .strategy import deterministic_plan, edge_risk
+from .economics_engine import estimate_replay_economics
+from .market_regime import analyse_regime
+from .targets import performance_targets
+from .asset_lens import pool_price_lens
 
 
 def _f(v: Any, default: float = 0.0) -> float:
@@ -80,6 +84,8 @@ def run_replay(
     initial_capital: float = 1000.0,
     inventory_intent: str = "BALANCED",
     future_audit_candles: int = 24,
+    pool_context: dict[str, Any] | None = None,
+    target_monthly_pct: float = 10.0,
 ) -> dict[str, Any]:
     rows = normalize_candles(candles)
     if len(rows) <= warmup_candles + 2:
@@ -192,11 +198,37 @@ def run_replay(
 
     observed_fee_values = [_f(r.get("position_fee_value"), 0.0) for r in rows[warmup_candles:]]
     has_fee_observations = any(v != 0.0 for v in observed_fee_values)
-    economics = {
-        "mode": "OBSERVED_POSITION_FEE_SERIES" if has_fee_observations else "UNAVAILABLE_WITH_OHLC_ONLY",
-        "observed_fees": round(sum(observed_fee_values), 6) if has_fee_observations else None,
-        "note": "Exact LP P&L requires historical fee-growth/liquidity and token-inventory reconstruction; OHLC-only replay intentionally does not invent it.",
-    }
+    replay_rows = rows[warmup_candles:]
+    regime_at_entry = analyse_regime(history)
+    if has_fee_observations:
+        economics = {
+            "mode": "OBSERVED_POSITION_FEE_SERIES",
+            "estimated": False,
+            "observed_fees": round(sum(observed_fee_values), 6),
+            "note": "Fee values were supplied by the historical position series.",
+        }
+    elif pool_context:
+        economics = estimate_replay_economics(
+            replay_rows, activities, pool_context, capital=initial_capital,
+            width_pct=float(chosen["candidate"].get("width_pct") or 25.0),
+            regime=regime_at_entry, interventions=material_events,
+        )
+    else:
+        economics = {
+            "mode": "UNAVAILABLE_WITH_OHLC_ONLY",
+            "estimated": True,
+            "observed_fees": None,
+            "note": "No pool TVL/fee context was supplied. Range behaviour is real; fee/P&L economics are unavailable for this replay.",
+        }
+    if economics.get("estimated_fees_day_usd") is not None:
+        target_comparison = performance_targets(
+            capital=initial_capital, target_monthly_pct=target_monthly_pct,
+            actual_today=float(economics.get("estimated_fees_day_usd") or 0),
+            actual_7d=float(economics.get("estimated_fees_day_usd") or 0)*7.0,
+            actual_30d=max(0.0,float(economics.get("estimated_net_month_run_rate_usd") or 0)),
+        )
+    else:
+        target_comparison = performance_targets(capital=initial_capital,target_monthly_pct=target_monthly_pct)
 
     result = {
         "id": uuid.uuid4().hex,
@@ -210,6 +242,8 @@ def run_replay(
         "protocol": protocol,
         "input": {"candles": len(rows), "warmup_candles": warmup_candles, "lookback_candles": len(history)},
         "range_selection": {"spot_at_selection": spot, "chosen": chosen, "top_candidates": ranked[:5]},
+        "price_lens": pool_price_lens(pool_context or {}, lower=lower, upper=upper, current=spot) if pool_context else {"primary_display":"TOKEN_PRICE"},
+        "regime_at_entry": regime_at_entry,
         "summary": {
             "replay_candles": len(activities),
             "active_time_pct": round(sum(activities) / len(activities) * 100.0, 3) if activities else 0.0,
@@ -221,6 +255,7 @@ def run_replay(
             "audit_verdict_counts": verdict_counts,
         },
         "economics": economics,
+        "target_comparison": target_comparison,
         "decisions": decisions,
         "timeline": timeline,
     }

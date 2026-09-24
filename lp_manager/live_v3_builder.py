@@ -76,3 +76,71 @@ def build_close(snapshot: dict[str, Any], *, slippage_bps: int = 100, ttl_second
     except Exception as exc:
         simulation = {"ok": False, "method": "eth_call", "error": str(exc)}
     return {"call": tx, "simulation": simulation, "manager": cfg.position_manager, "token_id": str(token_id), "liquidity": str(liquidity), "slippage_bps": slip, "amount0_min_raw": str(min0), "amount1_min_raw": str(min1), "deadline": deadline}
+
+# --- v0.8 manual-wallet position opening ---------------------------------
+import math
+from decimal import Decimal, ROUND_FLOOR, ROUND_CEILING
+from .pool_chain import read_v3_pool_metadata
+from .v3_math import display_range_to_ticks, quote_paired_amount
+
+ALLOWANCE_ABI=[{"inputs":[{"name":"owner","type":"address"},{"name":"spender","type":"address"}],"name":"allowance","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"}]
+APPROVE_ABI=[{"inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}]
+MINT_ABI=[{"inputs":[{"components":[{"name":"token0","type":"address"},{"name":"token1","type":"address"},{"name":"fee","type":"uint24"},{"name":"tickLower","type":"int24"},{"name":"tickUpper","type":"int24"},{"name":"amount0Desired","type":"uint256"},{"name":"amount1Desired","type":"uint256"},{"name":"amount0Min","type":"uint256"},{"name":"amount1Min","type":"uint256"},{"name":"recipient","type":"address"},{"name":"deadline","type":"uint256"}],"name":"params","type":"tuple"}],"name":"mint","outputs":[{"name":"tokenId","type":"uint256"},{"name":"liquidity","type":"uint128"},{"name":"amount0","type":"uint256"},{"name":"amount1","type":"uint256"}],"stateMutability":"payable","type":"function"}]
+WETH_ABI=[{"inputs":[],"name":"deposit","outputs":[],"stateMutability":"payable","type":"function"}]
+
+
+def _raw_units(amount: float, decimals: int) -> int:
+    return int((Decimal(str(max(0.0,float(amount)))) * (Decimal(10) ** int(decimals))).to_integral_value(rounding=ROUND_FLOOR))
+
+
+def _tick_from_raw_ratio(raw_token1_per_token0: float) -> float:
+    if raw_token1_per_token0 <= 0: raise ValueError("Range price must be positive")
+    return math.log(raw_token1_per_token0) / math.log(1.0001)
+
+
+def _ticks_from_display_range(meta: dict[str,Any], lower: float, upper: float) -> tuple[int,int]:
+    return display_range_to_ticks(meta, lower, upper)
+
+
+def quote_open_position_amounts(*, chain: str, pool_address: str, lower_price: float, upper_price: float, known_side: int, known_amount: float) -> dict[str,Any]:
+    meta=read_v3_pool_metadata(chain,pool_address)
+    if not meta.get("ok"):
+        raise ValueError(f"Pool metadata unavailable: {meta.get('error')}")
+    quote=quote_paired_amount(meta,lower=lower_price,upper=upper_price,known_side=known_side,known_amount=known_amount)
+    return {"ok":True,"chain":chain_config(chain).key,"pool":meta,"quote":quote}
+
+
+def build_open_position(*, chain: str, pool_address: str, wallet: str, lower_price: float, upper_price: float, amount0: float, amount1: float, slippage_bps: int = 100, ttl_seconds: int = 1200, wrap_native_amount: float = 0.0) -> dict[str,Any]:
+    cfg=chain_config(chain)
+    if not Web3.is_address(wallet): raise ValueError("Configured wallet is invalid")
+    meta=read_v3_pool_metadata(chain,pool_address)
+    if not meta.get("ok"): raise ValueError(f"Pool metadata unavailable: {meta.get('error')}")
+    t0,t1=meta["token0"],meta["token1"]; fee=int(meta["fee_tier"]); tick_lower,tick_upper=_ticks_from_display_range(meta,float(lower_price),float(upper_price))
+    a0=_raw_units(amount0,int(t0["decimals"])); a1=_raw_units(amount1,int(t1["decimals"]));
+    if a0<=0 and a1<=0: raise ValueError("Enter at least one token amount")
+    slip=max(0,min(5000,int(slippage_bps))); min0=a0*(10000-slip)//10000; min1=a1*(10000-slip)//10000; deadline=int(time.time())+max(60,int(ttl_seconds))
+    w3=build_read_only_web3(cfg.rpc_url()); owner=Web3.to_checksum_address(wallet); manager=Web3.to_checksum_address(cfg.position_manager)
+    approval_calls=[]; allowances={}
+    for token_info,desired in ((t0,a0),(t1,a1)):
+        if desired<=0: continue
+        token=w3.eth.contract(address=Web3.to_checksum_address(token_info["address"]),abi=ALLOWANCE_ABI+APPROVE_ABI)
+        allowance=int(token.functions.allowance(owner,manager).call()); allowances[token_info["symbol"]]=str(allowance)
+        if allowance<desired:
+            data=_encode(token,"approve",[manager,desired])
+            approval_calls.append({"chainId":cfg.chain_id,"to":token_info["address"],"from":owner,"data":data,"value":"0x0","purpose":f"APPROVE_{token_info['symbol']}","amount_raw":str(desired)})
+    wrap_call=None
+    if wrap_native_amount>0:
+        wrapped=str(cfg.wrapped_native or "").lower(); token_addresses={str(t0["address"]).lower(),str(t1["address"]).lower()}
+        if not wrapped or wrapped not in token_addresses: raise ValueError("Pool does not use the chain wrapped-native token")
+        weth=w3.eth.contract(address=Web3.to_checksum_address(cfg.wrapped_native),abi=WETH_ABI); data=_encode(weth,"deposit",[])
+        wrap_call={"chainId":cfg.chain_id,"to":cfg.wrapped_native,"from":owner,"data":data,"value":hex(w3.to_wei(float(wrap_native_amount),"ether")),"purpose":"WRAP_NATIVE"}
+    manager_c=w3.eth.contract(address=manager,abi=MINT_ABI)
+    params=(Web3.to_checksum_address(t0["address"]),Web3.to_checksum_address(t1["address"]),fee,tick_lower,tick_upper,a0,a1,min0,min1,owner,deadline)
+    mint_data=_encode(manager_c,"mint",[params]); mint_call={"chainId":cfg.chain_id,"to":manager,"from":owner,"data":mint_data,"value":"0x0","purpose":"MINT_POSITION"}
+    simulation={"ok":False,"method":"eth_call","status":"AWAITING_PREREQUISITES" if (approval_calls or wrap_call) else "READY"}
+    gas_estimate=None
+    if not approval_calls and not wrap_call:
+        try:
+            raw=w3.eth.call({"to":manager,"from":owner,"data":mint_data}); gas_estimate=int(w3.eth.estimate_gas({"to":manager,"from":owner,"data":mint_data})); simulation={"ok":True,"method":"eth_call","return_data":_hex(raw),"status":"READY"}
+        except Exception as exc: simulation={"ok":False,"method":"eth_call","error":str(exc),"status":"SIMULATION_FAILED"}
+    return {"ok":True,"chain":cfg.key,"pool":meta,"wallet":owner,"display_range":{"lower":lower_price,"upper":upper_price,"unit":(meta.get("price_lens") or {}).get("unit"),"label":(meta.get("price_lens") or {}).get("unit_label")},"ticks":{"lower":tick_lower,"upper":tick_upper,"spacing":meta.get("tick_spacing")},"amounts":{"token0":amount0,"token1":amount1,"token0_raw":str(a0),"token1_raw":str(a1)},"allowances":allowances,"wrap_call":wrap_call,"approval_calls":approval_calls,"mint_call":mint_call,"simulation":simulation,"gas_estimate":gas_estimate,"slippage_bps":slip,"deadline":deadline,"execution_order":(["WRAP_NATIVE"] if wrap_call else [])+[c["purpose"] for c in approval_calls]+["MINT_POSITION"],"manual_wallet_required":True,"signing_server_side":False}

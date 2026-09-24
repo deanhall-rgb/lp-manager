@@ -9,7 +9,7 @@ import uvicorn
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Start LP Manager v0.5 Live")
+    parser = argparse.ArgumentParser(description="Start LP Manager v0.8.4 Live Position Discovery Patch")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
