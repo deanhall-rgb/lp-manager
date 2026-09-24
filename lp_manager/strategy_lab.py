@@ -95,6 +95,7 @@ def _pool_from_onchain(chain: str, address: str, onchain: dict[str, Any], fallba
 def analyse_live_pool(
     market, chain: str, address: str, *, sleeve: str, days: int, capital: float,
     target_monthly_pct: float = 10.0, pool_fallback: dict[str, Any] | None = None,
+    store=None,
 ) -> dict[str, Any]:
     """V0.8.7 compatibility view over the unified profit/range engine.
 
@@ -107,7 +108,7 @@ def analyse_live_pool(
     requested_days=max(1,min(90,int(days)))
     sleeve_u=str(sleeve or "CORE_INCOME").upper()
     result=recommend_profit_range(
-        market,store=_NullCalibrationStore(),chain=str(chain or "").upper(),address=address,
+        market,store=(store or _NullCalibrationStore()),chain=str(chain or "").upper(),address=address,
         horizon_days=requested_days,capital=max(1.0,float(capital)),sleeve=sleeve_u,
         monthly_target_pct=max(0.0,float(target_monthly_pct)),
         history_days=max(30,min(180,requested_days*6)),
