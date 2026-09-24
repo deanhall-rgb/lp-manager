@@ -318,3 +318,176 @@ def test_strategy_and_profit_lab_share_one_recommendation(monkeypatch):
     assert strategy["recommended_range"]["lower"] == pytest.approx(profit["recommended_range"]["lower"])
     assert strategy["recommended_range"]["upper"] == pytest.approx(profit["recommended_range"]["upper"])
     assert strategy["policy_replay"]["range_selection"]["source"] == "UNIFIED_PROFIT_ENGINE"
+
+class MultiTierMarket:
+    def __init__(self):
+        self.token0="0x"+"1"*40
+        self.token1="0x"+"2"*40
+        self.pools={
+            "0x001":self._row("0x001",1.0,20_000_000,80_000_000),
+            "0x005":self._row("0x005",5.0,50_000_000,80_000_000),
+            "0x030":self._row("0x030",30.0,1_000_000,80_000_000),
+        }
+
+    def _row(self,address,fee,volume,tvl):
+        return {
+            "chain":"ETHEREUM","protocol":"UNISWAP_V3","pool_address":address,
+            "pair":"WETH/USDC",
+            "base_token":{"address":self.token0,"symbol":"WETH"},
+            "quote_token":{"address":self.token1,"symbol":"USDC"},
+            "tvl_usd":tvl,"volume_24h_usd":volume,"fee_tier_bps":fee,
+            "base_token_price_usd":2700.0,"quote_token_price_usd":1.0,
+            "pool_created_at":"2025-01-01T00:00:00Z",
+        }
+
+    def pool(self,chain,address):
+        return deepcopy(self.pools[address])
+
+    def token_pools(self,chain,token_address,page=1):
+        return [deepcopy(x) for x in self.pools.values()] if page==1 else []
+
+    def ohlcv_days(self,chain,address,days,timeframe="hour",token="base"):
+        n=max(240,int(days)*(24 if timeframe=="hour" else 1))
+        step=3600 if timeframe=="hour" else 86400
+        vol=float(self.pools[address]["volume_24h_usd"])/(24 if timeframe=="hour" else 1)
+        return [{
+            "timestamp":1_800_000_000+i*step,
+            "open":2670+i*0.03,"high":2705+i*0.03,"low":2640+i*0.03,
+            "close":2680+i*0.03,"volume":vol,
+        } for i in range(n)]
+
+
+def test_acceptance_weth_usdc_selects_best_fee_tier_and_profit_guardrailed_range(monkeypatch):
+    market=MultiTierMarket()
+    def onchain(chain,address):
+        row=market.pools[address]
+        fee=float(row["fee_tier_bps"])
+        return {
+            "ok":True,"chain":"ETHEREUM","pool_address":address,
+            "token0":{"address":market.token0,"symbol":"WETH","decimals":18},
+            "token1":{"address":market.token1,"symbol":"USDC","decimals":6},
+            "fee_tier":int(fee*100),"fee_tier_bps":fee,"tick_spacing":10,
+            "price_lens":{
+                "current":2700.0,"lower":2700.0,"upper":2700.0,
+                "unit":"USDC_PER_WETH","unit_label":"USDC per WETH",
+                "token0_symbol":"WETH","token1_symbol":"USDC",
+            },
+        }
+    monkeypatch.setattr("lp_manager.profit_engine.read_v3_pool_metadata",onchain)
+
+    out=recommend_profit_range(
+        market,MemoryStore(),"ETHEREUM","0x005",
+        horizon_days=7,capital=1000,sleeve="CORE_INCOME",
+        monthly_target_pct=10,compare_fee_tiers=True,
+    )
+    tiers={round(float(x["fee_tier_bps"]),2) for x in out["pool_comparison"]}
+    assert {1.0,5.0,30.0}.issubset(tiers)
+    assert out["pool_selection"]["selected_pool_address"]=="0x005"
+    best=out["recommended_range"]
+    assert best["selection_guardrail"]["eligible"] is True
+    assert best["forecast"]["expected_net_usd"] <= best["forecast"]["expected_fees_usd"] + 1e-9
+    assert best["forecast"]["forecast_fee_apr_pct"] > 0
+    assert best["inventory_outcomes"]["below"]["asset"]=="WETH"
+    assert best["inventory_outcomes"]["above"]["asset"]=="USDC"
+    assert best["inventory_outcomes"]["distance_below_current_pct"] >= 2.5
+    assert best["inventory_outcomes"]["distance_above_current_pct"] >= 2.5
+    assert len(out["alternatives"]) >= 2
+
+
+def test_acceptance_weth_usdg_full_profit_result_never_uses_one_dollar_execution_price(monkeypatch):
+    monkeypatch.setattr(
+        "lp_manager.profit_engine.read_v3_pool_metadata",
+        lambda chain,address:_usdgweth_onchain(address),
+    )
+    out=recommend_profit_range(
+        OrientationMarket(),MemoryStore(),"ROBINHOOD_CHAIN","0xpool",
+        horizon_days=7,capital=1000,sleeve="CORE_INCOME",
+        compare_fee_tiers=False,
+    )
+    assert out["spot"] > 2000
+    assert out["price_lens"]["unit"]=="USDG_PER_WETH"
+    assert out["recommended_range"]["lower"] > 100
+    assert out["recommended_range"]["forecast"]["expected_net_usd"] <= out["recommended_range"]["forecast"]["expected_fees_usd"] + 1e-9
+
+
+def test_acceptance_p4_p5_p6_have_authoritative_identity_opening_refs_and_accounting(tmp_path):
+    from lp_manager.db import Store
+    from lp_manager.live_positions import ScanResult, reconcile_scan
+    from lp_manager.live_service import _AUTHORITATIVE_OPENINGS
+
+    refs=_AUTHORITATIVE_OPENINGS["ROBINHOOD_CHAIN"]
+    expected={1289953:"P4",1290067:"P5",1290077:"P6"}
+    assert set(refs)==set(expected)
+
+    db_path=tmp_path/"v087.sqlite3"
+    store=Store(db_path)
+    positions=[]
+    for i,(token_id,label) in enumerate(expected.items(),start=1):
+        opened=1_800_000_000.0+i*60
+        entry=900.0+i*25
+        snapshot={
+            "read_at":opened+2*86400,
+            "pool_address":"0x"+"3"*40,
+            "range_unit":"USDG_PER_WETH",
+            "opening_transaction_hash":refs[token_id],
+            "opened_at":opened,
+            "token0":{"symbol":"WETH","amount":0.20,"unclaimed":0.002,"price_usd":2700.0},
+            "token1":{"symbol":"USDG","amount":450.0,"unclaimed":2.0,"price_usd":1.0},
+            "entry_evidence":{
+                "transaction_hash":refs[token_id],"opened_at":opened,
+                "entry_value_usd":entry,"quality":"ONCHAIN_MINT_RECONSTRUCTED",
+                "token0_amount":0.18,"token1_amount":430.0,
+            },
+        }
+        positions.append({
+            "pair":"WETH/USDG","lower_price":2400.0,"upper_price":3100.0,
+            "current_price":2700.0,"current_value":990.0+i*10,
+            "unclaimed_fees":7.4+i,"token_id":str(token_id),
+            "active_liquidity":True,"opened_at":opened,"snapshot":snapshot,
+        })
+
+    reconcile_scan(store,ScanResult("ROBINHOOD_CHAIN",True,positions,latest_block=999))
+    for token_id,label in expected.items():
+        row=store.find_position_by_token("ROBINHOOD_CHAIN",str(token_id))
+        assert row is not None
+        assert str(row["display_name"]).startswith(label)
+        assert row["opened_at"] > 0
+        assert row["capital_value"] > 0
+        snap=store.get_position_snapshot(row["id"])
+        assert snap["opening_transaction_hash"]==refs[token_id]
+        acct=position_accounting(row,snap,store.get_setting(f"fees:tracker:{row['id']}",{}) or {})
+        assert acct["cost_basis_usd"] > 0
+        assert acct["fees_earned_usd"] >= 0
+        assert acct["absolute_pnl_incl_fees_usd"] == pytest.approx(acct["lp_plus_fees_usd"]-acct["cost_basis_usd"],abs=0.01)
+
+
+def test_next_capital_allocator_exposes_expected_downside_efficiency_intervention_and_concentration():
+    from lp_manager.capital_allocation import rank_capital_candidates
+    rows=[
+        {
+            "chain":"ETHEREUM","pair":"WETH/USDC","expected_net_usd":28.0,
+            "expected_net_pct":2.8,"expected_fees_usd":32.0,"low_net_usd":14.0,
+            "confidence":"HIGH","recommendation":{"recommended_range":{
+                "analysis":{"excursions":1},"forecast":{"expected_intervention_cost_usd":1.0}
+            }},
+        },
+        {
+            "chain":"BASE","pair":"WETH/USDC","expected_net_usd":25.0,
+            "expected_net_pct":2.5,"expected_fees_usd":29.0,"low_net_usd":18.0,
+            "confidence":"MODERATE","recommendation":{"recommended_range":{
+                "analysis":{"excursions":0},"forecast":{"expected_intervention_cost_usd":0.5}
+            }},
+        },
+    ]
+    existing=[{"chain":"ETHEREUM","pair":"WETH/USDC","current_value":5000.0}]
+    ranked=rank_capital_candidates(rows,capital_usd=1000.0,open_positions=existing)
+    assert ranked
+    for row in ranked:
+        evidence=row["allocation_evidence"]
+        assert "expected_net" in evidence
+        assert "downside_case" in evidence
+        assert "fee_efficiency" in evidence
+        assert "intervention_quality" in evidence
+        assert "existing_pair_concentration_pct" in evidence
+        assert "existing_chain_concentration_pct" in evidence
+
