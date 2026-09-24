@@ -15,6 +15,7 @@ from .market_data import GeckoTerminalClient
 from .models import Position
 from .rpc_client import build_read_only_web3
 from .price_units import display_lens
+from .fee_metrics import observed_fee_metrics
 
 TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
 UINT128_MAX = 2**128 - 1
@@ -270,16 +271,23 @@ def _auto_sleeve(pair: str) -> str:
 
 
 def _live_display_name(store, token_id: str, pair: str) -> str:
-    """Stable operator labels: historical LP1-3, current/future live positions P4+."""
-    key="live:auto-labels:v085"
+    """Stable operator labels: historical LP1-3, authoritative current P4-P6."""
+    key="live:auto-labels:v087"
     mapping=store.get_setting(key,{}) or {}
     tid=str(token_id)
+    authoritative={"1289953":"P4","1290067":"P5","1290077":"P6"}
+    if tid in authoritative:
+        if mapping.get(tid) != authoritative[tid]:
+            mapping[tid]=authoritative[tid]
+            store.set_setting(key,mapping)
+        return f"{authoritative[tid]} · {pair}"
     if tid not in mapping:
-        used=[]
+        used=[4,5,6]
         for value in mapping.values():
             m=re.match(r"P(\d+)$",str(value or ""),re.I)
-            if m: used.append(int(m.group(1)))
-        next_no=max([3,*used])+1
+            if m:
+                used.append(int(m.group(1)))
+        next_no=max([6,*used])+1
         mapping[tid]=f"P{next_no}"
         store.set_setting(key,mapping)
     return f"{mapping[tid]} · {pair}"
@@ -334,6 +342,12 @@ def _rolling_fee_tracker(store, position_id: str, snapshot: dict[str,Any], opene
         "fees_24h_usd":rolling(86400),"fees_7d_usd":rolling(7*86400),"fees_30d_usd":rolling(30*86400),
         "annualised_fee_pace_pct":pace_apr,"age_days":age_days,"quality":"TOKEN_AMOUNT_DELTA_TRACKER",
     }
+    observed=observed_fee_metrics(out,float(capital_value or 0))
+    out["display_annualised_fee_apr_pct"]=observed.get("since_open_annualised_fee_apr_pct")
+    out["spot_1d_annualised_fee_apr_pct"]=observed.get("spot_1d_annualised_fee_apr_pct")
+    out["annualisation_suppressed"]=observed.get("annualisation_suppressed")
+    out["observation_confidence"]=observed.get("confidence")
+    out["observation_warning"]=observed.get("warning")
     store.set_setting(key,out)
     snapshot["fee_tracking"]={k:v for k,v in out.items() if k not in {"observations","last"}}
     return out
@@ -534,6 +548,11 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                     try:
                         receipt=w3.eth.get_transaction_receipt(opening_tx)
                         opening_block=opening_block or int(receipt.get("blockNumber") or 0)
+                        if opened_at <= 0 and opening_block:
+                            try:
+                                opened_at=float(w3.eth.get_block(opening_block).get("timestamp") or 0)
+                            except Exception:
+                                pass
                         dep0,dep1=_erc20_deposits_from_receipt(receipt,pool=pool,token0=token0,token1=token1,dec0=dec0,dec1=dec1)
                         entry_tick=None
                         if opening_block:
