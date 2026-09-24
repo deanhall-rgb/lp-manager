@@ -1,3 +1,3 @@
-"""LP Manager v0.8.6 - live discovery, decision, replay and manual-wallet execution workspace."""
+"""LP Manager v0.8.7 - profitability correction and unified range/pool decision workspace."""
 
-__version__ = "0.8.6"
+__version__ = "0.8.7"
