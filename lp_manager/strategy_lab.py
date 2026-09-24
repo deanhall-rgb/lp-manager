@@ -107,12 +107,16 @@ def analyse_live_pool(
 
     requested_days=max(1,min(90,int(days)))
     sleeve_u=str(sleeve or "CORE_INCOME").upper()
+    onchain_override=read_v3_pool_metadata(str(chain or "").upper(),address)
+    fallback_with_onchain=dict(pool_fallback or {})
+    if onchain_override.get("ok"):
+        fallback_with_onchain["onchain"]=onchain_override
     result=recommend_profit_range(
         market,store=(store or _NullCalibrationStore()),chain=str(chain or "").upper(),address=address,
         horizon_days=requested_days,capital=max(1.0,float(capital)),sleeve=sleeve_u,
         monthly_target_pct=max(0.0,float(target_monthly_pct)),
         history_days=max(30,min(180,requested_days*6)),
-        pool_fallback=pool_fallback,compare_fee_tiers=True,
+        pool_fallback=(fallback_with_onchain or pool_fallback),compare_fee_tiers=True,
     )
     pool=dict(result.get("pool") or {})
     pool.setdefault("chain",result.get("chain"))
