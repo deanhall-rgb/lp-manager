@@ -415,37 +415,56 @@ def _recommend_single_pool(
         p_month = _f(econ.get("persistence_haircut_factor"), 0.65)
         p_h = _horizon_persistence(p_month, horizon)
         calibrated_day = current_day * _f(calibration.get("factor"), 1.0)
-        forecast_fees = calibrated_day * horizon * p_h
+        forecast_fees = max(0.0, calibrated_day * horizon * p_h)
         intervention_cost = max(0.0, interventions_month) * 1.5 * horizon / 30.4375
-        current_net = forecast_fees - intervention_cost
+        fee_framework = forecast_fee_metrics(
+            capital_usd=capital,
+            horizon_days=horizon,
+            expected_fees_usd=forecast_fees,
+            expected_cash_costs_usd=intervention_cost,
+        )
+        expected_net = _f(fee_framework.get("expected_net_usd"))
         train = wf.get("train") or {}
         holdout = wf.get("holdout") or {}
         historical_fee_ok = bool(wf.get("fee_economics_available"))
-        train_median = _f(train.get("net_median_usd"), current_net) if historical_fee_ok else current_net
-        train_p25 = _f(train.get("net_p25_usd"), current_net * 0.55) if historical_fee_ok else current_net * 0.55
-        train_p75 = _f(train.get("net_p75_usd"), current_net * 1.35) if historical_fee_ok else current_net * 1.35
-        # Current conditions matter most. Older training windows regularise the current
-        # forecast; the recent holdout remains untouched as validation evidence.
-        expected_net = current_net * 0.68 + train_median * 0.32 if historical_fee_ok else current_net
-        low = min(current_net * 0.55, train_p25)
-        high = max(current_net * 1.35, train_p75)
+        # Historical results validate the geometry; they no longer get blended into
+        # current cash profit, which caused V0.8.6 net profit to exceed fee income.
+        low = forecast_fees * 0.55 - intervention_cost
+        high = forecast_fees * 1.35 - intervention_cost
         current_alignment = max(0.0, 100.0 - min(100.0, abs(candidate.skew_pct - _f(regime.get("range_skew_pct"))) * 4.0))
+        inventory = _boundary_inventory_outcomes(
+            pool, regime, sleeve_u, candidate.lower, candidate.upper, spot
+        )
+        fee_break_even_days = (1.5 / calibrated_day) if calibrated_day > 0 else None
+        pool_fee_flow = pool_fee_revenue_rate(
+            _f(pool.get("volume_24h_usd")),
+            _f(econ.get("fee_tier_bps")),
+        )
         rows.append({
             "lower": candidate.lower, "upper": candidate.upper, "center": candidate.center,
             "half_width_pct": round((candidate.upper / candidate.center - 1.0) * 100.0, 3),
             "width_pct": round(candidate.width_pct, 3), "skew_pct": round(candidate.skew_pct, 3),
             "analysis": analysis, "economics": econ, "walk_forward": wf,
+            "inventory_outcomes": inventory,
             "forecast": {
                 "horizon_days": round(horizon, 3),
+                "raw_model_fee_day_usd": round(current_day, 4),
                 "fee_day_current_calibrated_usd": round(calibrated_day, 4),
                 "horizon_persistence_factor": round(p_h, 4),
                 "expected_fees_usd": round(forecast_fees, 2),
                 "expected_intervention_cost_usd": round(intervention_cost, 2),
                 "expected_net_usd": round(expected_net, 2),
                 "expected_net_pct": round(expected_net / capital * 100.0, 3),
+                "forecast_fee_apr_pct": fee_framework.get("forecast_fee_apr_pct"),
+                "forecast_fee_return_pct": fee_framework.get("forecast_fee_return_pct"),
+                "net_horizon_return_pct": fee_framework.get("net_horizon_return_pct"),
+                "spot_24h_pool_derived_fee_apr_pct": round(_f(econ.get("gross_apr_pct")), 2),
                 "low_net_usd": round(low, 2), "high_net_usd": round(high, 2),
                 "target_horizon_usd": round(target_horizon, 2),
                 "target_attainment_pct": round(expected_net / target_horizon * 100.0, 1) if target_horizon > 0 else 0.0,
+                "fee_break_even_days_one_intervention": round(fee_break_even_days, 3) if fee_break_even_days is not None else None,
+                "cash_identity": fee_framework.get("identity"),
+                "pool_fee_revenue_rate": pool_fee_flow,
             },
             "regime_alignment_score": round(current_alignment, 1),
         })
