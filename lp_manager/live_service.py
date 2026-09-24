@@ -11,6 +11,17 @@ from .market_data import GeckoTerminalClient
 
 _ADDR_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
+# Authoritative operator-provided opening references for the three live positions
+# carried into V0.8.7. They are public transaction hashes only; no signing secret
+# or private wallet material is stored.
+_AUTHORITATIVE_OPENINGS = {
+    "ROBINHOOD_CHAIN": {
+        1289953: "0x08435860b326074b65d0b3c95634a5531cef061f7017702cb123e37253b3f2a4",
+        1290067: "0xe9de48e6b7ef1f2a238febf8d8fd7bb99462a0ebd35b1f93bf4c1f885f93e92c",
+        1290077: "0x565f672e404ec8f9d2d1d6fbcd064c495a51200611dd6d96072b3a1162cd0a21",
+    }
+}
+
 
 def _valid_address(value: str) -> bool:
     return bool(_ADDR_RE.fullmatch(str(value or "").strip()))
@@ -66,6 +77,12 @@ class LiveDataService:
                     from_override = max(0, int(checkpoint) - 128) if checkpoint is not None else None
                     known = self.store.live_token_ids(c)
                     seed_evidence={}
+                    for token_id, tx_hash in (_AUTHORITATIVE_OPENINGS.get(c) or {}).items():
+                        known.add(int(token_id))
+                        seed_evidence[int(token_id)]={
+                            "transaction_hash":tx_hash,
+                            "discovery_source":"AUTHORITATIVE_OPENING_REFERENCE",
+                        }
                     for pos in self.store.list_positions("OPEN"):
                         if str(pos.get("chain") or "").upper()!=c or not pos.get("token_id"):
                             continue
@@ -75,7 +92,7 @@ class LiveDataService:
                         opened=float(snap.get("opened_at") or 0)
                         if tx or block or opened:
                             try:
-                                seed_evidence[int(pos.get("token_id"))]={"transaction_hash":tx,"block_number":block,"opened_at":opened,"discovery_source":snap.get("discovery_source") or "PERSISTED_OPENING_EVIDENCE"}
+                                seed_evidence[int(pos.get("token_id"))]={**seed_evidence.get(int(pos.get("token_id")),{}),"transaction_hash":tx or seed_evidence.get(int(pos.get("token_id")),{}).get("transaction_hash",""),"block_number":block,"opened_at":opened,"discovery_source":snap.get("discovery_source") or seed_evidence.get(int(pos.get("token_id")),{}).get("discovery_source") or "PERSISTED_OPENING_EVIDENCE"}
                             except Exception:
                                 pass
                     f = pool.submit(
