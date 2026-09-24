@@ -48,6 +48,8 @@ from .pool_chain import read_v3_pool_metadata
 from .profit_engine import recommend_profit_range
 from .profit_dashboard import portfolio_profit_scorecard
 from .profit_calibration import fee_calibration_for_pool, calibration_samples
+from .portfolio_accounting import position_accounting
+from .fee_metrics import observed_fee_metrics
 
 
 class ScoutIntent(BaseModel):
@@ -396,6 +398,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             snap = store.get_position_snapshot(str(p.get("id")))
             if snap:
                 row["live_snapshot"] = snap
+            tracker=store.get_setting(f"fees:tracker:{p.get('id')}", {}) or {}
+            row["accounting"]=position_accounting(p,snap or {},tracker)
+            row["fee_metrics"]=observed_fee_metrics(tracker,float(p.get("capital_value") or p.get("current_value") or 0))
             enriched.append(row)
         open_positions = [p for p in enriched if p["status"] == "OPEN"]
         attention = sorted(
@@ -491,6 +496,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     live.market,store,str(pool.get("chain") or "").upper(),str(pool.get("pool_address") or ""),
                     horizon_days=max(1/24.0,min(90.0,float(intent.horizon_days))),capital=capital,
                     sleeve=intent.sleeve,monthly_target_pct=max(0.0,float(intent.monthly_target_pct)),pool_fallback=pool,
+                    compare_fee_tiers=False,
                 )
                 b=r.get("recommended_range") or {}; f=b.get("forecast") or {}
                 deep.append({
@@ -765,7 +771,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 live.market, intent.chain.upper(), intent.pool_address,
                 sleeve=sleeve, days=days,
                 capital=max(1.0,intent.capital), target_monthly_pct=max(0.0,intent.target_monthly_pct),
-                pool_fallback=pool_fallback,
+                pool_fallback=pool_fallback, store=store,
             )
             result["data_status"]="LIVE_OR_FRESH_CACHE"
             result["analysed_at"]=time.time()
