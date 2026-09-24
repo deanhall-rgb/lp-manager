@@ -134,9 +134,68 @@ class IntelligenceService:
         return self._ask("Produce the current portfolio brief.",context,fallback,purpose="PORTFOLIO_BRIEF")
 
     def position_review(self, position: dict[str, Any]) -> dict[str, Any]:
-        decision=deterministic_plan(position); risk=edge_risk(position); enriched=enrich_position(position)
-        fallback={"headline":decision.summary,"status":risk.get("state","WATCH"),"confidence":round(decision.confidence*100 if decision.confidence<=1 else decision.confidence),"recommendation":decision.action,"market_sentiment":"Not independently researched for this fallback review.","profit_case":f"Current recorded APR {float(position.get('apr_current') or 0):.1f}% with range-risk score {risk.get('score')}; economics should be re-evaluated before moving capital.","reasons":[decision.rationale],"risks":[f"Edge risk score {risk.get('score')}"],"counterargument":"Price may revert before action becomes necessary.","invalidation":"Thesis, liquidity or range state materially changes.","next_review":"Use sleeve monitoring cadence."}
-        return self._ask("Review this live LP position and recommend the next management action.",{"position":enriched,"risk":risk},fallback,purpose="POSITION_REVIEW")
+        decision=deterministic_plan(position)
+        risk=edge_risk(position)
+        enriched=enrich_position(position)
+        pid=str(position.get("id") or "")
+        tracker=self.store.get_setting(f"fees:tracker:{pid}",{}) or {}
+        snap=self.store.get_position_snapshot(pid) or {}
+        manual_horizon=bool(
+            str(position.get("entry_thesis") or "").strip()
+            or str(position.get("campaign_label") or "").strip()
+            or str(position.get("exit_goal") or "").strip()
+        )
+        opportunities=[]
+        for op in self.store.list_opportunities(12):
+            ev=op.get("evaluation") or {}
+            econ=ev.get("quick_economics") or {}
+            opportunities.append({
+                "pair":op.get("pair"),"chain":op.get("chain"),"pool_address":op.get("pool_address"),
+                "preferred_sleeve":op.get("preferred_sleeve") or ev.get("preferred_sleeve"),
+                "preferred_score":op.get("preferred_score"),
+                "estimated_operating_net_month_usd":econ.get("estimated_operating_net_month_usd",econ.get("estimated_net_month_usd")),
+                "confidence":econ.get("confidence"),
+            })
+        opportunities.sort(key=lambda x:float(x.get("estimated_operating_net_month_usd") or -1e18),reverse=True)
+        current_fee_day=float(tracker.get("fees_24h_usd") or position.get("fees_today") or 0)
+        age_days=float(tracker.get("age_days") or 0)
+        fallback={
+            "headline":decision.summary,
+            "status":risk.get("state","WATCH"),
+            "confidence":round(decision.confidence*100 if decision.confidence<=1 else decision.confidence),
+            "recommendation":decision.action,
+            "market_sentiment":"Not independently researched for this fallback review.",
+            "profit_case":(
+                f"Observed fee evidence is {current_fee_day:.2f} USD over the current 24h window with {age_days:.2f} days of tracking. "
+                "Before moving capital, compare forward fee recovery from HOLD against a fresh re-range and the best redeployment candidate after execution costs."
+            ),
+            "reasons":[decision.rationale],
+            "risks":[f"Edge risk score {risk.get('score')}"],
+            "counterargument":"Price may revert before intervention earns back gas/slippage/re-entry costs.",
+            "invalidation":"Thesis, liquidity, fee productivity or the relative economics of hold/re-range/redeploy materially changes.",
+            "next_review":"Use sleeve cadence or wake immediately on a material range/regime/fee event.",
+        }
+        context={
+            "position":enriched,
+            "risk":risk,
+            "live_snapshot":snap,
+            "fee_tracking":tracker,
+            "horizon_evidence":{
+                "target_hold_days":position.get("target_hold_days"),
+                "user_supplied":manual_horizon,
+                "instruction":"If user_supplied is false, do not treat target_hold_days as an investment thesis or exit deadline.",
+            },
+            "management_comparison":{
+                "HOLD":{"current_fee_24h_usd":current_fee_day,"observation_age_days":age_days},
+                "RERANGE":{"instruction":"Require a fresh profit/range estimate and subtract gas/slippage/re-entry friction before preferring this."},
+                "EXIT_REDEPLOY":{"best_cached_alternatives":opportunities[:5],"instruction":"Only prefer redeployment when its forward post-cost expected profit is stronger than hold/re-range with adequate confidence."},
+            },
+        }
+        return self._ask(
+            "Review this live LP position. Explicitly compare HOLD vs RE-RANGE vs EXIT/REDEPLOY on forward post-cost expected profit. "
+            "Do not infer an exit deadline from a default/unknown target_hold_days value.",
+            context,fallback,purpose="POSITION_REVIEW"
+        )
 
     def opportunity_memo(self, pool: dict[str, Any], lab: dict[str, Any] | None = None) -> dict[str, Any]:
         evaluation=pool.get("evaluation") or {}
