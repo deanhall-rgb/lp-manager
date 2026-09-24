@@ -1,5 +1,18 @@
+# LP Manager v0.8.5
 
-## V0.8.4 reliability patch
+## V0.8.5 live accounting + execution UX patch
+
+- reconstructs actual V3 mint/opening time and opening token amounts from chain/explorer evidence when available
+- upgrades first-observed cost basis to on-chain reconstructed entry value when historical WETH/stable pricing is available
+- tracks raw unclaimed-token fee deltas so Today/7d/30d fee performance and observed fee pace are no longer permanently zero
+- classifies major/stable live pairs such as WETH/USDG as CORE_INCOME by default while volatile ETH/alt pairs remain TACTICAL_CAMPAIGN
+- normalises newly-owned live NFT labels to stable P4+ identifiers without overwriting historical LP1-LP3 evidence
+- fixes Execution Desk paired-amount rendering, reduces requote churn, keeps live price polling, and improves MetaMask/EIP-6963 provider detection
+- Strategy Lab now carries explicit execution units and explains target shortfall/attainment, fee-share method and persistence haircuts instead of inflating forecasts
+- live portfolio backend refresh remains 60s by default; visible dashboard refreshes every 60s while open Execution Desk pool price refreshes every 5s and requotes at most every 15s
+
+
+## V0.8.5 reliability patch
 
 - Corrects Robinhood Chain Blockscout v2 endpoint to `https://robinhoodchain.blockscout.com/api/v2`.
 - Adds Alchemy NFT ownership as a second current-state discovery source for Uniswap V3 positions.
@@ -9,7 +22,7 @@
 - Strategy Lab reuses persisted Scout pool context instead of making a redundant pool request before OHLC.
 - Stale successful Strategy Lab results remain available during provider outages.
 
-# LP Manager v0.8.4
+# LP Manager v0.8.5
 
 V0.8 is the **decision + execution workspace** release. It keeps the read-only/live data and advisory intelligence boundaries from V0.7, fixes the current-vs-historical position authority problems exposed by the DELTA tests, improves wallet/scout/economics reliability, and adds a manual-wallet Uniswap V3 Execution Desk.
 
@@ -107,9 +120,9 @@ V0.8 release gate:
 - browser-wallet Execution Desk currently focuses on Uniswap V3 opening; collect/close signing remains a later explicit-wallet extension after more live testing
 
 
-## v0.8.4 live-position discovery patch
+## v0.8.5 live-position discovery patch
 
-V0.8.4 makes newly-opened Uniswap V3 positions a first-class live input rather than relying on legacy/manual import.
+V0.8.5 makes newly-opened Uniswap V3 positions a first-class live input rather than relying on legacy/manual import.
 
 - Current V3 position NFTs are discovered from the wallet's Blockscout-owned-NFT inventory on Robinhood Chain, then independently verified through `ownerOf`, `positions()` and pool RPC reads.
 - Transfer-log scanning remains active and checkpointed, so positions opened while LP Manager is running or offline are picked up automatically.

@@ -6,8 +6,8 @@ from typing import Any
 from .risk_engine import assess_pool_risk
 from .economics_engine import volume_quality
 
-MAJORS = {"WETH","ETH","WBTC","BTC","USDC","USDT","DAI","USDS","FRAX"}
-STABLES = {"USDC","USDT","DAI","USDS","FRAX"}
+MAJORS = {"WETH","ETH","WBTC","BTC","USDC","USDT","USDG","DAI","USDS","FRAX"}
+STABLES = {"USDC","USDT","USDG","DAI","USDS","FRAX"}
 
 
 def _age_days(value: Any) -> float:

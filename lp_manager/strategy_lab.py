@@ -184,14 +184,28 @@ def analyse_live_pool(market, chain: str, address: str, *, sleeve: str, days: in
         reasons.append(f"Operating economics estimate: ${best['economics']['estimated_operating_net_month_usd']:,.2f} net/month on ${capital:,.0f} capital")
     if not reasons: reasons.append("Candidate is testable, but evidence does not yet justify automatic approval")
     econ=best.get("economics") or {}
-    targets=performance_targets(capital=capital,target_monthly_pct=target_monthly_pct,actual_today=_f((econ.get("estimated_fee_income") or {}).get("daily")),actual_7d=_f((econ.get("estimated_fee_income") or {}).get("weekly")),actual_30d=max(0.0,_f(econ.get("estimated_operating_net_month_usd", econ.get("estimated_net_month_usd")))))
+    target_month_usd=max(0.0,float(capital))*max(0.0,float(target_monthly_pct))/100.0
+    operating_month=_f(econ.get("estimated_operating_net_month_usd",econ.get("estimated_net_month_usd")))
+    fee_month=_f((econ.get("estimated_fee_income") or {}).get("monthly"))
+    shortfall=max(0.0,target_month_usd-operating_month)
+    attainment=(operating_month/target_month_usd*100.0) if target_month_usd>0 else 0.0
+    required_daily=(target_month_usd+_f(econ.get("estimated_lifecycle_cost_month_usd")))/30.4375 if target_month_usd>0 else 0.0
+    target_diagnostics={
+        "target_monthly_pct":float(target_monthly_pct),"target_month_usd":round(target_month_usd,2),
+        "estimated_fee_month_usd":round(fee_month,2),"estimated_operating_net_month_usd":round(operating_month,2),
+        "shortfall_usd":round(shortfall,2),"attainment_pct":round(attainment,1),"target_clears":bool(target_month_usd>0 and operating_month>=target_month_usd),
+        "required_fee_day_usd":round(required_daily,2),"estimated_fee_day_usd":round(_f((econ.get("estimated_fee_income") or {}).get("daily")),2),
+        "fee_share_method":econ.get("fee_share_method"),"persistence_haircut_factor":econ.get("persistence_haircut_factor"),
+        "volume_quality":econ.get("volume_quality") or {},"confidence":econ.get("confidence"),
+    }
+    targets=performance_targets(capital=capital,target_monthly_pct=target_monthly_pct,actual_today=_f((econ.get("estimated_fee_income") or {}).get("daily")),actual_7d=_f((econ.get("estimated_fee_income") or {}).get("weekly")),actual_30d=max(0.0,operating_month))
     return {
         "pool":pool,"sleeve":sleeve,"capital":float(capital),"days":requested_days,"spot":spot,"history_samples":len(candles),
         "history_source":{"provider":history_provider,"timeframe":history_timeframe,"samples":len(candles),"requested_days":requested_days,"regime_samples":len(regime_rows),"warning":history_warning},
         "evaluation":evaluation,"policy":policy.to_dict(),"regime":regime,"recommendations":recommendations,
         "price_lens":pool_price_lens(pool,current=spot),
         "price_series":[{"timestamp":c.get("timestamp"),"close":c.get("close")} for c in candles[-240:]],
-        "recommended_range":best,"economics":econ,"target_comparison":targets,"reasons":reasons,"policy_replay":{
+        "recommended_range":best,"economics":econ,"target_comparison":targets,"target_diagnostics":target_diagnostics,"reasons":reasons,"policy_replay":{
             "id":policy_replay.get("id"),"summary":policy_replay.get("summary") or {},"range_selection":policy_replay.get("range_selection") or {},
             "economics":policy_replay.get("economics") or {},"no_lookahead":policy_replay.get("no_lookahead"),
         },

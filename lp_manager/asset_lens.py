@@ -22,11 +22,18 @@ def pool_price_lens(pool: dict[str, Any], *, lower: float | None = None, upper: 
         supply=mc/spot; supply_source="MARKET_CAP_IMPLIED"
     elif fdv > 0 and spot > 0:
         supply=fdv/spot; supply_source="FDV_IMPLIED"
+    onchain_lens=((pool.get("onchain") or {}).get("price_lens") or {})
+    explicit_unit=str(pool.get("price_unit") or onchain_lens.get("unit") or "")
+    explicit_label=str(pool.get("price_unit_label") or onchain_lens.get("unit_label") or "")
+    if not explicit_unit and base_symbol and quote_symbol:
+        explicit_unit=f"{quote_symbol.upper()}_PER_{base_symbol.upper()}"
+        explicit_label=f"{quote_symbol.upper()} per {base_symbol.upper()}"
     result={
         "base_symbol":base_symbol,"quote_symbol":quote_symbol,
         "spot_token_price_usd":spot,
         "market_cap_usd":mc or None,"fdv_usd":fdv or None,
         "implied_supply":supply,"supply_source":supply_source,
+        "unit":explicit_unit,"unit_label":explicit_label,
         "primary_display":"MARKET_CAP" if supply and base_symbol.upper() not in {"WETH","ETH","WBTC","BTC","USDC","USDT","DAI","USDG"} else "TOKEN_PRICE",
     }
     if supply:

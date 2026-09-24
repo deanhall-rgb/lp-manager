@@ -343,7 +343,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.8.4", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.8.5", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -355,7 +355,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.8.4",
+            "version": "0.8.5",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -790,7 +790,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def support_bundle():
         path = build_support_bundle(
             store, output_dir=settings.data_dir / "support",
-            extra={"version":"0.8.4", "execution":executor.capabilities(), "scout_universe":scout_universe()},
+            extra={"version":"0.8.5", "execution":executor.capabilities(), "scout_universe":scout_universe()},
         )
         return {"ok": True, "filename": path.name, "download": f"/api/support/bundle/{path.name}"}
 

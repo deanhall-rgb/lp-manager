@@ -19,7 +19,7 @@ class GeckoTerminalClient:
 
     def __init__(self, session: requests.Session | None = None):
         self.session = session or requests.Session()
-        self.session.headers.update({"Accept": "application/json;version=20230203", "User-Agent": "LP-Manager/0.8.4"})
+        self.session.headers.update({"Accept": "application/json;version=20230203", "User-Agent": "LP-Manager/0.8.5"})
         self._cache: dict[str, tuple[float, dict]] = {}
         self._last_request_at = 0.0
         # Public GeckoTerminal is rate limited and cached upstream. A small client-side
@@ -145,7 +145,7 @@ class GeckoTerminalClient:
                     f"https://api.g.alchemy.com/prices/v1/{api_key}/tokens/by-address",
                     json={"addresses":[{"network":network,"address":a} for a in batch]},
                     timeout=15,
-                    headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"LP-Manager/0.8.4"},
+                    headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"LP-Manager/0.8.5"},
                 )
                 r.raise_for_status(); payload=r.json()
                 for row in payload.get("data") or []:
@@ -180,10 +180,10 @@ class GeckoTerminalClient:
         body={**identity,"startTime":start.isoformat().replace("+00:00","Z"),"endTime":end.isoformat().replace("+00:00","Z"),"interval":interval,"withMarketData":True}
         url=f"https://api.g.alchemy.com/prices/v1/{api_key}/tokens/historical"
         try:
-            r=self.session.post(url,json=body,timeout=20,headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"LP-Manager/0.8.4"})
+            r=self.session.post(url,json=body,timeout=20,headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"LP-Manager/0.8.5"})
             if r.status_code==404 and symbol and "symbol" not in identity:
                 body={"symbol":symbol,"startTime":body["startTime"],"endTime":body["endTime"],"interval":interval,"withMarketData":True}
-                r=self.session.post(url,json=body,timeout=20,headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"LP-Manager/0.8.4"})
+                r=self.session.post(url,json=body,timeout=20,headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"LP-Manager/0.8.5"})
             r.raise_for_status(); payload=r.json()
         except Exception:
             return []
@@ -198,6 +198,20 @@ class GeckoTerminalClient:
             except Exception:
                 continue
         rows.sort(key=lambda x:x["timestamp"]); return rows
+
+    def historical_token_price_at(self, chain_key: str, token: dict[str, Any], timestamp: float) -> float:
+        """Nearest Alchemy hourly USD mark around a recent on-chain event."""
+        if not timestamp:
+            return 0.0
+        age_days=max(2,min(365,int((time.time()-float(timestamp))/86400)+2))
+        rows=self._alchemy_historical_token(chain_key,token,days=age_days,timeframe="hour")
+        if not rows:
+            return 0.0
+        nearest=min(rows,key=lambda r:abs(float(r.get("timestamp") or 0)-float(timestamp)))
+        # Avoid silently using an unrelated point if provider coverage is sparse.
+        if abs(float(nearest.get("timestamp") or 0)-float(timestamp)) > 6*3600:
+            return 0.0
+        return _float(nearest.get("price_usd"))
 
     def alchemy_pool_history(self, chain_key: str, onchain: dict[str, Any], days: int, *, timeframe: str="hour") -> list[dict[str, Any]]:
         """Construct a deterministic pair-price series from Alchemy token histories.

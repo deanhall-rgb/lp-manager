@@ -35,8 +35,9 @@ TOKEN_ABI = [
 ]
 COLLECT_ABI = [{"inputs":[{"components":[{"name":"tokenId","type":"uint256"},{"name":"recipient","type":"address"},{"name":"amount0Max","type":"uint128"},{"name":"amount1Max","type":"uint128"}],"name":"params","type":"tuple"}],"name":"collect","outputs":[{"name":"amount0","type":"uint256"},{"name":"amount1","type":"uint256"}],"stateMutability":"payable","type":"function"}]
 
-STABLES = {"USDC","USDT","DAI","USDS","USDBC","USD+","FRAX","LUSD","GHO"}
+STABLES = {"USDC","USDT","USDG","DAI","USDS","USDBC","USD+","FRAX","LUSD","GHO"}
 ETH_QUOTES = {"WETH","ETH"}
+MAJORS = {"WETH","ETH","WBTC","BTC"}
 
 
 @dataclass
@@ -121,7 +122,7 @@ def _discover_owned_token_ids_blockscout(cfg: ChainConfig, wallet: str, *, max_p
     found: set[int] = set()
     for _ in range(max(1, max_pages)):
         try:
-            r = requests.get(url, params=params, timeout=12, headers={"Accept":"application/json","User-Agent":"LP-Manager/0.8.4"})
+            r = requests.get(url, params=params, timeout=12, headers={"Accept":"application/json","User-Agent":"LP-Manager/0.8.5"})
             r.raise_for_status()
             payload = r.json()
         except Exception:
@@ -150,7 +151,7 @@ def _discover_owned_token_ids_alchemy(cfg: ChainConfig, wallet: str, *, max_page
         params=[("owner",wallet),("contractAddresses[]",cfg.position_manager),("withMetadata","false"),("pageSize","100")]
         if page_key: params.append(("pageKey",page_key))
         try:
-            r=requests.get(url,params=params,timeout=12,headers={"Accept":"application/json","User-Agent":"LP-Manager/0.8.4"})
+            r=requests.get(url,params=params,timeout=12,headers={"Accept":"application/json","User-Agent":"LP-Manager/0.8.5"})
             r.raise_for_status(); payload=r.json()
         except Exception:
             break
@@ -166,6 +167,176 @@ def _discover_owned_token_ids_alchemy(cfg: ChainConfig, wallet: str, *, max_page
         page_key=payload.get("pageKey")
         if not page_key: break
     return found
+
+
+
+
+def _parse_iso_timestamp(value: Any) -> float:
+    if not value:
+        return 0.0
+    try:
+        if isinstance(value, (int, float)):
+            return float(value)
+        from datetime import datetime
+        text = str(value).strip().replace("Z", "+00:00")
+        return float(datetime.fromisoformat(text).timestamp())
+    except Exception:
+        return 0.0
+
+
+def _address_hash(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("hash") or value.get("address") or "").lower()
+    return str(value or "").lower()
+
+
+def _discover_opening_evidence_blockscout(cfg: ChainConfig, wallet: str, token_id: int) -> dict[str, Any]:
+    """Find the mint/incoming transfer for one currently-owned V3 NFT.
+
+    Ownership APIs intentionally answer only *what is owned now*.  This lookup is
+    used once per NFT so `opened_at` means the on-chain mint/transfer time rather
+    than the first LP Manager scan.
+    """
+    base = str(getattr(cfg, "explorer_api_base", "") or "").rstrip("/")
+    if not base:
+        return {}
+    url = f"{base}/tokens/{cfg.position_manager}/instances/{int(token_id)}/transfers"
+    try:
+        r = requests.get(url, timeout=12, headers={"Accept":"application/json","User-Agent":"LP-Manager/0.8.5"})
+        r.raise_for_status(); payload = r.json()
+    except Exception:
+        return {}
+    wallet_l = str(wallet).lower()
+    candidates=[]
+    for row in (payload.get("items") or [] if isinstance(payload,dict) else []):
+        if not isinstance(row,dict):
+            continue
+        to_addr=_address_hash(row.get("to"))
+        if to_addr and to_addr != wallet_l:
+            continue
+        block=int(row.get("block_number") or 0)
+        tx=str(row.get("transaction_hash") or ((row.get("transaction") or {}).get("hash") if isinstance(row.get("transaction"),dict) else "") or "")
+        ts=_parse_iso_timestamp(row.get("timestamp"))
+        from_addr=_address_hash(row.get("from"))
+        candidates.append((block or 10**20, ts or 10**20, {
+            "block_number": block, "transaction_hash": tx, "opened_at": 0.0 if ts == 10**20 else ts,
+            "from": from_addr, "discovery_source": "BLOCKSCOUT_NFT_TRANSFER",
+        }))
+    if not candidates:
+        return {}
+    candidates.sort(key=lambda x:(x[0],x[1]))
+    return candidates[0][2]
+
+
+def _hex_topic(value: Any) -> str:
+    if hasattr(value, "hex"):
+        value=value.hex()
+    text=str(value or "")
+    return text if text.startswith("0x") else "0x"+text
+
+
+def _erc20_deposits_from_receipt(receipt: Any, *, pool: str, token0: str, token1: str, dec0: int, dec1: int) -> tuple[float,float]:
+    """Sum ERC-20 Transfer events into the pool in the opening transaction."""
+    pool_topic=_topic_address(pool).lower(); transfer=TRANSFER_TOPIC.lower()
+    totals={str(token0).lower():0, str(token1).lower():0}
+    for log in (receipt.get("logs") or []):
+        addr=str(log.get("address") or "").lower()
+        if addr not in totals:
+            continue
+        topics=log.get("topics") or []
+        if len(topics) != 3:
+            continue
+        if _hex_topic(topics[0]).lower() != transfer or _hex_topic(topics[2]).lower() != pool_topic:
+            continue
+        raw=log.get("data")
+        try:
+            if isinstance(raw,(bytes,bytearray)) or hasattr(raw,"hex"):
+                amount=int.from_bytes(bytes(raw),"big")
+            else:
+                amount=int(str(raw),16)
+            totals[addr]+=amount
+        except Exception:
+            continue
+    return totals[str(token0).lower()]/(10**int(dec0)), totals[str(token1).lower()]/(10**int(dec1))
+
+
+def _auto_sleeve(pair: str) -> str:
+    symbols={x.strip().upper() for x in str(pair or "").replace("-","/").split("/") if x.strip()}
+    if len(symbols)>=2 and symbols.issubset(STABLES):
+        return "CORE_INCOME"
+    if symbols & MAJORS and symbols & STABLES:
+        return "CORE_INCOME"
+    return "TACTICAL_CAMPAIGN"
+
+
+def _live_display_name(store, token_id: str, pair: str) -> str:
+    """Stable operator labels: historical LP1-3, current/future live positions P4+."""
+    key="live:auto-labels:v085"
+    mapping=store.get_setting(key,{}) or {}
+    tid=str(token_id)
+    if tid not in mapping:
+        used=[]
+        for value in mapping.values():
+            m=re.match(r"P(\d+)$",str(value or ""),re.I)
+            if m: used.append(int(m.group(1)))
+        next_no=max([3,*used])+1
+        mapping[tid]=f"P{next_no}"
+        store.set_setting(key,mapping)
+    return f"{mapping[tid]} · {pair}"
+
+
+def _rolling_fee_tracker(store, position_id: str, snapshot: dict[str,Any], opened_at: float, capital_value: float) -> dict[str,Any]:
+    """Track fee accrual from raw owed-token changes rather than USD mark changes.
+
+    First observation treats current unclaimed amounts as fees earned since mint.
+    Later positive token deltas are new fee accrual; negative deltas are recorded as
+    a collection lower bound and never erase previously-earned fees.
+    """
+    now=float(snapshot.get("read_at") or time.time())
+    t0=snapshot.get("token0") or {}; t1=snapshot.get("token1") or {}
+    current=[float(t0.get("unclaimed") or 0),float(t1.get("unclaimed") or 0)]
+    prices=[float(t0.get("price_usd") or 0),float(t1.get("price_usd") or 0)]
+    key=f"fees:tracker:{position_id}"
+    tr=store.get_setting(key,{}) or {}
+    cumulative=float(tr.get("cumulative_earned_usd") or 0); collected=float(tr.get("collected_lower_bound_usd") or 0)
+    last=tr.get("last") or {}; observations=list(tr.get("observations") or [])
+    if not last:
+        initial=sum(current[i]*prices[i] for i in (0,1))
+        cumulative=max(0.0,initial)
+        start=float(opened_at or now)
+        observations=[{"timestamp":start,"cumulative_earned_usd":0.0},{"timestamp":now,"cumulative_earned_usd":cumulative}]
+    else:
+        previous=[float(last.get("u0") or 0),float(last.get("u1") or 0)]
+        earned=0.0; collected_now=0.0
+        for i in (0,1):
+            delta=current[i]-previous[i]
+            if delta>=0: earned += delta*prices[i]
+            else: collected_now += (-delta)*prices[i]
+        cumulative += max(0.0,earned); collected += max(0.0,collected_now)
+        obs={"timestamp":now,"cumulative_earned_usd":cumulative}
+        if observations and now-float(observations[-1].get("timestamp") or 0)<300:
+            observations[-1]=obs
+        else:
+            observations.append(obs)
+    cutoff=now-35*86400
+    observations=[x for x in observations if float(x.get("timestamp") or 0)>=cutoff or x is observations[0]]
+    def rolling(seconds: float) -> float:
+        target=now-seconds; baseline=0.0
+        before=[x for x in observations if float(x.get("timestamp") or 0)<=target]
+        if before: baseline=float(before[-1].get("cumulative_earned_usd") or 0)
+        return max(0.0,cumulative-baseline)
+    age_days=max((now-float(opened_at or now))/86400.0,1/24)
+    pace_apr=(cumulative/max(float(capital_value or 0),1e-9))/age_days*365*100 if capital_value>0 else 0.0
+    out={
+        "first_seen_at":float(tr.get("first_seen_at") or now),"opened_at":float(opened_at or 0),
+        "last":{"timestamp":now,"u0":current[0],"u1":current[1]},
+        "cumulative_earned_usd":cumulative,"collected_lower_bound_usd":collected,"observations":observations,
+        "fees_24h_usd":rolling(86400),"fees_7d_usd":rolling(7*86400),"fees_30d_usd":rolling(30*86400),
+        "annualised_fee_pace_pct":pace_apr,"age_days":age_days,"quality":"TOKEN_AMOUNT_DELTA_TRACKER",
+    }
+    store.set_setting(key,out)
+    snapshot["fee_tracking"]={k:v for k,v in out.items() if k not in {"observations","last"}}
+    return out
 
 
 def _extract_transfer_ids_from_receipt(receipt: Any, manager: str, wallet: str) -> set[int]:
@@ -337,13 +508,62 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                     fee0, fee1 = float(pos[10]) / (10 ** dec0), float(pos[11]) / (10 ** dec1)
                 market_row = _pool_market(market, cfg.key, pool)
                 usd0, usd1 = _usd_prices(market_row, token0, token1)
+                if market and (usd0 <= 0 or usd1 <= 0):
+                    try:
+                        marks=market.token_prices(cfg.key,[token0,token1])
+                        usd0=usd0 or float(marks.get(str(token0).lower()) or 0)
+                        usd1=usd1 or float(marks.get(str(token1).lower()) or 0)
+                    except Exception:
+                        pass
                 value_usd = amount0 * usd0 + amount1 * usd1
                 fees_usd = fee0 * usd0 + fee1 * usd1
                 discovered = discovery_evidence.get(token_id) or {}
+                if not discovered.get("transaction_hash"):
+                    recovered=_discover_opening_evidence_blockscout(cfg,Web3.to_checksum_address(wallet),token_id)
+                    if recovered:
+                        discovered={**{k:v for k,v in discovered.items() if v},**recovered}
+                        discovery_evidence[token_id]=discovered
                 opened_at = float(discovered.get("opened_at") or 0)
                 if not opened_at and discovered.get("block_number"):
                     try: opened_at=float(w3.eth.get_block(int(discovered["block_number"])).get("timestamp") or 0)
                     except Exception: pass
+                entry_evidence={}
+                opening_tx=str(discovered.get("transaction_hash") or "")
+                opening_block=int(discovered.get("block_number") or 0)
+                if opening_tx:
+                    try:
+                        receipt=w3.eth.get_transaction_receipt(opening_tx)
+                        opening_block=opening_block or int(receipt.get("blockNumber") or 0)
+                        dep0,dep1=_erc20_deposits_from_receipt(receipt,pool=pool,token0=token0,token1=token1,dec0=dec0,dec1=dec1)
+                        entry_tick=None
+                        if opening_block:
+                            try: entry_tick=int(pool_c.functions.slot0().call(block_identifier=opening_block)[1])
+                            except Exception: entry_tick=None
+                        entry_ratio=_raw_price_at_tick(entry_tick,dec0,dec1) if entry_tick is not None else 0.0
+                        e0=e1=0.0; price_source="UNAVAILABLE"
+                        s0,s1=sym0.upper(),sym1.upper()
+                        if s0 in STABLES:
+                            e0=1.0; e1=(e0/entry_ratio if entry_ratio>0 else 0.0); price_source="POOL_RATIO_STABLE_QUOTE"
+                        elif s1 in STABLES:
+                            e1=1.0; e0=(entry_ratio*e1 if entry_ratio>0 else 0.0); price_source="POOL_RATIO_STABLE_QUOTE"
+                        elif market and opened_at and (s0 in ETH_QUOTES or s1 in ETH_QUOTES):
+                            eth_token={"address":token0 if s0 in ETH_QUOTES else token1,"symbol":"WETH"}
+                            eth_usd=float(market.historical_token_price_at(cfg.key,eth_token,opened_at) or 0)
+                            if eth_usd>0:
+                                if s0 in ETH_QUOTES:
+                                    e0=eth_usd; e1=(e0/entry_ratio if entry_ratio>0 else 0.0)
+                                else:
+                                    e1=eth_usd; e0=(entry_ratio*e1 if entry_ratio>0 else 0.0)
+                                price_source="ALCHEMY_HISTORICAL_WETH_PLUS_POOL_RATIO"
+                        entry_value=dep0*e0+dep1*e1 if (e0>0 or e1>0) else 0.0
+                        entry_evidence={
+                            "transaction_hash":opening_tx,"block_number":opening_block,"opened_at":opened_at,
+                            "token0_amount":dep0,"token1_amount":dep1,"token0_price_usd":e0,"token1_price_usd":e1,
+                            "entry_value_usd":entry_value,"entry_tick":entry_tick,"raw_token1_per_token0":entry_ratio,
+                            "price_source":price_source,"quality":"ONCHAIN_MINT_RECONSTRUCTED" if entry_value>0 else "ONCHAIN_AMOUNTS_ONLY",
+                        }
+                    except Exception as exc:
+                        entry_evidence={"transaction_hash":opening_tx,"block_number":opening_block,"opened_at":opened_at,"quality":"OPENING_TX_FOUND_RECONSTRUCTION_FAILED","error":str(exc)[:180]}
                 snapshot = {
                     "live": True, "chain_id": cfg.chain_id, "block_number": latest, "read_at": time.time(),
                     "discovery_source": discovered.get("discovery_source") or ("BLOCKSCOUT_OWNED_NFT" if token_id in explorer_ids else "ALCHEMY_OWNED_NFT" if token_id in alchemy_ids else "KNOWN_POSITION"),
@@ -356,7 +576,8 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                     "token1": {"address": token1, "symbol": sym1, "decimals": dec1, "amount": amount1, "unclaimed": fee1, "price_usd": usd1},
                     "display_inverted": inverted, "price_lens": lens, "range_unit": lens["unit"], "range_unit_label": lens["unit_label"],
                     "current_value_usd": value_usd, "unclaimed_fees_usd": fees_usd, "market": market_row,
-                    "data_quality": "LIVE_CHAIN_PLUS_MARKET" if market_row else "LIVE_CHAIN_NO_USD_MARKET",
+                    "entry_evidence": entry_evidence,
+                    "data_quality": "LIVE_CHAIN_PLUS_MARKET" if (usd0>0 and usd1>0) else "LIVE_CHAIN_PARTIAL_USD_MARKET",
                 }
                 unit_label=str(lens.get("unit_label") or "")
                 if " per " in unit_label:
@@ -376,13 +597,10 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
 
 
 def _next_live_display_name(store, pair: str) -> str:
-    """Allocate a stable operator-friendly P number without overwriting manual labels."""
-    highest=0
-    for row in store.list_positions():
-        name=str(row.get("display_name") or "")
-        for m in re.finditer(r"(?:^|\b)(?:P|LP)\s*(\d+)(?:\b|$)",name,re.I):
-            highest=max(highest,int(m.group(1)))
-    return f"P{highest+1} · {pair}"
+    # Backward-compatible helper for tests/older call sites. New reconciliation
+    # uses token-id backed labels so rescans never renumber existing live NFTs.
+    return _live_display_name(store, f"legacy-{int(time.time()*1000)}", pair)
+
 
 def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
     imported = errors = 0
@@ -405,29 +623,54 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
         seen.add(position_id)
         existing = matched or store.get_position(position_id)
         current_value = float(row.get("current_value") or 0)
-        # Unknown cost basis must not create fake profit. Preserve any previously imported cost basis.
-        capital_value = float(existing.get("capital_value") or 0) if existing else current_value
-        if capital_value <= 0: capital_value = current_value
-        old_notes = str(existing.get("notes") or "") if existing else ""
-        note = old_notes or "Live-chain position; cost basis defaults to first observed value until ledger reconciliation."
-        sleeve = (existing or {}).get("strategy_sleeve") or "TACTICAL_CAMPAIGN"
+        snap=dict(row.get("snapshot") or {})
+        entry=dict(snap.get("entry_evidence") or {})
+        reconstructed_capital=float(entry.get("entry_value_usd") or 0)
+        existing_quality=str((existing or {}).get("cost_basis_quality") or "UNKNOWN").upper()
+        existing_capital=float((existing or {}).get("capital_value") or 0)
+        if reconstructed_capital>0 and existing_quality in {"UNKNOWN","FIRST_OBSERVED","LEGACY_LEDGER",""}:
+            capital_value=reconstructed_capital
+            cost_quality=str(entry.get("quality") or "ONCHAIN_MINT_RECONSTRUCTED")
+        else:
+            capital_value=existing_capital or current_value
+            cost_quality=str((existing or {}).get("cost_basis_quality") or ("FIRST_OBSERVED" if current_value>0 else "UNKNOWN"))
+        row_opened=float(row.get("opened_at") or entry.get("opened_at") or 0)
+        existing_opened=float((existing or {}).get("opened_at") or 0)
+        if row_opened>0:
+            opened_at=min(x for x in (row_opened,existing_opened) if x>0) if existing_opened>0 else row_opened
+        else:
+            opened_at=existing_opened or time.time()
+        old_notes = str((existing or {}).get("notes") or "")
+        note = old_notes or "Live-chain position; entry economics are reconstructed from the opening NFT transaction when available."
+        auto_sleeve=_auto_sleeve(str(row.get("pair") or ""))
+        manual_metadata=bool(str((existing or {}).get("entry_thesis") or "").strip() or str((existing or {}).get("campaign_label") or "").strip())
+        existing_sleeve=str((existing or {}).get("strategy_sleeve") or "").upper()
+        sleeve=existing_sleeve if manual_metadata and existing_sleeve else auto_sleeve
+        if not sleeve: sleeve=auto_sleeve
+        current_name=str((existing or {}).get("display_name") or "")
+        if (not current_name) or re.match(r"^P\d+\s*·",current_name,re.I):
+            display_name=_live_display_name(store,str(row["token_id"]),str(row.get("pair") or "LP position"))
+        else:
+            display_name=current_name
+        tracker=_rolling_fee_tracker(store,position_id,snap,opened_at,capital_value)
+        realised=max(float((existing or {}).get("realised_fees") or 0),float(tracker.get("collected_lower_bound_usd") or 0))
         p = Position(
             id=position_id, protocol="UNISWAP_V3", chain=result.chain, pair=str(row["pair"]), status="OPEN" if row.get("active_liquidity") else "CLOSED",
             lower_price=float(row["lower_price"]), upper_price=float(row["upper_price"]), current_price=float(row["current_price"]),
             capital_value=capital_value, current_value=current_value, unclaimed_fees=float(row.get("unclaimed_fees") or 0),
-            fees_today=float((existing or {}).get("fees_today") or 0), fees_7d=float((existing or {}).get("fees_7d") or 0), fees_30d=float((existing or {}).get("fees_30d") or 0),
-            realised_fees=float((existing or {}).get("realised_fees") or 0), estimated_il=float((existing or {}).get("estimated_il") or 0), gas_costs=float((existing or {}).get("gas_costs") or 0),
-            apr_current=float((existing or {}).get("apr_current") or 0), apr_7d=float((existing or {}).get("apr_7d") or 0), opened_at=float((existing or {}).get("opened_at") or row.get("opened_at") or time.time()),
+            fees_today=float(tracker.get("fees_24h_usd") or 0), fees_7d=float(tracker.get("fees_7d_usd") or 0), fees_30d=float(tracker.get("fees_30d_usd") or 0),
+            realised_fees=realised, estimated_il=float((existing or {}).get("estimated_il") or 0), gas_costs=float((existing or {}).get("gas_costs") or 0),
+            apr_current=float(tracker.get("annualised_fee_pace_pct") or 0), apr_7d=float(tracker.get("annualised_fee_pace_pct") or 0), opened_at=opened_at,
             token_id=str(row["token_id"]), campaign_id=(existing or {}).get("campaign_id"), source="live_chain", notes=note,
             strategy_sleeve=sleeve, directional_bias=(existing or {}).get("directional_bias") or "NEUTRAL", inventory_intent=(existing or {}).get("inventory_intent") or "BALANCED",
-            target_hold_days=float((existing or {}).get("target_hold_days") or (30 if sleeve == "CORE_INCOME" else 3)), monitoring_class=(existing or {}).get("monitoring_class") or ("LOW_TOUCH" if sleeve == "CORE_INCOME" else "ACTIVE"),
-            display_name=((existing or {}).get("display_name") if (existing or {}).get("display_name") and str((existing or {}).get("display_name")) != str((existing or {}).get("pair") or "") else _next_live_display_name(store, str(row.get("pair") or "LP position"))),
+            target_hold_days=(30.0 if sleeve == "CORE_INCOME" and not manual_metadata else float((existing or {}).get("target_hold_days") or (30 if sleeve == "CORE_INCOME" else 3))), monitoring_class=("LOW_TOUCH" if sleeve == "CORE_INCOME" and not manual_metadata else ((existing or {}).get("monitoring_class") or "ACTIVE")),
+            display_name=display_name,
             campaign_label=(existing or {}).get("campaign_label") or "",
             entry_thesis=(existing or {}).get("entry_thesis") or "",
             exit_goal=(existing or {}).get("exit_goal") or "",
             lifecycle_stage="ACTIVE" if row.get("active_liquidity") else "CLOSED",
-            cost_basis_quality=(existing or {}).get("cost_basis_quality") or ("FIRST_OBSERVED" if not matched else "LEGACY_LEDGER"),
-            strategy_version=(existing or {}).get("strategy_version") or "v0.8",
+            cost_basis_quality=cost_quality,
+            strategy_version="v0.8.5",
             pool_address=str((row.get("snapshot") or {}).get("pool_address") or (existing or {}).get("pool_address") or ""),
             range_unit=str((row.get("snapshot") or {}).get("range_unit") or (existing or {}).get("range_unit") or "TOKEN1_PER_TOKEN0"),
             closed_at=(time.time() if not row.get("active_liquidity") else float((existing or {}).get("closed_at") or 0)),
@@ -436,7 +679,7 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
             pnl_quality=str((existing or {}).get("pnl_quality") or "UNKNOWN"),
         )
         store.upsert_position(p)
-        store.save_position_snapshot(position_id, row["snapshot"])
+        store.save_position_snapshot(position_id, snap)
         imported += 1
     # Never close an LP merely because one discovery source omitted it. Ownership
     # loss is authoritative only when ownerOf explicitly returns another owner.

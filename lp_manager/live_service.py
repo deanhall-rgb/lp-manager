@@ -65,10 +65,23 @@ class LiveDataService:
                     checkpoint = self.store.get_setting(f"live:checkpoint:{c}", None)
                     from_override = max(0, int(checkpoint) - 128) if checkpoint is not None else None
                     known = self.store.live_token_ids(c)
+                    seed_evidence={}
+                    for pos in self.store.list_positions("OPEN"):
+                        if str(pos.get("chain") or "").upper()!=c or not pos.get("token_id"):
+                            continue
+                        snap=self.store.get_position_snapshot(str(pos.get("id"))) or {}
+                        tx=str(snap.get("opening_transaction_hash") or "")
+                        block=int(snap.get("opening_block_number") or 0)
+                        opened=float(snap.get("opened_at") or 0)
+                        if tx or block or opened:
+                            try:
+                                seed_evidence[int(pos.get("token_id"))]={"transaction_hash":tx,"block_number":block,"opened_at":opened,"discovery_source":snap.get("discovery_source") or "PERSISTED_OPENING_EVIDENCE"}
+                            except Exception:
+                                pass
                     f = pool.submit(
                         scan_chain_positions, CHAINS[c], self.settings.wallet_address,
                         scan_blocks=CHAINS[c].scan_blocks(self.settings.position_scan_blocks), market=self.market,
-                        from_block_override=from_override, known_token_ids=known,
+                        from_block_override=from_override, known_token_ids=known, seed_evidence=seed_evidence,
                     )
                     futures[f] = c
                 for f in as_completed(futures):

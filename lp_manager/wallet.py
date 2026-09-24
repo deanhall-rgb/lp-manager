@@ -87,7 +87,7 @@ def _blockscout_token_addresses(chain: str, wallet: str) -> set[str]:
         return set()
     url=f"https://robinhoodchain.blockscout.com/api/v2/addresses/{wallet}/token-balances"
     try:
-        r=requests.get(url,timeout=15,headers={"Accept":"application/json","User-Agent":"LP-Manager/0.8.4"})
+        r=requests.get(url,timeout=15,headers={"Accept":"application/json","User-Agent":"LP-Manager/0.8.5"})
         r.raise_for_status(); payload=r.json()
         rows=payload if isinstance(payload,list) else (payload.get("items") or payload.get("token_balances") or []) if isinstance(payload,dict) else []
         out=set()
