@@ -222,6 +222,7 @@ def _load_pool_and_history(
     provider_quote = provider_quote_before or str((pool.get("quote_token") or {}).get("symbol") or "").upper()
     if base_symbol and provider_quote == base_symbol and provider_base != base_symbol:
         gecko_token = "quote"
+    pool["_history_token"] = gecko_token
 
     # For non-stable quoted pairs, token USD is not the execution ratio. Prefer the
     # pair-ratio history reconstructed from token histories when available.
@@ -277,14 +278,22 @@ def recommend_profit_range(
     capital = max(1.0, float(capital))
     hist_days = int(history_days or max(30, min(180, round(horizon * 6))))
     pool, onchain, candles, provider, warning = _load_pool_and_history(market, chain, address, hist_days, pool_fallback)
-    spot = _f(candles[-1].get("close")) or _f((onchain.get("price_lens") or {}).get("current")) or _f(pool.get("base_token_price_usd"))
+    # Current execution price is authoritative on-chain. Historical token-USD
+    # candles are only a path proxy and must never overwrite the live pool ratio.
+    spot = _f((onchain.get("price_lens") or {}).get("current")) or _f(candles[-1].get("close")) or _f(pool.get("base_token_price_usd"))
     if spot <= 0:
         raise ValueError("No usable current price")
     cpd = 24 if hist_days <= 45 else 1
     regime_rows = candles
     if cpd == 1:
         try:
-            recent = market.ohlcv_days(str(chain).upper(), address, min(30, hist_days), timeframe="hour")
+            try:
+                recent = market.ohlcv_days(
+                    str(chain).upper(), address, min(30, hist_days),
+                    timeframe="hour", token=str(pool.get("_history_token") or "base"),
+                )
+            except TypeError:
+                recent = market.ohlcv_days(str(chain).upper(), address, min(30, hist_days), timeframe="hour")
             if len(recent) >= 48:
                 regime_rows = recent; cpd = 24
         except Exception:
