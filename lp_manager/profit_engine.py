@@ -160,6 +160,87 @@ def _normalise(values: list[float], value: float) -> float:
     return max(0.0, min(100.0, (value - lo) / (hi - lo) * 100.0))
 
 
+def _boundary_inventory_outcomes(
+    pool: dict[str, Any], regime: dict[str, Any], sleeve: str,
+    lower: float, upper: float, spot: float,
+) -> dict[str, Any]:
+    base=str((pool.get("base_token") or {}).get("symbol") or "BASE").upper()
+    quote=str((pool.get("quote_token") or {}).get("symbol") or "QUOTE").upper()
+    stables={"USDC","USDT","USDG","DAI","USDS","USDBC","FRAX","GHO","LUSD"}
+    majors={"WETH","ETH","WBTC","BTC"}
+    bullish=str(regime.get("direction") or "").upper()=="BULLISH" or _f(regime.get("score"),50)>55
+    below_utility=55.0
+    above_utility=55.0
+    if str(sleeve).upper()=="CORE_INCOME" and base in majors and quote in stables:
+        # Falling below converts the LP toward the major asset; under a bullish
+        # thesis that can be desirable inventory rather than a strategy failure.
+        below_utility=95.0 if bullish else 82.0
+        # Rising above converts toward the stable after progressively selling the
+        # major at higher prices while earning fees.
+        above_utility=88.0
+    elif str(sleeve).upper()=="TACTICAL_CAMPAIGN":
+        below_utility=45.0
+        above_utility=65.0
+
+    below_pct=(1.0-lower/spot)*100.0 if spot>0 else 0.0
+    above_pct=(upper/spot-1.0)*100.0 if spot>0 else 0.0
+    return {
+        "distance_below_current_pct": round(below_pct, 3),
+        "distance_above_current_pct": round(above_pct, 3),
+        "below": {
+            "boundary_price": round(lower, 12),
+            "expected_inventory": f"predominantly {base}",
+            "asset": base,
+            "utility_score": round(below_utility, 1),
+            "interpretation": (
+                f"Price below range converts liquidity toward {base}; this is treated as an inventory outcome, not automatically as failure."
+            ),
+        },
+        "above": {
+            "boundary_price": round(upper, 12),
+            "expected_inventory": f"predominantly {quote}",
+            "asset": quote,
+            "utility_score": round(above_utility, 1),
+            "interpretation": (
+                f"Price above range converts liquidity toward {quote}; for a major/stable Core position this means the major was sold progressively at higher prices."
+            ),
+        },
+        "average_utility_score": round((below_utility+above_utility)/2.0, 1),
+    }
+
+
+def _diverse_alternatives(rows: list[dict[str, Any]], best: dict[str, Any], limit: int = 5) -> list[dict[str, Any]]:
+    """Return materially different geometries instead of five near-duplicates."""
+    if not rows:
+        return []
+    selected: list[dict[str, Any]]=[]
+    best_width=_f(best.get("width_pct"))
+    ranked=sorted(rows, key=lambda r: _f(r.get("profit_score")), reverse=True)
+
+    def add(row: dict[str, Any] | None, style: str):
+        if not row:
+            return
+        key=(round(_f(row.get("lower")),8), round(_f(row.get("upper")),8))
+        if any((round(_f(x.get("lower")),8),round(_f(x.get("upper")),8))==key for x in selected):
+            return
+        selected.append({**row,"alternative_style":style})
+
+    narrower=[r for r in ranked if _f(r.get("width_pct")) < best_width*0.82]
+    wider=[r for r in ranked if _f(r.get("width_pct")) > best_width*1.18]
+    directional=[r for r in ranked if abs(_f(r.get("skew_pct"))) >= max(5.0, abs(_f(best.get("skew_pct")))+2.0)]
+    add(narrower[0] if narrower else None, "TIGHTER_AGGRESSIVE")
+    add(ranked[0] if ranked and ranked[0] is not best else (ranked[1] if len(ranked)>1 else None), "BALANCED_ALTERNATIVE")
+    add(wider[0] if wider else None, "WIDER_DURABLE")
+    add(directional[0] if directional else None, "DIRECTIONAL")
+    for r in ranked:
+        if len(selected)>=limit:
+            break
+        if r is best:
+            continue
+        add(r, "OTHER_PROFITABLE")
+    return selected[:limit]
+
+
 def _load_pool_and_history(
     market, chain: str, address: str, history_days: int,
     pool_fallback: dict[str, Any] | None = None,
@@ -262,7 +343,7 @@ def _load_pool_and_history(
         )
     return pool, onchain, candles, provider, warning
 
-def recommend_profit_range(
+def _recommend_single_pool(
     market, store, chain: str, address: str, *, horizon_days: float = 7.0,
     capital: float = 1000.0, sleeve: str = "AUTO", monthly_target_pct: float = 10.0,
     history_days: int | None = None, pool_fallback: dict[str, Any] | None = None,
