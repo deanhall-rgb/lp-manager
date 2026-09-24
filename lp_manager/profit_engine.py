@@ -252,8 +252,9 @@ def _load_pool_and_history(
     provider's arbitrary base token, which made USDG/WETH look like ~1 USDG/WETH.
     """
     chain = str(chain or "").upper()
-    onchain = read_v3_pool_metadata(chain, address)
     pool = dict(pool_fallback or {}) if pool_fallback else None
+    supplied_onchain = dict((pool or {}).get("onchain") or {})
+    onchain = supplied_onchain if supplied_onchain.get("ok") else read_v3_pool_metadata(chain, address)
     pool_error = None
 
     if pool is None:
@@ -338,7 +339,7 @@ def _load_pool_and_history(
             fallback = []
         if len(fallback) >= minimum:
             candles = fallback
-            provider = "ALCHEMY_PAIR_RATIO_HISTORY"
+            provider = "ALCHEMY_TOKEN_PRICE_FALLBACK" if quote_symbol in stable_symbols else "ALCHEMY_PAIR_RATIO_HISTORY"
 
     if len(candles) < minimum:
         raise ValueError(
