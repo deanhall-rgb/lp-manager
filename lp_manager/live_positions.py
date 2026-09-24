@@ -17,7 +17,7 @@ from .rpc_client import build_read_only_web3
 from .price_units import display_lens
 from .fee_metrics import observed_fee_metrics
 
-TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
+TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().removeprefix("0x")
 UINT128_MAX = 2**128 - 1
 
 OWNER_ABI = [{"inputs":[{"name":"tokenId","type":"uint256"}],"name":"ownerOf","outputs":[{"name":"","type":"address"}],"stateMutability":"view","type":"function"}]
@@ -282,12 +282,12 @@ def _live_display_name(store, token_id: str, pair: str) -> str:
             store.set_setting(key,mapping)
         return f"{authoritative[tid]} · {pair}"
     if tid not in mapping:
-        used=[4,5,6]
+        used=[]
         for value in mapping.values():
             m=re.match(r"P(\d+)$",str(value or ""),re.I)
             if m:
                 used.append(int(m.group(1)))
-        next_no=max([6,*used])+1
+        next_no=max([3,*used])+1
         mapping[tid]=f"P{next_no}"
         store.set_setting(key,mapping)
     return f"{mapping[tid]} · {pair}"
