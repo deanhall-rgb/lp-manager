@@ -160,38 +160,103 @@ def _normalise(values: list[float], value: float) -> float:
     return max(0.0, min(100.0, (value - lo) / (hi - lo) * 100.0))
 
 
-def _load_pool_and_history(market, chain: str, address: str, history_days: int, pool_fallback: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], str, str | None]:
+def _load_pool_and_history(
+    market, chain: str, address: str, history_days: int,
+    pool_fallback: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], str, str | None]:
+    """Load one V3 pool with an execution-price history in the same units as ticks.
+
+    GeckoTerminal OHLC is token-USD history. That is only a valid proxy for a pool
+    execution ratio when the human quote asset is a USD stablecoin. V0.8.6 used the
+    provider's arbitrary base token, which made USDG/WETH look like ~1 USDG/WETH.
+    """
     chain = str(chain or "").upper()
     onchain = read_v3_pool_metadata(chain, address)
     pool = dict(pool_fallback or {}) if pool_fallback else None
     pool_error = None
+
     if pool is None:
         try:
-            pool = market.pool(chain, address)
+            if hasattr(market, "pool"):
+                pool = market.pool(chain, address)
+            elif hasattr(market, "resolve_pool"):
+                resolved, pool = market.resolve_pool(chain, address)
+                chain = str(resolved or chain).upper()
+                onchain = read_v3_pool_metadata(chain, address)
         except Exception as exc:
             pool_error = str(exc)
+
     if pool is None and onchain.get("ok"):
         pool = _pool_from_onchain(chain, address, onchain, pool_fallback)
     if pool is None:
         raise RuntimeError(pool_error or str(onchain.get("error") or "Pool context unavailable"))
+
     if onchain.get("ok"):
-        pool = {**pool, "fee_tier": onchain.get("fee_tier"), "fee_tier_bps": onchain.get("fee_tier_bps"), "tick_spacing": onchain.get("tick_spacing"), "onchain": onchain}
+        # Rebuild the provider row through the on-chain lens so pair orientation,
+        # token roles and fee tier are authoritative.
+        pool = _pool_from_onchain(chain, address, onchain, pool)
+        pool["onchain"] = onchain
+        lens = dict(onchain.get("price_lens") or {})
+        assert_sane_display_lens(lens)
+
     timeframe = "hour" if history_days <= 45 else "day"
+    minimum = 48 if timeframe == "hour" else 20
     provider = "GECKOTERMINAL_POOL_OHLC"
     warning = None
-    try:
-        candles = market.ohlcv_days(chain, address, history_days, timeframe=timeframe)
-    except Exception as exc:
-        candles = []; warning = str(exc)
-    minimum = 48 if timeframe == "hour" else 20
-    if len(candles) < minimum and hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
-        fallback = market.alchemy_pool_history(chain, onchain, history_days, timeframe=timeframe)
-        if len(fallback) >= minimum:
-            candles = fallback; provider = "ALCHEMY_TOKEN_PRICE_FALLBACK"
-    if len(candles) < minimum:
-        raise ValueError(f"Only {len(candles)} {timeframe} historical samples available" + (f"; {warning}" if warning else ""))
-    return pool, onchain, candles, provider, warning
+    candles: list[dict[str, Any]] = []
 
+    # Identify the human execution base/quote (e.g. WETH quoted in USDC/USDG).
+    unit_label = str(((onchain.get("price_lens") or {}).get("unit_label") or pool.get("price_unit_label") or ""))
+    quote_symbol = base_symbol = ""
+    if " per " in unit_label:
+        quote_symbol, base_symbol = [x.strip().upper() for x in unit_label.split(" per ", 1)]
+    stable_symbols = {"USDC","USDT","USDG","DAI","USDS","USDBC","FRAX","GHO","LUSD"}
+
+    # For stable-quoted pools, fetch the human base token's USD OHLC. WETH/USDG
+    # then uses WETH USD history, not USDG's ~$1 history.
+    gecko_token = "base"
+    provider_base = str((pool.get("base_token") or {}).get("symbol") or "").upper()
+    provider_quote = str((pool.get("quote_token") or {}).get("symbol") or "").upper()
+    if base_symbol and provider_quote == base_symbol and provider_base != base_symbol:
+        gecko_token = "quote"
+
+    # For non-stable quoted pairs, token USD is not the execution ratio. Prefer the
+    # pair-ratio history reconstructed from token histories when available.
+    if quote_symbol and quote_symbol not in stable_symbols and hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
+        try:
+            ratio_history = market.alchemy_pool_history(chain, onchain, history_days, timeframe=timeframe)
+            if len(ratio_history) >= minimum:
+                candles = ratio_history
+                provider = "ALCHEMY_PAIR_RATIO_HISTORY"
+        except Exception as exc:
+            warning = str(exc)
+
+    if not candles:
+        try:
+            try:
+                candles = market.ohlcv_days(chain, address, history_days, timeframe=timeframe, token=gecko_token)
+            except TypeError:
+                # Test/simple adapters from older releases do not expose token=.
+                candles = market.ohlcv_days(chain, address, history_days, timeframe=timeframe)
+        except Exception as exc:
+            candles = []
+            warning = str(exc)
+
+    if len(candles) < minimum and hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
+        try:
+            fallback = market.alchemy_pool_history(chain, onchain, history_days, timeframe=timeframe)
+        except Exception:
+            fallback = []
+        if len(fallback) >= minimum:
+            candles = fallback
+            provider = "ALCHEMY_PAIR_RATIO_HISTORY"
+
+    if len(candles) < minimum:
+        raise ValueError(
+            f"Only {len(candles)} {timeframe} historical samples available"
+            + (f"; {warning}" if warning else "")
+        )
+    return pool, onchain, candles, provider, warning
 
 def recommend_profit_range(
     market, store, chain: str, address: str, *, horizon_days: float = 7.0,
