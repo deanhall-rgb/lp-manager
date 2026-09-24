@@ -92,125 +92,161 @@ def _pool_from_onchain(chain: str, address: str, onchain: dict[str, Any], fallba
     return result
 
 
-def analyse_live_pool(market, chain: str, address: str, *, sleeve: str, days: int, capital: float, target_monthly_pct: float = 10.0, pool_fallback: dict[str, Any] | None = None) -> dict[str, Any]:
-    sleeve=str(sleeve or "CORE_INCOME").upper()
-    policy=policy_for(sleeve)
-    requested_chain=str(chain or "").upper()
-    requested_days=max(7,min(365,int(days)))
-    history_timeframe="day" if requested_days > 45 else "hour"
+def analyse_live_pool(
+    market, chain: str, address: str, *, sleeve: str, days: int, capital: float,
+    target_monthly_pct: float = 10.0, pool_fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """V0.8.7 compatibility view over the unified profit/range engine.
 
-    # On-chain metadata is authoritative for chain, token orientation and fee tier.
-    onchain=read_v3_pool_metadata(requested_chain,address)
-    pool_error=None
-    # A Scout candidate already contains pool TVL/volume/token context. Reuse it
-    # instead of spending another GeckoTerminal request immediately before OHLC.
-    pool=dict(pool_fallback) if isinstance(pool_fallback,dict) and pool_fallback else None
-    if pool is None:
-        try:
-            # The UI already knows the chain. Do not probe five more Gecko networks on a
-            # transient 429; that only amplifies the rate limit. Test/simple adapters may
-            # expose resolve_pool only, so retain that compatibility path.
-            if hasattr(market,"pool"):
-                pool=market.pool(requested_chain,address)
-            else:
-                resolved,pool=market.resolve_pool(requested_chain,address)
-                requested_chain=str(resolved or requested_chain).upper()
-        except Exception as exc:
-            pool_error=str(exc)
-    if pool is None:
-        if onchain.get("ok"):
-            pool=_pool_from_onchain(requested_chain,address,onchain,pool_fallback)
-        elif pool_fallback:
-            pool={**pool_fallback,"chain":requested_chain,"pool_address":address}
-        else:
-            raise RuntimeError(pool_error or str(onchain.get("error") or "Pool context unavailable"))
-    elif onchain.get("ok"):
-        pool={**pool,"fee_tier":onchain.get("fee_tier"),"fee_tier_bps":onchain.get("fee_tier_bps"),"tick_spacing":onchain.get("tick_spacing"),"onchain":onchain}
-    chain=requested_chain
+    Strategy Lab and Profit Lab used to rank different geometries. They now share
+    one economic decision engine; this function preserves the Strategy Lab API/UI
+    contract while exposing the same selected pool, range and fee maths.
+    """
+    from .profit_engine import recommend_profit_range
 
-    history_provider="GECKOTERMINAL_POOL_OHLC"
-    history_warning=None
-    try:
-        candles=market.ohlcv_days(chain,address,requested_days,timeframe=history_timeframe)
-    except TypeError:  # compatibility with simple test/fake market adapters
-        candles=market.ohlcv_days(chain,address,requested_days)
-        history_timeframe="hour"
-    except Exception as exc:
-        history_warning=str(exc)
-        candles=[]
-    minimum_samples=20 if history_timeframe=="day" else 24
-    if len(candles) < minimum_samples and hasattr(market,"alchemy_pool_history") and onchain.get("ok"):
-        fallback=market.alchemy_pool_history(chain,onchain,requested_days,timeframe=history_timeframe)
-        if len(fallback) >= minimum_samples:
-            candles=fallback
-            history_provider="ALCHEMY_TOKEN_PRICE_FALLBACK"
-    if len(candles) < minimum_samples:
-        detail=f"Only {len(candles)} historical {history_timeframe} candles available"
-        if history_warning: detail += f"; primary provider: {history_warning}"
-        raise ValueError(detail)
+    requested_days=max(1,min(90,int(days)))
+    sleeve_u=str(sleeve or "CORE_INCOME").upper()
+    result=recommend_profit_range(
+        market,store=_NullCalibrationStore(),chain=str(chain or "").upper(),address=address,
+        horizon_days=requested_days,capital=max(1.0,float(capital)),sleeve=sleeve_u,
+        monthly_target_pct=max(0.0,float(target_monthly_pct)),
+        history_days=max(30,min(180,requested_days*6)),
+        pool_fallback=pool_fallback,compare_fee_tiers=True,
+    )
+    pool=dict(result.get("pool") or {})
+    pool.setdefault("chain",result.get("chain"))
+    pool.setdefault("pool_address",result.get("pool_address"))
+    policy=policy_for(sleeve_u)
 
-    spot=_f(candles[-1].get("close")) or _f((onchain.get("price_lens") or {}).get("current")) or _f(pool.get("base_token_price_usd"))
-    regime_rows=candles
-    regime_cpd=1 if history_timeframe=="day" else 24
-    if history_timeframe=="day":
-        try:
-            recent=market.ohlcv_days(chain,address,min(30,requested_days),timeframe="hour")
-            if len(recent)>=48:
-                regime_rows=recent; regime_cpd=24
-        except Exception:
-            if hasattr(market,"alchemy_pool_history") and onchain.get("ok"):
-                recent=market.alchemy_pool_history(chain,onchain,min(30,requested_days),timeframe="hour")
-                if len(recent)>=48:
-                    regime_rows=recent; regime_cpd=24
-    regime=analyse_regime(regime_rows,candles_per_day=regime_cpd)
+    best=result.get("recommended_range") or {}
+    candidates=result.get("range_candidates") or []
+    seen=set()
+    picked=[]
+    for row in [best,*candidates]:
+        key=(round(_f(row.get("lower")),8),round(_f(row.get("upper")),8))
+        if key in seen or key==(0.0,0.0):
+            continue
+        seen.add(key); picked.append(row)
+        if len(picked)>=5:
+            break
 
-    desired=_f(regime.get("range_skew_pct"))
-    if sleeve=="CORE_INCOME":
-        skews=sorted(set([-10,-5,0,5,10,round(desired/5)*5]))
-    else:
-        skews=sorted(set([-6,-3,0,3,6,round(desired/3)*3]))
-    ranked=rank_range_candidates(candles,spot,sleeve=sleeve,skews_pct=skews)
-    raw=[_range_view(row,rank=i+1,regime=regime,pool=pool,capital=capital,history_days=requested_days) for i,row in enumerate(ranked[:16])]
-    raw.sort(key=lambda r:r["score"],reverse=True)
-    recommendations=[{**row,"rank":i} for i,row in enumerate(raw[:5],start=1)]
-    warmup=min(max(24,len(candles)//4),max(24,len(candles)-24))
-    policy_replay=run_replay(candles,sleeve=sleeve,pair=str(pool.get("pair") or "POOL"),chain=chain,protocol=str(pool.get("protocol") or "UNISWAP_V3"),warmup_candles=warmup,initial_capital=capital,pool_context=pool,target_monthly_pct=target_monthly_pct)
+    def view(row: dict[str,Any], rank: int) -> dict[str,Any]:
+        a=row.get("analysis") or {}
+        wf=row.get("walk_forward") or {}
+        excursions=int(_f(a.get("excursions")))
+        active=_f(a.get("average_horizon_activity_pct"),_f(a.get("active_time_pct")))
+        return {
+            "rank":rank,
+            "lower":_f(row.get("lower")),"upper":_f(row.get("upper")),"center":_f(row.get("center")),
+            "width_pct":_f(row.get("width_pct")),"skew_pct":_f(row.get("skew_pct")),
+            "historical_score":_f(row.get("profit_score")),"regime_alignment_score":_f(row.get("regime_alignment_score")),
+            "score":_f(row.get("profit_score")),
+            "active_time_pct":active,
+            "volume_capture_pct":_f(a.get("volume_capture_pct")),
+            "strict_survival_pct":_f(a.get("strict_horizon_survival_pct")),
+            "average_horizon_activity_pct":active,
+            "excursions":excursions,
+            "estimated_interventions_month":round(excursions*(30.4375/max(1.0,float(result.get("evidence",{}).get("history_days") or requested_days))),2),
+            "reentries":int(_f(a.get("reentries"))),
+            "longest_oor_hours":_f(a.get("longest_out_of_range_hours")),
+            "sleep_score":round(max(0.0,100.0-min(80.0,excursions*4.0)),1),
+            "economics":row.get("economics") or {},
+            "forecast":row.get("forecast") or {},
+            "walk_forward":wf,
+            "inventory_outcomes":row.get("inventory_outcomes") or {},
+            "selection_evidence":row.get("selection_evidence") or {},
+            "price_lens":row.get("price_lens") or result.get("price_lens") or {},
+        }
+
+    recommendations=[view(row,i+1) for i,row in enumerate(picked)]
+    best_view=recommendations[0] if recommendations else view(best,1)
+    forecast=best.get("forecast") or {}
+    fee_day=_f(forecast.get("fee_day_current_calibrated_usd"))
+    horizon_net=_f(forecast.get("expected_net_usd"))
+    target_horizon=max(0.0,float(capital))*max(0.0,float(target_monthly_pct))/100.0*requested_days/30.4375
+    target_diag={
+        "target_monthly_pct":float(target_monthly_pct),
+        "target_month_usd":round(max(0.0,float(capital))*max(0.0,float(target_monthly_pct))/100.0,2),
+        "estimated_fee_month_usd":round(fee_day*30.4375,2),
+        "estimated_operating_net_month_usd":round(horizon_net/requested_days*30.4375,2) if requested_days else 0.0,
+        "shortfall_usd":round(max(0.0,target_horizon-horizon_net),2),
+        "attainment_pct":round(horizon_net/target_horizon*100.0,1) if target_horizon>0 else 0.0,
+        "target_clears":bool(target_horizon>0 and horizon_net>=target_horizon),
+        "required_fee_day_usd":round(target_horizon/requested_days,2) if requested_days else 0.0,
+        "estimated_fee_day_usd":round(fee_day,2),
+        "fee_share_method":(best.get("economics") or {}).get("fee_share_method"),
+        "persistence_haircut_factor":forecast.get("horizon_persistence_factor"),
+        "volume_quality":(best.get("economics") or {}).get("volume_quality") or {},
+        "confidence":result.get("confidence"),
+    }
+    targets=performance_targets(
+        capital=float(capital),target_monthly_pct=float(target_monthly_pct),
+        actual_today=fee_day,actual_7d=fee_day*7.0,
+        actual_30d=(horizon_net/requested_days*30.4375 if requested_days else 0.0),
+    )
+    wf=best.get("walk_forward") or {}
     evaluation=preliminary_pool_evaluation(pool)
-    best=recommendations[0]
-    reasons=[]
-    if best["active_time_pct"] >= policy.desired_in_range_probability: reasons.append("Historical active time clears the sleeve durability target")
-    if best["longest_oor_hours"] <= 24: reasons.append("Historical out-of-range periods were generally short")
-    if evaluation.get("preferred_sleeve") == sleeve: reasons.append("Live pool-quality pre-score agrees with the selected sleeve")
-    reasons.extend(regime.get("reasons") or [])
-    if history_provider!="GECKOTERMINAL_POOL_OHLC": reasons.append("Historical range durability uses Alchemy token-price points because pool OHLC was unavailable/rate-limited")
-    if best.get("economics",{}).get("estimated_operating_net_month_usd") is not None:
-        reasons.append(f"Operating economics estimate: ${best['economics']['estimated_operating_net_month_usd']:,.2f} net/month on ${capital:,.0f} capital")
-    if not reasons: reasons.append("Candidate is testable, but evidence does not yet justify automatic approval")
-    econ=best.get("economics") or {}
-    target_month_usd=max(0.0,float(capital))*max(0.0,float(target_monthly_pct))/100.0
-    operating_month=_f(econ.get("estimated_operating_net_month_usd",econ.get("estimated_net_month_usd")))
-    fee_month=_f((econ.get("estimated_fee_income") or {}).get("monthly"))
-    shortfall=max(0.0,target_month_usd-operating_month)
-    attainment=(operating_month/target_month_usd*100.0) if target_month_usd>0 else 0.0
-    required_daily=(target_month_usd+_f(econ.get("estimated_lifecycle_cost_month_usd")))/30.4375 if target_month_usd>0 else 0.0
-    target_diagnostics={
-        "target_monthly_pct":float(target_monthly_pct),"target_month_usd":round(target_month_usd,2),
-        "estimated_fee_month_usd":round(fee_month,2),"estimated_operating_net_month_usd":round(operating_month,2),
-        "shortfall_usd":round(shortfall,2),"attainment_pct":round(attainment,1),"target_clears":bool(target_month_usd>0 and operating_month>=target_month_usd),
-        "required_fee_day_usd":round(required_daily,2),"estimated_fee_day_usd":round(_f((econ.get("estimated_fee_income") or {}).get("daily")),2),
-        "fee_share_method":econ.get("fee_share_method"),"persistence_haircut_factor":econ.get("persistence_haircut_factor"),
-        "volume_quality":econ.get("volume_quality") or {},"confidence":econ.get("confidence"),
-    }
-    targets=performance_targets(capital=capital,target_monthly_pct=target_monthly_pct,actual_today=_f((econ.get("estimated_fee_income") or {}).get("daily")),actual_7d=_f((econ.get("estimated_fee_income") or {}).get("weekly")),actual_30d=max(0.0,operating_month))
+    reasons=list(result.get("why") or [])
+    selection=result.get("pool_selection") or {}
+    if selection.get("explanation"):
+        reasons.append(str(selection["explanation"]))
     return {
-        "pool":pool,"sleeve":sleeve,"capital":float(capital),"days":requested_days,"spot":spot,"history_samples":len(candles),
-        "history_source":{"provider":history_provider,"timeframe":history_timeframe,"samples":len(candles),"requested_days":requested_days,"regime_samples":len(regime_rows),"warning":history_warning},
-        "evaluation":evaluation,"policy":policy.to_dict(),"regime":regime,"recommendations":recommendations,
-        "price_lens":pool_price_lens(pool,current=spot),
-        "price_series":[{"timestamp":c.get("timestamp"),"close":c.get("close")} for c in candles[-240:]],
-        "recommended_range":best,"economics":econ,"target_comparison":targets,"target_diagnostics":target_diagnostics,"reasons":reasons,"policy_replay":{
-            "id":policy_replay.get("id"),"summary":policy_replay.get("summary") or {},"range_selection":policy_replay.get("range_selection") or {},
-            "economics":policy_replay.get("economics") or {},"no_lookahead":policy_replay.get("no_lookahead"),
+        "pool":pool,
+        "sleeve":sleeve_u,
+        "capital":float(capital),
+        "days":requested_days,
+        "spot":result.get("spot"),
+        "history_samples":int((result.get("evidence") or {}).get("history_samples") or 0),
+        "history_source":{
+            "provider":(result.get("evidence") or {}).get("history_provider"),
+            "timeframe":"hour" if requested_days<=45 else "day",
+            "samples":int((result.get("evidence") or {}).get("history_samples") or 0),
+            "requested_days":int((result.get("evidence") or {}).get("history_days") or requested_days),
+            "warning":(result.get("evidence") or {}).get("provider_warning"),
         },
-        "economics_note":"Fee/P&L values remain estimates unless exact fee-growth data is available. Alchemy fallback history contains price points, not pool OHLC or pool volume; that limitation is shown explicitly.",
+        "evaluation":evaluation,
+        "policy":policy.to_dict(),
+        "regime":result.get("regime") or {},
+        "recommendations":recommendations,
+        "price_lens":result.get("price_lens") or {},
+        "price_series":result.get("price_series") or [],
+        "recommended_range":best_view,
+        "economics":best.get("economics") or {},
+        "forecast":forecast,
+        "target_comparison":targets,
+        "target_diagnostics":target_diag,
+        "reasons":reasons,
+        "pool_comparison":result.get("pool_comparison") or [],
+        "pool_selection":selection,
+        "fee_calibration":result.get("fee_calibration") or {},
+        "policy_replay":{
+            "id":None,
+            "summary":{
+                "period_days":requested_days,
+                "monitor_checks":int((result.get("evidence") or {}).get("history_samples") or 0),
+                "strategy_reviews":int((wf.get("windows") or 0)),
+                "ai_wakes":0,
+                "material_events":int(_f((wf.get("holdout") or {}).get("excursions_median"))),
+            },
+            "range_selection":{"source":"UNIFIED_PROFIT_ENGINE"},
+            "economics":best.get("economics") or {},
+            "no_lookahead":True,
+        },
+        "economics_note":"V0.8.7 Strategy Lab is a compatibility view of the unified profit engine. Forecast fee APR, observed fee evidence and LP-vs-HODL accounting remain separate metrics.",
+        "data_status":"LIVE_OR_FRESH_HISTORY",
     }
+
+
+class _NullCalibrationStore:
+    """Strategy compatibility path when no Store was historically supplied.
+
+    API Profit Lab passes the real Store and therefore receives owned-position
+    calibration. Strategy Lab keeps identical deterministic range logic without
+    inventing live calibration data.
+    """
+    def list_positions(self, status=None):
+        return []
+    def get_position_snapshot(self, position_id):
+        return {}
+    def get_setting(self, key, default=None):
+        return default
