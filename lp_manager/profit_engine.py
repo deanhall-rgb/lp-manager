@@ -191,6 +191,9 @@ def _load_pool_and_history(
     if pool is None:
         raise RuntimeError(pool_error or str(onchain.get("error") or "Pool context unavailable"))
 
+    provider_base_before = str((pool.get("base_token") or {}).get("symbol") or "").upper()
+    provider_quote_before = str((pool.get("quote_token") or {}).get("symbol") or "").upper()
+
     if onchain.get("ok"):
         # Rebuild the provider row through the on-chain lens so pair orientation,
         # token roles and fee tier are authoritative.
@@ -215,8 +218,8 @@ def _load_pool_and_history(
     # For stable-quoted pools, fetch the human base token's USD OHLC. WETH/USDG
     # then uses WETH USD history, not USDG's ~$1 history.
     gecko_token = "base"
-    provider_base = str((pool.get("base_token") or {}).get("symbol") or "").upper()
-    provider_quote = str((pool.get("quote_token") or {}).get("symbol") or "").upper()
+    provider_base = provider_base_before or str((pool.get("base_token") or {}).get("symbol") or "").upper()
+    provider_quote = provider_quote_before or str((pool.get("quote_token") or {}).get("symbol") or "").upper()
     if base_symbol and provider_quote == base_symbol and provider_base != base_symbol:
         gecko_token = "quote"
 
