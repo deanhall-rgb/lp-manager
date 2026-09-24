@@ -26,7 +26,7 @@ from .strategy_lab import analyse_live_pool
 from .intelligence import IntelligenceService
 from .automation_policy import get_policy as get_automation_policy, update_policy as update_automation_policy
 from .chain_registry import CHAINS
-from .fx import money_context
+from .fx import money_context, display_amount_to_usd
 from .portfolio_policy import policies_payload
 from .risk_engine import assess_pool_risk
 from .replay import demo_replay_candles, run_replay
@@ -290,6 +290,10 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         rows=store.list_positions(status)
         return [r for r in rows if str(r.get("monitoring_class") or "").upper() != "ARCHIVED_SUPERSEDED"]
 
+    def _display_capital_to_usd(value: float) -> float:
+        """UI money inputs are in the configured display currency (GBP by default)."""
+        return max(0.0, display_amount_to_usd(float(value or 0), settings, store))
+
     def _attach_historical_live_context(row: dict[str, Any], snap: dict[str, Any] | None = None, cache: dict[tuple[str,str],dict[str,Any]] | None = None) -> dict[str, Any]:
         """Attach today's pool price to a closed historical position without rewriting history.
 
@@ -451,7 +455,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             result=recommend_profit_range(
                 live.market, store, intent.chain.upper(), intent.pool_address,
                 horizon_days=max(1/24.0,min(90.0,float(intent.horizon_days))),
-                capital=max(1.0,float(intent.capital)), sleeve=intent.sleeve,
+                capital=max(1.0,_display_capital_to_usd(intent.capital)), sleeve=intent.sleeve,
                 monthly_target_pct=max(0.0,float(intent.monthly_target_pct)),
                 history_days=intent.history_days, pool_fallback=pool_fallback,
             )
@@ -470,7 +474,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def profit_search(intent: ProfitSearchIntent):
         if not live.market:
             raise HTTPException(503, "Market data is disabled")
-        capital=max(1.0,float(intent.available_capital))
+        capital=max(1.0,_display_capital_to_usd(intent.available_capital))
         chains=[str(x).upper() for x in (intent.chains or ["ETHEREUM","BASE","ARBITRUM","ROBINHOOD_CHAIN"])]
         prelim=[]; errors=[]
         for chain in chains[:5]:
@@ -770,7 +774,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             result=analyse_live_pool(
                 live.market, intent.chain.upper(), intent.pool_address,
                 sleeve=sleeve, days=days,
-                capital=max(1.0,intent.capital), target_monthly_pct=max(0.0,intent.target_monthly_pct),
+                capital=max(1.0,_display_capital_to_usd(intent.capital)), target_monthly_pct=max(0.0,intent.target_monthly_pct),
                 pool_fallback=pool_fallback, store=store,
             )
             result["data_status"]="LIVE_OR_FRESH_CACHE"
@@ -865,7 +869,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             chain_rows.sort(key=lambda r:(float((r.get("evaluation") or {}).get("core_pre_score") or 0),float(r.get("tvl_usd") or 0)),reverse=True)
             candidates.extend(chain_rows[:8])
         result=rank_opportunities(
-            candidates, available_capital=max(0.0,intent.available_capital),
+            candidates, available_capital=max(0.0,_display_capital_to_usd(intent.available_capital)),
             reserve_pct=max(0.0,min(90.0,intent.reserve_pct)),
             max_positions=max(1,min(8,intent.max_positions)),
             sleeve_filter=intent.sleeve_filter, allocation_mode=intent.allocation_mode,
@@ -980,7 +984,12 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     @app.post("/api/targets/calculate")
     def targets_calculate(intent: TargetIntent):
-        return performance_targets(**intent.model_dump())
+        payload=intent.model_dump()
+        payload["capital"]=_display_capital_to_usd(payload.get("capital") or 0)
+        payload["actual_today"]=_display_capital_to_usd(payload.get("actual_today") or 0)
+        payload["actual_7d"]=_display_capital_to_usd(payload.get("actual_7d") or 0)
+        payload["actual_30d"]=_display_capital_to_usd(payload.get("actual_30d") or 0)
+        return performance_targets(**payload)
 
     @app.get("/api/positions")
     def positions():
