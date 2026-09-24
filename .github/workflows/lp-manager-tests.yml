@@ -31,4 +31,30 @@ jobs:
       - name: Check browser JavaScript
         run: node --check lp_manager/static/app.js
 
-# v0.8.7 validation pass 2
+  package:
+    needs: test
+    if: github.ref == 'refs/heads/v0.8.7'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release ZIP
+        run: |
+          mkdir -p release/lp_manager_v0_8_7
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.pytest_cache' \
+            --exclude='__pycache__' \
+            --exclude='.env' \
+            --exclude='data' \
+            ./ release/lp_manager_v0_8_7/
+          cd release
+          zip -qr ../LP_Manager_V0.8.7.zip lp_manager_v0_8_7
+      - name: Upload release ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: LP_Manager_V0.8.7
+          path: LP_Manager_V0.8.7.zip
+          if-no-files-found: error
+
+# v0.8.7 validation pass 3
