@@ -147,12 +147,25 @@ def fee_calibration_for_pool(store, pool: dict[str, Any], *, sleeve: str | None 
         weighted.append((sample["ratio"], weight))
         used.append({**sample, "similarity_weight": round(weight, 4), "match": reasons})
 
-    factor = max(0.35, min(3.0, _weighted_geometric(weighted))) if weighted else 1.0
+    raw_factor = _weighted_geometric(weighted) if weighted else 1.0
     exact = [x for x in used if "EXACT_POOL" in x["match"]]
     effective_weight = sum(x["similarity_weight"] for x in used)
-    if exact and max(_f(x.get("age_days")) for x in exact) >= 1.0:
+    # Shrink evidence toward 1x. A single young observation can nudge the model,
+    # but cannot dominate it or create the V0.8.6 3x calibration failure.
+    prior_strength = 8.0
+    evidence_fraction = effective_weight / (effective_weight + prior_strength) if effective_weight > 0 else 0.0
+    shrunk = math.exp(math.log(max(0.05, raw_factor)) * evidence_fraction) if weighted else 1.0
+    exact_age = max([_f(x.get("age_days")) for x in exact] or [0.0])
+    if exact_age < 3.0:
+        lo, hi = 0.80, 1.25
+    elif exact_age < 7.0:
+        lo, hi = 0.65, 1.50
+    else:
+        lo, hi = 0.50, 2.00
+    factor = max(lo, min(hi, shrunk))
+    if exact and exact_age >= 7.0 and effective_weight >= 5.0:
         confidence = "HIGH"
-    elif exact or effective_weight >= 3.0:
+    elif exact and exact_age >= 3.0:
         confidence = "MODERATE"
     elif used:
         confidence = "LOW"
@@ -160,13 +173,22 @@ def fee_calibration_for_pool(store, pool: dict[str, Any], *, sleeve: str | None 
         confidence = "UNAVAILABLE"
     return {
         "factor": round(factor, 4),
+        "raw_factor": round(raw_factor, 4),
+        "evidence_fraction": round(evidence_fraction, 4),
         "confidence": confidence,
         "sample_count": len(used),
         "exact_pool_samples": len(exact),
+        "exact_pool_max_age_days": round(exact_age, 3),
         "pair_class": pclass,
         "samples": sorted(used, key=lambda x: x["similarity_weight"], reverse=True)[:8],
+        "guardrails": {
+            "minimum_sample_age_days": 1.0,
+            "young_exact_pool_cap": [0.80, 1.25],
+            "overall_cap": [0.50, 2.00],
+            "method": "LOG_GEOMETRIC_SHRINKAGE_TO_1X",
+        },
         "note": (
-            "Live fee calibration adjusts forecasts using model-vs-observed fee accrual from owned LPs. "
-            "It is a forecast correction only and never changes booked P&L."
+            "Live fee calibration is a conservative forecast correction. "
+            "Samples under 24 hours are excluded and evidence is shrunk toward 1x."
         ),
     }
