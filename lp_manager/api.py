@@ -48,6 +48,7 @@ from .pool_chain import read_v3_pool_metadata
 from .profit_engine import recommend_profit_range
 from .profit_dashboard import portfolio_profit_scorecard
 from .profit_calibration import fee_calibration_for_pool, calibration_samples
+from .capital_allocation import rank_capital_candidates
 from .portfolio_accounting import position_accounting
 from .fee_metrics import observed_fee_metrics
 
@@ -512,14 +513,21 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 })
             except Exception as exc:
                 errors.append({"chain":str(pool.get("chain") or ""),"pair":str(pool.get("pair") or ""),"error":str(exc)[:200]})
-        conf_rank={"HIGH":3,"MODERATE":2,"LOW":1}
-        deep.sort(key=lambda r:(float(r.get("expected_net_pct") or -999),conf_rank.get(str(r.get("confidence")),0),float(r.get("profit_score") or 0)),reverse=True)
+        deep=rank_capital_candidates(
+            deep,
+            capital_usd=capital,
+            open_positions=store.list_positions("OPEN"),
+        )
         reserve=capital*max(0.0,min(90.0,float(intent.reserve_pct)))/100.0
         deployable=max(0.0,capital-reserve)
         allocations=[]
         eligible=[r for r in deep if float(r.get("expected_net_usd") or 0)>0]
         if eligible and deployable>0:
-            weights=[max(0.01,float(r.get("expected_net_pct") or 0))*max(0.5,float(r.get("profit_score") or 50)/100.0) for r in eligible[:3]]
+            weights=[
+                max(0.01,float(r.get("allocation_score") or 0))
+                * max(0.10,float(r.get("expected_net_pct") or 0))
+                for r in eligible[:3]
+            ]
             tw=sum(weights) or 1.0
             remaining=deployable
             for i,(row,w) in enumerate(zip(eligible[:3],weights)):
@@ -527,9 +535,16 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 cap=deployable*(0.70 if row.get("sleeve")=="CORE_INCOME" else 0.35)
                 amt=min(cap,deployable*w/tw,remaining)
                 if amt<1: continue
-                allocations.append({"rank":i+1,"chain":row.get("chain"),"pair":row.get("pair"),"pool_address":row.get("pool_address"),"sleeve":row.get("sleeve"),"amount":round(amt,2),"expected_net_for_hold":round(float(row.get("expected_net_usd") or 0)*amt/capital,2)})
+                allocations.append({
+                    "rank":i+1,"chain":row.get("chain"),"pair":row.get("pair"),
+                    "pool_address":row.get("pool_address"),"sleeve":row.get("sleeve"),
+                    "amount":round(amt,2),
+                    "expected_net_for_hold":round(float(row.get("expected_net_usd") or 0)*amt/capital,2),
+                    "allocation_score":row.get("allocation_score"),
+                    "allocation_evidence":row.get("allocation_evidence") or {},
+                })
                 remaining-=amt
-        result={"capital":capital,"horizon_days":float(intent.horizon_days),"reserve":round(reserve,2),"deployable":round(deployable,2),"ranked":deep,"allocations":allocations,"errors":errors[:12],"candidate_count":len(prelim),"deep_analysed":len(deep),"best":deep[0] if deep else None,"note":"Deep ranking uses the same Profit Lab engine for each candidate. Provider limits cap the number of simultaneous deep analyses."}
+        result={"capital":capital,"horizon_days":float(intent.horizon_days),"reserve":round(reserve,2),"deployable":round(deployable,2),"ranked":deep,"allocations":allocations,"errors":errors[:12],"candidate_count":len(prelim),"deep_analysed":len(deep),"best":deep[0] if deep else None,"note":"Deep ranking uses the same Profit Lab engine for each candidate. Cross-chain allocation then compares expected net profit, downside case, fee efficiency, confidence, intervention burden and existing concentration. Provider limits cap simultaneous deep analyses."}
         store.set_setting("profit:last_search",result)
         return result
 
