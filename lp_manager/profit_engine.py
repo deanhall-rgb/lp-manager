@@ -565,3 +565,161 @@ def _recommend_single_pool(
             "Single-sided directional ranges are presented as optional triggered plans and are not assumed to earn fees before price enters them.",
         ],
     }
+
+
+
+def _pool_token_addresses(row: dict[str, Any]) -> set[str]:
+    out=set()
+    for key in ("base_token","quote_token","token0","token1"):
+        token=row.get(key) or {}
+        address=str(token.get("address") or "").lower()
+        if address:
+            out.add(address)
+    onchain=row.get("onchain") or {}
+    for key in ("token0","token1"):
+        address=str((onchain.get(key) or {}).get("address") or "").lower()
+        if address:
+            out.add(address)
+    return out
+
+
+def _fee_tier_pool_candidates(market, chain: str, seed: dict[str, Any]) -> list[dict[str, Any]]:
+    """Discover one strong V3 pool per available fee tier for the exact token pair."""
+    if not hasattr(market, "token_pools"):
+        return []
+    target=_pool_token_addresses(seed.get("pool") or {})
+    if len(target) != 2:
+        return []
+    discovered: dict[str, dict[str, Any]]={}
+    seed_pool=dict(seed.get("pool") or {})
+    seed_addr=str(seed.get("pool_address") or "").lower()
+    if seed_addr:
+        discovered[seed_addr]=seed_pool
+
+    for token_address in list(target):
+        for page in (1, 2):
+            try:
+                rows=market.token_pools(chain, token_address, page=page)
+            except Exception:
+                break
+            for row in rows or []:
+                if str(row.get("protocol") or "").upper()!="UNISWAP_V3":
+                    continue
+                if _pool_token_addresses(row) != target:
+                    continue
+                addr=str(row.get("pool_address") or "").lower()
+                if addr:
+                    discovered[addr]=dict(row)
+
+    by_tier: dict[float, tuple[float, dict[str, Any]]]={}
+    for addr,row in list(discovered.items())[:16]:
+        onchain=read_v3_pool_metadata(chain,addr)
+        if not onchain.get("ok"):
+            if addr==seed_addr:
+                fee=_f(row.get("fee_tier_bps") or row.get("fee_bps"))
+            else:
+                continue
+        else:
+            if _pool_token_addresses(onchain) != target:
+                continue
+            fee=_f(onchain.get("fee_tier_bps"))
+            row=_pool_from_onchain(chain,addr,onchain,row)
+            row["onchain"]=onchain
+        if fee <= 0:
+            continue
+        row["fee_tier_bps"]=fee
+        tvl=max(1.0,_f(row.get("tvl_usd")))
+        volume=max(0.0,_f(row.get("volume_24h_usd")))
+        # Discovery score only decides which pool within the same tier gets the
+        # expensive deep analysis. Final selection is expected net hold profit.
+        pre_score=(volume*(fee/10_000.0))/tvl
+        previous=by_tier.get(fee)
+        if previous is None or pre_score>previous[0]:
+            by_tier[fee]=(pre_score,row)
+    return [x[1] for _,x in sorted(by_tier.items(), key=lambda item:item[0])]
+
+
+def recommend_profit_range(
+    market, store, chain: str, address: str, *, horizon_days: float = 7.0,
+    capital: float = 1000.0, sleeve: str = "AUTO", monthly_target_pct: float = 10.0,
+    history_days: int | None = None, pool_fallback: dict[str, Any] | None = None,
+    compare_fee_tiers: bool = True,
+) -> dict[str, Any]:
+    """Unified V0.8.7 range + profit + fee-tier optimiser."""
+    requested=_recommend_single_pool(
+        market,store,chain,address,
+        horizon_days=horizon_days,capital=capital,sleeve=sleeve,
+        monthly_target_pct=monthly_target_pct,history_days=history_days,
+        pool_fallback=pool_fallback,
+    )
+    if not compare_fee_tiers:
+        requested["pool_comparison"]=[]
+        requested["pool_selection"]={
+            "method":"REQUESTED_POOL_ONLY",
+            "selected_pool_address":requested.get("pool_address"),
+        }
+        return requested
+
+    analyses=[requested]
+    errors=[]
+    try:
+        candidates=_fee_tier_pool_candidates(market,str(requested.get("chain") or chain).upper(),requested)
+    except Exception as exc:
+        candidates=[]
+        errors.append(str(exc)[:180])
+
+    requested_addr=str(requested.get("pool_address") or "").lower()
+    # Deep-analyse at most one pool from each of four fee tiers. This keeps the
+    # public provider budget bounded while still comparing 1/5/30/100 bps pools.
+    for pool in candidates[:4]:
+        addr=str(pool.get("pool_address") or "").lower()
+        if not addr or addr==requested_addr:
+            continue
+        try:
+            analyses.append(_recommend_single_pool(
+                market,store,str(requested.get("chain") or chain).upper(),addr,
+                horizon_days=horizon_days,capital=capital,sleeve=sleeve,
+                monthly_target_pct=monthly_target_pct,history_days=history_days,
+                pool_fallback=pool,
+            ))
+        except Exception as exc:
+            errors.append(f"{addr[:12]}: {str(exc)[:150]}")
+
+    confidence_rank={"HIGH":3,"MODERATE":2,"LOW":1}
+    analyses.sort(
+        key=lambda r:(
+            _f((r.get("recommended_range") or {}).get("forecast",{}).get("expected_net_usd"),-1e18),
+            confidence_rank.get(str(r.get("confidence") or ""),0),
+        ),
+        reverse=True,
+    )
+    selected=analyses[0]
+    comparison=[]
+    for rank,row in enumerate(analyses,start=1):
+        best=row.get("recommended_range") or {}
+        forecast=best.get("forecast") or {}
+        econ=best.get("economics") or {}
+        comparison.append({
+            "rank":rank,
+            "pool_address":row.get("pool_address"),
+            "pair":row.get("pair"),
+            "fee_tier_bps":_f(econ.get("fee_tier_bps") or (row.get("pool") or {}).get("fee_tier_bps")),
+            "expected_fees_usd":forecast.get("expected_fees_usd"),
+            "expected_net_usd":forecast.get("expected_net_usd"),
+            "forecast_fee_apr_pct":forecast.get("forecast_fee_apr_pct"),
+            "net_horizon_return_pct":forecast.get("net_horizon_return_pct"),
+            "active_time_pct":(best.get("analysis") or {}).get("average_horizon_activity_pct"),
+            "profit_score":best.get("profit_score"),
+            "confidence":row.get("confidence"),
+            "selected":row is selected,
+        })
+    selected["pool_comparison"]=comparison
+    selected["pool_selection"]={
+        "method":"MAX_EXPECTED_NET_HOLD_PROFIT_ACROSS_DISCOVERED_V3_FEE_TIERS",
+        "requested_pool_address":address,
+        "selected_pool_address":selected.get("pool_address"),
+        "pools_deep_analysed":len(analyses),
+        "discovery_errors":errors[:6],
+        "explanation":"Relevant Uniswap V3 pools for the exact token pair are compared by the same range/profit engine; fee tier is not assumed in advance.",
+    }
+    return selected
