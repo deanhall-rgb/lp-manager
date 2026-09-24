@@ -480,11 +480,31 @@ def _recommend_single_pool(
         active = _f(row["analysis"].get("average_horizon_activity_pct"))
         strict = _f(row["analysis"].get("strict_horizon_survival_pct"))
         alignment = _f(row.get("regime_alignment_score"))
+        inventory_utility = _f((row.get("inventory_outcomes") or {}).get("average_utility_score"), 50.0)
         interventions = _f(row["analysis"].get("excursions"))
-        intervention_penalty = min(18.0, interventions * (3.0 if sleeve_u == "CORE_INCOME" else 1.5))
-        score = 0.48 * profit_norm + 0.24 * train_norm + 0.12 * active + 0.06 * strict + 0.10 * alignment - intervention_penalty
+        intervention_penalty = min(16.0, interventions * (2.5 if sleeve_u == "CORE_INCOME" else 1.5))
+        # Profit is deliberately dominant. Survival is evidence, not the goal:
+        # desirable boundary inventory can make a lower-survival Core range rational.
+        score = (
+            0.58 * profit_norm
+            + 0.12 * train_norm
+            + 0.10 * active
+            + 0.03 * strict
+            + 0.07 * alignment
+            + 0.10 * inventory_utility
+            - intervention_penalty
+        )
         row["profit_score"] = round(max(0.0, min(100.0, score)), 1)
         row["price_lens"] = pool_price_lens(pool, lower=row["lower"], upper=row["upper"], current=spot)
+        row["selection_evidence"] = {
+            "profit_normalised": round(profit_norm, 1),
+            "historical_profit_validation": round(train_norm, 1),
+            "active_time_pct": round(active, 1),
+            "strict_survival_pct": round(strict, 1),
+            "regime_alignment": round(alignment, 1),
+            "boundary_inventory_utility": round(inventory_utility, 1),
+            "intervention_penalty": round(intervention_penalty, 1),
+        }
     rows.sort(key=lambda r: (r["profit_score"], _f(r["forecast"].get("expected_net_usd"))), reverse=True)
     best = rows[0]
 
@@ -524,7 +544,8 @@ def _recommend_single_pool(
         "regime": regime, "fee_calibration": calibration, "evidence": evidence,
         "confidence": confidence, "confidence_score": min(100, confidence_points),
         "recommended_range": {**best, "rank": 1},
-        "alternatives": [{**r, "rank": i + 1} for i, r in enumerate(rows[:8])],
+        "alternatives": [{**r, "rank": i + 1} for i, r in enumerate(_diverse_alternatives(rows, best, 5))],
+        "range_candidates": [{**r, "rank": i + 1} for i, r in enumerate(rows[:12])],
         "directional_alternatives": directional,
         "target": {
             "horizon_target_usd": round(target_horizon, 2),
