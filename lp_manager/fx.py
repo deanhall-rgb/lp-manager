@@ -21,3 +21,19 @@ def money_context(settings, store) -> dict[str, Any]:
         return {"source_currency":"USD","display_currency":requested,"usd_to_display_rate":rate,"converted":True,"source":"FRANKFURTER"}
     except Exception as exc:
         return {"source_currency":"USD","display_currency":"USD","requested_currency":requested,"usd_to_display_rate":1.0,"converted":False,"source":"FALLBACK_USD","warning":f"FX unavailable; showing USD to avoid mislabelling. {str(exc)[:120]}"}
+
+
+
+def display_amount_to_usd(amount: float, settings, store) -> float:
+    """Convert a user-entered display-currency amount back to source USD.
+
+    LP Manager keeps provider/accounting source values in USD for auditability but
+    V0.8.7 presents and accepts GBP by default. If FX is unavailable we retain the
+    existing fail-safe USD interpretation rather than silently applying a bad rate.
+    """
+    value=float(amount or 0)
+    ctx=money_context(settings,store)
+    rate=float(ctx.get("usd_to_display_rate") or 1.0)
+    if ctx.get("converted") and rate>0:
+        return value/rate
+    return value
