@@ -9,6 +9,8 @@ from .economics_engine import estimate_lp_economics, infer_fee_tier_bps, volume_
 from .market_regime import analyse_regime
 from .pool_chain import read_v3_pool_metadata
 from .profit_calibration import fee_calibration_for_pool
+from .fee_metrics import forecast_fee_metrics, pool_fee_revenue_rate
+from .price_units import assert_sane_display_lens
 from .range_lab import analyse_range, candle_activity_fraction, generate_range_candidates, infer_candles_per_day
 from .strategy_lab import _pool_from_onchain
 
