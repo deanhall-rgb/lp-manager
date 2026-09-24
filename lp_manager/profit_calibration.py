@@ -165,7 +165,7 @@ def fee_calibration_for_pool(store, pool: dict[str, Any], *, sleeve: str | None 
     factor = max(lo, min(hi, shrunk))
     if exact and exact_age >= 7.0 and effective_weight >= 5.0:
         confidence = "HIGH"
-    elif exact and exact_age >= 3.0:
+    elif exact and exact_age >= 1.0:
         confidence = "MODERATE"
     elif used:
         confidence = "LOW"
