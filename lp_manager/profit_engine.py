@@ -321,8 +321,12 @@ def _load_pool_and_history(
             try:
                 candles = market.ohlcv_days(chain, address, history_days, timeframe=timeframe, token=gecko_token)
             except TypeError:
-                # Test/simple adapters from older releases do not expose token=.
-                candles = market.ohlcv_days(chain, address, history_days, timeframe=timeframe)
+                try:
+                    candles = market.ohlcv_days(chain, address, history_days, timeframe=timeframe)
+                except TypeError:
+                    # Compatibility with simple/older adapters exposing only
+                    # ohlcv_days(chain, address, days).
+                    candles = market.ohlcv_days(chain, address, history_days)
         except Exception as exc:
             candles = []
             warning = str(exc)
@@ -374,7 +378,10 @@ def _recommend_single_pool(
                     timeframe="hour", token=str(pool.get("_history_token") or "base"),
                 )
             except TypeError:
-                recent = market.ohlcv_days(str(chain).upper(), address, min(30, hist_days), timeframe="hour")
+                try:
+                    recent = market.ohlcv_days(str(chain).upper(), address, min(30, hist_days), timeframe="hour")
+                except TypeError:
+                    recent = market.ohlcv_days(str(chain).upper(), address, min(30, hist_days))
             if len(recent) >= 48:
                 regime_rows = recent; cpd = 24
         except Exception:
@@ -542,6 +549,7 @@ def _recommend_single_pool(
         "monthly_target_pct": round(float(monthly_target_pct), 3), "spot": spot,
         "price_lens": pool_price_lens(pool, current=spot), "pool": pool,
         "regime": regime, "fee_calibration": calibration, "evidence": evidence,
+        "price_series": [{"timestamp":c.get("timestamp"),"close":c.get("close")} for c in candles[-240:]],
         "confidence": confidence, "confidence_score": min(100, confidence_points),
         "recommended_range": {**best, "rank": 1},
         "alternatives": [{**r, "rank": i + 1} for i, r in enumerate(_diverse_alternatives(rows, best, 5))],
