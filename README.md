@@ -1,3 +1,28 @@
+# LP Manager v0.8.7 Profitability Correction
+
+V0.8.7 is a financial-correctness and profitability release built on v0.8.6. It does **not** widen execution authority: private keys remain outside the server, server-side signing/broadcast remains disabled, and browser-wallet transactions still require explicit human confirmation.
+
+## What v0.8.7 fixes
+
+- **One profit/range engine:** Strategy Lab is now a compatibility view over the same money-first optimiser used by Profit Lab, removing contradictory range recommendations.
+- **Pool + fee-tier optimisation:** relevant Uniswap V3 pools for the exact token pair can be compared under the same capital/horizon assumptions; the selected pool is the one with the strongest expected net hold profit among the analysed tiers.
+- **USDG/WETH unit correction:** on-chain pair orientation is authoritative and WETH/stable lenses are sanity-checked so a ~$1 stablecoin mark cannot masquerade as `USDG per WETH`.
+- **Transparent fee framework:** pool-derived spot APR, owned-position observed APR, forecast fee APR and net horizon return are separate metrics. Observed annualisation is suppressed until at least 24h of fee evidence exists.
+- **Conservative calibration:** sub-24h samples are excluded; live/model ratios are shrunk toward 1x and young exact-pool evidence is capped.
+- **Cashflow invariants:** expected net fee profit is forecast fees minus explicit cash costs. Historical validation cannot be blended in as extra cash profit.
+- **Asymmetric Core inventory outcomes:** falling below a bullish WETH/stable range can be desirable WETH inventory; rising above converts toward stable after selling ETH higher. Range exit is not automatically treated as failure.
+- **Real accounting:** fee income, current P/L including fees and LP-vs-HODL are shown separately where opening evidence is reconstructable.
+- **P4/P5/P6 authority:** Robinhood NFTs 1289953 / 1290067 / 1290077 are stably labelled P4 / P5 / P6 and carry their supplied opening transaction references for reconstruction.
+- **Explicit wallet chooser:** EIP-6963/browser providers are presented for explicit selection; LP Manager no longer silently chooses the first injected provider.
+- **GBP-first UI:** money inputs are treated as the configured display currency (GBP by default) and converted back to auditable USD source values internally.
+
+## Primary release invariant
+
+`NET FORECAST RETURN = FORECAST FEE INCOME - EXPLICIT CASH COSTS`
+
+LP-vs-HODL divergence is a separate economic comparison, not a synthetic monthly expense or extra cash return.
+
+---
 # LP Manager v0.8.6 Profit Engine Preview
 
 This build is deliberately layered on top of the frozen v0.8.5 live-accounting/execution candidate. It does **not** widen execution authority. It adds a money-first decision layer while preserving build-only/manual-wallet safety.
