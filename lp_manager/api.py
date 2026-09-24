@@ -811,21 +811,22 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             raise HTTPException(502, f"Pool lookup failed: {exc}") from exc
         pool["evaluation"] = preliminary_pool_evaluation(pool)
         pool["resolved_chain"] = resolved
+        capital_usd=max(1.0,_display_capital_to_usd(capital))
         lab_error = None
         try:
             lab = analyse_live_pool(
                 live.market, resolved, address, sleeve=sleeve,
-                days=max(7, min(365, days)), capital=max(1.0, capital), pool_fallback=pool,
+                days=max(7, min(365, days)), capital=capital_usd, pool_fallback=pool, store=store,
             )
         except Exception as exc:
             lab_error = str(exc)[:300]
             lab = {
                 "analysis_error": lab_error,
                 "sleeve": sleeve,
-                "capital": max(1.0, capital),
+                "capital": capital_usd,
                 "days": max(7, min(365, days)),
                 "economics": estimate_lp_economics(
-                    pool, capital=max(1.0, capital),
+                    pool, capital=capital_usd,
                     active_time_pct=82.0 if sleeve.upper()=="CORE_INCOME" else 58.0,
                     width_pct=50.0 if sleeve.upper()=="CORE_INCOME" else 22.0,
                     regime={},
