@@ -513,8 +513,54 @@ def _recommend_single_pool(
             "boundary_inventory_utility": round(inventory_utility, 1),
             "intervention_penalty": round(intervention_penalty, 1),
         }
-    rows.sort(key=lambda r: (r["profit_score"], _f(r["forecast"].get("expected_net_usd"))), reverse=True)
-    best = rows[0]
+    # Hard guardrails define the admissible set; within that set the winner is
+    # the highest believable expected net cash profit. Historical survival and
+    # regime evidence explain the decision but do not outrank money.
+    for row in rows:
+        active=_f((row.get("analysis") or {}).get("average_horizon_activity_pct"))
+        interventions=_f((row.get("analysis") or {}).get("excursions"))
+        inv=row.get("inventory_outcomes") or {}
+        nearest=min(
+            _f(inv.get("distance_below_current_pct"),999.0),
+            _f(inv.get("distance_above_current_pct"),999.0),
+        )
+        blockers=[]
+        if sleeve_u=="CORE_INCOME":
+            if active < 45.0:
+                blockers.append("CORE_ACTIVE_TIME_UNDER_45PCT")
+            if interventions > 8:
+                blockers.append("CORE_TOO_MANY_HISTORICAL_EXCURSIONS")
+            if nearest < 2.5:
+                blockers.append("CORE_NEAREST_EDGE_UNDER_2_5PCT")
+        else:
+            if active < 25.0:
+                blockers.append("TACTICAL_ACTIVE_TIME_UNDER_25PCT")
+            if nearest < 1.0:
+                blockers.append("TACTICAL_NEAREST_EDGE_UNDER_1PCT")
+        row["selection_guardrail"]={
+            "eligible":not blockers,
+            "blockers":blockers,
+            "principle":"MAX_EXPECTED_NET_PROFIT_SUBJECT_TO_HARD_RANGE_GUARDRAILS",
+        }
+
+    eligible=[r for r in rows if (r.get("selection_guardrail") or {}).get("eligible")]
+    ranked_pool=eligible or rows
+    ranked_pool.sort(
+        key=lambda r:(
+            _f((r.get("forecast") or {}).get("expected_net_usd"),-1e18),
+            _f(r.get("profit_score")),
+        ),
+        reverse=True,
+    )
+    best = ranked_pool[0]
+    rows.sort(
+        key=lambda r:(
+            1 if (r.get("selection_guardrail") or {}).get("eligible") else 0,
+            _f((r.get("forecast") or {}).get("expected_net_usd"),-1e18),
+            _f(r.get("profit_score")),
+        ),
+        reverse=True,
+    )
 
     # Directional alternatives are plans, not automatic recommendations. They make
     # the single-sided option explicit when the current regime is directional.
