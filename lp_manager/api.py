@@ -5,6 +5,7 @@ import uuid
 import math
 from pathlib import Path
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -886,34 +887,73 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def portfolio_advisor(intent: PortfolioAdvisorIntent):
         if not live.market:
             raise HTTPException(503, "Market data is disabled")
-        chains = [str(x).upper() for x in (intent.chains or ["ETHEREUM","BASE","ARBITRUM","OPTIMISM","ROBINHOOD_CHAIN"])]
+        chains = [str(x).upper() for x in (intent.chains or ["ETHEREUM","BASE","ARBITRUM","OPTIMISM","ROBINHOOD_CHAIN"])][:6]
         candidates: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
-        # Build a cross-chain comparison universe. This deliberately uses market
-        # data rather than RPC availability, so a flaky read-only RPC does not
-        # prevent opportunity ranking.
-        for chain in chains[:6]:
-            try:
-                rows, _discovery_errors = _discover_scout_pools(chain, max_pages=2)
-                errors.extend({"chain":chain,"error":e} for e in _discovery_errors[:2])
-            except Exception as exc:
-                errors.append({"chain": chain, "error": str(exc)[:180]})
+
+        # Start with persisted opportunities so the Advisor remains useful during
+        # provider throttling. Then refresh one top-pool page per chain in parallel.
+        raw: dict[tuple[str,str],dict[str,Any]]={}
+        for op in store.list_opportunities(250):
+            chain=str(op.get("chain") or "").upper()
+            if chain not in chains:
                 continue
-            chain_rows=[]
-            for pool in rows:
-                if str(pool.get("protocol") or "").upper() != "UNISWAP_V3":
-                    continue
-                evaluation=preliminary_pool_evaluation(pool)
-                sleeve=evaluation.get("preferred_sleeve") or ("CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0) else "TACTICAL_CAMPAIGN")
-                economics=estimate_lp_economics(
-                    pool, capital=1000.0,
-                    active_time_pct=84.0 if sleeve=="CORE_INCOME" else 60.0,
-                    width_pct=48.0 if sleeve=="CORE_INCOME" else 22.0,
-                    regime={},
-                )
-                chain_rows.append({**pool,"evaluation":evaluation,"sleeve":sleeve,"economics":economics,"regime":{"confidence":50,"label":"NOT_YET_DEEP_ANALYSED"}})
-            chain_rows.sort(key=lambda r:(float((r.get("evaluation") or {}).get("core_pre_score") or 0),float(r.get("tvl_usd") or 0)),reverse=True)
-            candidates.extend(chain_rows[:8])
+            candidate=dict(op.get("candidate") or {})
+            addr=str(candidate.get("pool_address") or op.get("pool_address") or "").lower()
+            if not addr:
+                continue
+            candidate["chain"]=chain
+            candidate.setdefault("market_data_status","PERSISTED")
+            raw[(chain,addr)]=candidate
+
+        def _advisor_chain_page(chain: str):
+            return chain, live.market.network_pools(chain,page=1)
+
+        with ThreadPoolExecutor(max_workers=min(5,max(1,len(chains)))) as pool:
+            futures={pool.submit(_advisor_chain_page,chain):chain for chain in chains}
+            for future in as_completed(futures):
+                chain=futures[future]
+                try:
+                    _chain,rows=future.result()
+                    for row in rows:
+                        addr=str(row.get("pool_address") or "").lower()
+                        if addr:
+                            row["market_data_status"]="LIVE_TOP_PAGE"
+                            raw[(chain,addr)]=row
+                except Exception as exc:
+                    errors.append({"chain":chain,"error":str(exc)[:180]})
+
+        per_chain: dict[str,list[dict[str,Any]]]={}
+        for row in raw.values():
+            if str(row.get("protocol") or "").upper()!="UNISWAP_V3":
+                continue
+            chain=str(row.get("chain") or "").upper()
+            evaluation=preliminary_pool_evaluation(row)
+            sleeve=evaluation.get("preferred_sleeve") or (
+                "CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
+                else "TACTICAL_CAMPAIGN"
+            )
+            economics=estimate_lp_economics(
+                row,capital=1000.0,
+                active_time_pct=84.0 if sleeve=="CORE_INCOME" else 60.0,
+                width_pct=48.0 if sleeve=="CORE_INCOME" else 22.0,
+                regime={},
+            )
+            per_chain.setdefault(chain,[]).append({
+                **row,"evaluation":evaluation,"sleeve":sleeve,"economics":economics,
+                "regime":{"confidence":50,"label":"QUICK_ADVISOR_SCREEN"},
+            })
+
+        for chain,rows in per_chain.items():
+            rows.sort(
+                key=lambda r:(
+                    max(float((r.get("evaluation") or {}).get("core_pre_score") or 0),float((r.get("evaluation") or {}).get("tactical_pre_score") or 0)),
+                    float(r.get("tvl_usd") or 0),
+                ),
+                reverse=True,
+            )
+            candidates.extend(rows[:6])
+
         result=rank_opportunities(
             candidates, available_capital=max(0.0,_display_capital_to_usd(intent.available_capital)),
             reserve_pct=max(0.0,min(90.0,intent.reserve_pct)),
@@ -922,9 +962,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         )
         result["scan_errors"] = errors
         result["candidate_count"] = len(candidates)
-        # AI is advisory over the deterministic allocator; if no API key is
-        # configured this still returns a deterministic comparative memo.
-        result["ai_advice"] = intelligence.allocation_memo(result, candidates[:12])
+        result["data_source"]="PERSISTED_PLUS_PARALLEL_TOP_PAGES"
+        result["ai_advice"]=None
+        result["ai_advice_status"]="ON_DEMAND_NOT_IN_CRITICAL_PATH"
         if result.get("allocations"):
             top=result["allocations"][0]
             hour=int(time.time()//3600)
@@ -935,7 +975,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     confidence=min(0.95,max(0.50,float(top.get("score") or 0)/100.0)),
                     summary=f"Portfolio Advisor currently ranks {top.get('pair')} first",
                     rationale=f"Cross-chain comparison allocated {top.get('amount')} of {intent.available_capital} available capital to the strongest risk-adjusted candidate; reserve and tactical ceilings were preserved.",
-                    trigger="PORTFOLIO_ADVISOR",source="PORTFOLIO_ADVISOR",evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"expected_net_month":top.get("expected_net_month")},
+                    trigger="PORTFOLIO_ADVISOR",source="PORTFOLIO_ADVISOR",
+                    evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"expected_net_month":top.get("expected_net_month")},
                 ))
             except Exception:
                 pass
