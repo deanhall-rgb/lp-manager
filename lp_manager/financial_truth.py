@@ -99,19 +99,29 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
     recorded_position_gas=sum(max(0.0,_f(p.get("gas_costs"))) for p in positions)
     transaction_costs=event_gas if event_gas>0 else recorded_position_gas
     open_ids={str(p.get("id") or "") for p in positions if str(p.get("status") or "").upper()=="OPEN"}
-    open_event_gas=sum(
-        max(0.0,_f(x.get("gas_usd")))
-        for x in events
-        if str(x.get("status") or "").upper()=="CONFIRMED"
-        and str(x.get("position_id") or "") in open_ids
-    )
+    open_event_gas_by_position={}
+    for x in events:
+        pid=str(x.get("position_id") or "")
+        if pid not in open_ids or str(x.get("status") or "").upper()!="CONFIRMED":
+            continue
+        open_event_gas_by_position[pid]=open_event_gas_by_position.get(pid,0.0)+max(0.0,_f(x.get("gas_usd")))
+    open_position_gas=0.0
+    for p in positions:
+        pid=str(p.get("id") or "")
+        if pid not in open_ids:
+            continue
+        event_cost=open_event_gas_by_position.get(pid,0.0)
+        # New V0.8.8 executions have receipt-backed events. Older imported/live
+        # positions may only have a recorded gas_costs figure, so use that as the
+        # fallback rather than pretending historical transaction cost was zero.
+        open_position_gas+=event_cost if event_cost>0 else max(0.0,_f(p.get("gas_costs")))
 
     # Realised G/L is intentionally conservative. Collected fees on still-open
-    # positions are realised cash and their confirmed transaction costs are
-    # deducted. Closed-position P/L from an ONCHAIN_CLOSE_RECEIPT is already net
-    # of that position's cumulative recorded costs, so those costs are not
-    # subtracted a second time here.
-    realised_gain_loss=realised_open_fee_income-open_event_gas+closed_reported_pnl
+    # positions are realised cash and their best available transaction-cost
+    # evidence is deducted. Closed-position P/L from an ONCHAIN_CLOSE_RECEIPT is
+    # already net of that position's cumulative recorded costs, so those costs are
+    # not subtracted a second time here.
+    realised_gain_loss=realised_open_fee_income-open_position_gas+closed_reported_pnl
 
     gross_open_pnl=current_open_wealth-opening_verified if verified_open_count and opening_verified>0 else None
     lp_vs_hodl=lp_for_hodl-hodl_total if hodl_count else None
