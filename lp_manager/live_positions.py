@@ -675,9 +675,14 @@ def _historical_pool_marks_at(
 
 
 def _position_lifecycle_events(
-    w3: Web3, manager: str, token_id: int, from_block: int, to_block: int, *, chunk: int = 25_000
+    w3: Web3, manager: str, token_id: int, from_block: int, to_block: int, *, chunk: int = 250_000
 ) -> list[dict[str, Any]]:
-    """Read immutable manager lifecycle events for one V3 NFT."""
+    """Read immutable manager lifecycle events for one V3 NFT.
+
+    Start with a broad range for speed, then shrink only when the provider rejects
+    the query. A failed minimum-size query is surfaced as an error; it is never
+    interpreted as an empty event history.
+    """
     topic_id="0x"+int(token_id).to_bytes(32,"big").hex()
     definitions={
         "INCREASE_LIQUIDITY":INCREASE_LIQUIDITY_TOPIC,
@@ -686,8 +691,13 @@ def _position_lifecycle_events(
     }
     out=[]
     start=max(0,int(from_block or 0)); end_block=max(start,int(to_block or start))
+    target_chunk=max(1,int(chunk))
+    min_chunk=min(25_000,target_chunk)
+    current_chunk=target_chunk
     while start<=end_block:
-        end=min(end_block,start+chunk-1)
+        end=min(end_block,start+current_chunk-1)
+        batch=[]
+        failed=None
         for event_type,topic0 in definitions.items():
             try:
                 logs=w3.eth.get_logs({
@@ -696,9 +706,8 @@ def _position_lifecycle_events(
                     "topics":[topic0,topic_id],
                 })
             except Exception as exc:
-                raise RuntimeError(
-                    f"LIFECYCLE_LOG_SCAN_FAILED:{event_type}:{start}-{end}: {str(exc)[:160]}"
-                ) from exc
+                failed=(event_type,exc)
+                break
             for log in logs:
                 raw=log.get("data")
                 try:
@@ -717,7 +726,7 @@ def _position_lifecycle_events(
                         amount0=int.from_bytes(data[32:64],"big")
                         amount1=int.from_bytes(data[64:96],"big")
                     txh=log.get("transactionHash")
-                    out.append({
+                    batch.append({
                         "event_type":event_type,
                         "block_number":int(log.get("blockNumber") or 0),
                         "log_index":int(log.get("logIndex") or 0),
@@ -726,7 +735,19 @@ def _position_lifecycle_events(
                     })
                 except Exception:
                     continue
+        if failed:
+            if current_chunk>min_chunk:
+                current_chunk=max(min_chunk,current_chunk//2)
+                continue
+            event_type,exc=failed
+            raise RuntimeError(
+                f"LIFECYCLE_LOG_SCAN_FAILED:{event_type}:{start}-{end}: {str(exc)[:160]}"
+            ) from exc
+
+        out.extend(batch)
         start=end+1
+        if current_chunk<target_chunk:
+            current_chunk=min(target_chunk,current_chunk*2)
     out.sort(key=lambda x:(x["block_number"],x["log_index"]))
     return out
 
