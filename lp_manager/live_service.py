@@ -47,13 +47,15 @@ class LiveDataService:
             "last_scout_refresh": self.store.get_setting("live:last_scout_refresh", None),
             "refresh_seconds": self.settings.live_refresh_seconds,
             "background_refresh": bool(self._thread and self._thread.is_alive()),
+            "background_health": self.store.get_setting("live:background_health", None),
+            "closed_history_mode": "MANUAL_ONLY",
             "wallet_snapshot": self.store.get_wallet_snapshot(),
             "signing_enabled": False,
             "broadcast_enabled": False,
         }
 
     def refresh_positions(self, chains: list[str] | None = None) -> dict[str, Any]:
-        from .live_positions import reconcile_scan, scan_chain_positions, finalise_closed_positions_from_store
+        from .live_positions import reconcile_scan, scan_chain_positions
 
         if not self._refresh_lock.acquire(blocking=False):
             return {"ok": False, "busy": True, "error": "A live refresh is already running", "chains": []}
@@ -132,23 +134,16 @@ class LiveDataService:
                     source=CHAINS[c].rpc_source()
                     reason="Public RPC available for reads/health; broad position scanning requires an explicit/Alchemy RPC" if source=="PUBLIC_FALLBACK" else f"{CHAINS[c].rpc_env} not configured"
                     results.append({"chain": c, "ok": False, "skipped": True, "rpc_source":source, "error": reason})
-            closed_finalisation=[]
-            for c in configured:
-                try:
-                    # Closed lifecycle reconstruction can require many historical RPC reads.
-                    # Keep normal live refresh responsive by advancing at most one closed NFT
-                    # per chain per cycle; failed/partial attempts are throttled by the snapshot.
-                    row=finalise_closed_positions_from_store(
-                        self.store,CHAINS[c],self.settings.wallet_address,self.market,limit=1
-                    )
-                    if row.get("attempted"):
-                        closed_finalisation.append({"chain":c,**row})
-                except Exception as exc:
-                    closed_finalisation.append({"chain":c,"attempted":0,"finalised":0,"partial":0,"errors":[str(exc)]})
+            # Historical CLOSED reconstruction is intentionally excluded from the
+            # live refresh path. Scanning old NFT lifecycles can span millions of
+            # blocks and must never hold the lock needed to refresh current LP fees,
+            # values and range state. Historical accounting is now a separate/manual
+            # workflow until a bounded dedicated job is introduced.
             payload = {
                 "ok": any(r.get("ok") for r in results), "read_at": time.time(),
                 "chains": sorted(results, key=lambda r: r.get("chain", "")),
-                "closed_finalisation":closed_finalisation,
+                "closed_finalisation":[],
+                "closed_history_mode":"MANUAL_ONLY",
             }
             self.store.set_setting("live:last_refresh", payload)
             payload["risk_decisions_recorded"] = self._record_position_risk_decisions()
@@ -311,15 +306,25 @@ class LiveDataService:
             while not self._stop.is_set():
                 try:
                     policy=(self.store.get_setting("automation:policy",{}) or {})
-                    if policy.get("market_monitoring",True) or policy.get("wallet_refresh",True):
-                        self.refresh_positions()
+
+                    # Current LP state is factual portfolio data, not an automation
+                    # action. It must stay fresh even when optional market-monitoring,
+                    # scouting or review automations are disabled.
+                    self.refresh_positions()
+
                     wallet_snap=self.store.get_wallet_snapshot() or {}
                     if policy.get("wallet_refresh",True) and time.time()-float(wallet_snap.get("stored_at") or 0) >= 300:
                         self.refresh_wallet(include_health=False)
                     if policy.get("scout_discovery",True) and time.time()-last_scout >= 15*60:
                         self.background_scout_once(); last_scout=time.time()
-                except Exception:
-                    pass
+                    self.store.set_setting("live:background_health",{
+                        "ok":True,"last_tick":time.time(),"last_error":None,
+                    })
+                except Exception as exc:
+                    # Never silently hide a dead/stalled background loop again.
+                    self.store.set_setting("live:background_health",{
+                        "ok":False,"last_tick":time.time(),"last_error":str(exc)[:240],
+                    })
                 if self._stop.wait(self.settings.live_refresh_seconds): break
 
         self._thread = threading.Thread(target=worker, name="lp-manager-live-refresh", daemon=True)
