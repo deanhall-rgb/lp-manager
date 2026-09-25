@@ -500,7 +500,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         sleeve=str(intent.sleeve or "AUTO").upper()
         target=max(0.0,float(intent.monthly_target_pct))
         cache_key=(
-            f"profit:last:v089:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
+            f"profit:last:v0810:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
             f"{round(capital_usd,2)}:{round(target,2)}"
         )
         pool_fallback=None
@@ -514,11 +514,22 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 evaluation=dict(op.get("evaluation") or {})
                 if evaluation.get("advisor_economics") and not pool_fallback.get("quick_economics"):
                     pool_fallback["quick_economics"]=evaluation.get("advisor_economics")
+                if pool_fallback.get("quick_economics") and not pool_fallback.get("quick_economics_context"):
+                    advisor_sleeve=str(evaluation.get("advisor_sleeve") or sleeve or "TACTICAL_CAMPAIGN").upper()
+                    pool_fallback["quick_economics_context"]={
+                        "capital_usd":1000.0,
+                        "active_time_pct":84.0 if advisor_sleeve=="CORE_INCOME" else 60.0,
+                        "width_pct":48.0 if advisor_sleeve=="CORE_INCOME" else 22.0,
+                        "source":"PORTFOLIO_ADVISOR_PERSISTED_EVIDENCE",
+                    }
                 break
 
         with profit_request_lock:
             recent=store.get_setting(cache_key,None)
-            if isinstance(recent,dict) and time.time()-float(recent.get("generated_at") or 0)<20:
+            advisor_daily=float((((pool_fallback or {}).get("quick_economics") or {}).get("estimated_fee_income") or {}).get("daily") or 0)
+            recent_fees=float((((recent or {}).get("recommended_range") or {}).get("forecast") or {}).get("expected_fees_usd") or 0) if isinstance(recent,dict) else 0.0
+            recent_is_usable=not (advisor_daily>0 and recent_fees<=0)
+            if isinstance(recent,dict) and recent_is_usable and time.time()-float(recent.get("generated_at") or 0)<20:
                 reused=dict(recent)
                 reused["data_status"]="RECENT_RESULT_REUSED"
                 reused["provider_warning"]="Rapid repeat request reused the last validated Profit Lab result."
@@ -532,7 +543,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 )
                 result["generated_at"]=time.time()
                 result["data_status"]="LIVE_OR_VALIDATED_HISTORY"
-                audit=store.record_forecast_snapshot(result,model_version="v0.8.9")
+                audit=store.record_forecast_snapshot(result,model_version="v0.8.10")
                 result["forecast_snapshot_id"]=audit["id"]
                 store.set_setting("profit:last_recommendation", result)
                 store.set_setting(cache_key,result)
