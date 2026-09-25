@@ -1200,13 +1200,24 @@ def finalise_closed_positions_from_store(
     """
     if not cfg.rpc_url() or not wallet:
         return {"attempted":0,"finalised":0,"partial":0,"errors":[]}
-    rows=[
-        p for p in store.list_positions("CLOSED")
-        if str(p.get("chain") or "").upper()==cfg.key
-        and str(p.get("source") or "")=="live_chain"
-        and str(p.get("lifecycle_stage") or "").upper()!="CLOSED_FINAL"
-        and str(p.get("token_id") or "").isdigit()
-    ][:max(1,int(limit))]
+    now=time.time()
+    rows=[]
+    for p in store.list_positions("CLOSED"):
+        if str(p.get("chain") or "").upper()!=cfg.key:
+            continue
+        if str(p.get("source") or "")!="live_chain":
+            continue
+        if str(p.get("lifecycle_stage") or "").upper()=="CLOSED_FINAL":
+            continue
+        if not str(p.get("token_id") or "").isdigit():
+            continue
+        snap=store.get_position_snapshot(str(p.get("id") or "")) or {}
+        checked=float(snap.get("closed_final_checked_at") or 0)
+        if checked and now-checked<15*60:
+            continue
+        rows.append(p)
+        if len(rows)>=max(1,int(limit)):
+            break
     if not rows:
         return {"attempted":0,"finalised":0,"partial":0,"errors":[]}
     try:
