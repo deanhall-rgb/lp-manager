@@ -925,7 +925,7 @@ def _closed_position_final(
 
     closed_at=close_timestamp or max([float(x.get("timestamp") or 0) for x in events] or [0.0])
     principal_settled=pending_principal0<=1e-12 and pending_principal1<=1e-12
-    complete=bool(contributions>0 and has_collect and valuations_complete and gas_complete and principal_settled)
+    complete=bool(contributions>0 and has_collect and valuations_complete and gas_complete and principal_settled and liquidity_balance==0)
     pnl=(distributions-contributions-gas_usd) if complete else None
     return {
         "complete":complete,
