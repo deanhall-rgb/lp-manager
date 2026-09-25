@@ -55,10 +55,11 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
         accounting=position_accounting(p,snap,tracker)
         observed=observed_fee_metrics(tracker,cost or value)
         if accounting.get("basis_ready"):
-            known_basis+=cost
+            trusted_cost=_f(accounting.get("cost_basis_usd"),cost)
+            known_basis+=trusted_cost
             pnl_basis_rows+=1
             absolute_pnl+=_f(accounting.get("absolute_pnl_incl_fees_usd"))
-            unrealised_principal_pnl+=value-cost
+            unrealised_principal_pnl+=value-trusted_cost
         realised_fee_floor+=max(0.0,_f(p.get("realised_fees")))-max(0.0,_f(p.get("gas_costs")))
         if accounting.get("hodl_value_usd") is not None:
             hodl_rows+=1
