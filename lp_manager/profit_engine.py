@@ -389,10 +389,11 @@ def _load_pool_and_history(
             warning=warning or str(exc)
 
     cache_key=f"profit:history:v089:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
+    legacy_cache_key=f"profit:history:v088:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
     cached_rows=[]
     cached_provider=""
     if store is not None:
-        cached=store.get_setting(cache_key,{}) or {}
+        cached=store.get_setting(cache_key,{}) or store.get_setting(legacy_cache_key,{}) or {}
         cached_rows=list(cached.get("candles") or [])
         cached_provider=str(cached.get("provider") or "PERSISTED_HISTORY_CACHE")
         if not candles and len(cached_rows)>=minimum and _history_matches_spot(cached_rows,live_spot):
