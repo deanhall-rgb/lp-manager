@@ -539,6 +539,9 @@ def _recommend_single_pool(
         empirical_day=0.0
         empirical_width_scale=1.0
         empirical_source=None
+        advisor_econ=dict(pool.get("quick_economics") or {})
+        advisor_ctx=dict(pool.get("quick_economics_context") or {})
+        advisor_day=0.0
         empirical_evidence=observed_pool if observed_pool.get("available") else observed_pair
         if empirical_evidence.get("available"):
             samples=empirical_evidence.get("samples") or []
@@ -555,14 +558,33 @@ def _recommend_single_pool(
             empirical_day=_f(empirical_evidence.get("fee_day_per_usd"))*capital*empirical_width_scale*active_scale
             empirical_source="EXACT_OWNED_POOL" if observed_pool.get("available") else "SAME_PAIR_OWNED_PRIOR"
 
+        if econ.get("mode") == "INSUFFICIENT_DATA" and empirical_day<=0 and advisor_econ.get("mode")!="INSUFFICIENT_DATA":
+            quick_daily=_f((advisor_econ.get("estimated_fee_income") or {}).get("daily"))
+            quick_cap=max(1.0,_f(advisor_ctx.get("capital_usd"),_f(advisor_econ.get("capital_usd"),1000.0)))
+            quick_width=max(1.0,_f(advisor_ctx.get("width_pct"),48.0 if sleeve_u=="CORE_INCOME" else 22.0))
+            quick_active=max(1.0,_f(advisor_ctx.get("active_time_pct"),84.0 if sleeve_u=="CORE_INCOME" else 60.0))
+            if quick_daily>0:
+                geometry=max(0.65,min(1.35,math.sqrt(quick_width/max(1.0,candidate.width_pct))))
+                activity=max(0.45,min(1.15,_f(analysis.get("average_horizon_activity_pct"))/quick_active))
+                # The Advisor estimate came from the same pool evidence, but this
+                # transfer is still haircut because the Profit range geometry differs.
+                advisor_day=quick_daily*(capital/quick_cap)*geometry*activity*0.80
+                empirical_day=advisor_day
+                empirical_width_scale=geometry
+                empirical_source="ADVISOR_CANONICAL_ECONOMICS"
+
         if econ.get("mode") == "INSUFFICIENT_DATA":
             if empirical_day<=0:
                 continue
             fee_bps,_fee_source=infer_fee_tier_bps(pool)
             evidence_age=_f(empirical_evidence.get("max_age_days"))
-            persistence=0.58 if empirical_source=="SAME_PAIR_OWNED_PRIOR" else 0.62 if evidence_age<3 else 0.72
+            persistence=0.58 if empirical_source=="SAME_PAIR_OWNED_PRIOR" else 0.60 if empirical_source=="ADVISOR_CANONICAL_ECONOMICS" else 0.62 if evidence_age<3 else 0.72
             econ={
-                "mode":"ESTIMATED_FROM_EXACT_OWNED_POOL_FEES" if empirical_source=="EXACT_OWNED_POOL" else "ESTIMATED_FROM_SAME_PAIR_OWNED_PRIOR",
+                "mode":(
+                    "ESTIMATED_FROM_EXACT_OWNED_POOL_FEES" if empirical_source=="EXACT_OWNED_POOL"
+                    else "ESTIMATED_FROM_ADVISOR_CANONICAL_ECONOMICS" if empirical_source=="ADVISOR_CANONICAL_ECONOMICS"
+                    else "ESTIMATED_FROM_SAME_PAIR_OWNED_PRIOR"
+                ),
                 "estimated":True,
                 "capital_usd":round(capital,2),
                 "fee_tier_bps":round(fee_bps,3),
@@ -579,12 +601,16 @@ def _recommend_single_pool(
                 "estimated_net_month_pct":round((empirical_day*30.4375*persistence-max(0.0,interventions_month)*1.5)/capital*100.0,2),
                 "persistence_haircut_factor":persistence,
                 "liquidity_share_baseline_pct":0.0,
-                "fee_share_method":"EXACT_OWNED_POOL_OBSERVED_FEE_RATE" if empirical_source=="EXACT_OWNED_POOL" else "SAME_PAIR_OWNED_FEE_PRIOR",
-                "confidence":"LOW" if empirical_source=="SAME_PAIR_OWNED_PRIOR" or evidence_age<3 else "MODERATE",
+                "fee_share_method":(
+                    "EXACT_OWNED_POOL_OBSERVED_FEE_RATE" if empirical_source=="EXACT_OWNED_POOL"
+                    else "PORTFOLIO_ADVISOR_CANONICAL_ECONOMICS" if empirical_source=="ADVISOR_CANONICAL_ECONOMICS"
+                    else "SAME_PAIR_OWNED_FEE_PRIOR"
+                ),
+                "confidence":"LOW" if empirical_source in {"SAME_PAIR_OWNED_PRIOR","ADVISOR_CANONICAL_ECONOMICS"} or evidence_age<3 else "MODERATE",
                 "observed_pool_fallback":empirical_evidence,
                 "assumptions":[
                     "Public pool volume was unavailable, so fee economics use owned live evidence.",
-                    "Exact-pool evidence is preferred. Same-pair evidence from another pool is heavily haircut and remains LOW confidence.",
+                    "Exact-pool evidence is preferred. Same-pair or Advisor-screen evidence is haircut and remains LOW confidence until pool-volume evidence returns.",
                 ],
             }
         share = _f(econ.get("liquidity_share_baseline_pct")) / 100.0
@@ -597,10 +623,14 @@ def _recommend_single_pool(
         fee_forecast_source="PUBLIC_POOL_VOLUME_MODEL"
         if empirical_day>0 and (_f(pool.get("volume_24h_usd"))<=0 or current_day<=0):
             current_day=empirical_day
-            fee_forecast_source="EXACT_OWNED_POOL_OBSERVED_FALLBACK" if empirical_source=="EXACT_OWNED_POOL" else "SAME_PAIR_OWNED_FEE_PRIOR"
+            fee_forecast_source=(
+                "EXACT_OWNED_POOL_OBSERVED_FALLBACK" if empirical_source=="EXACT_OWNED_POOL"
+                else "ADVISOR_CANONICAL_ECONOMICS" if empirical_source=="ADVISOR_CANONICAL_ECONOMICS"
+                else "SAME_PAIR_OWNED_FEE_PRIOR"
+            )
         p_month = _f(econ.get("persistence_haircut_factor"), 0.65)
         p_h = _horizon_persistence(p_month, horizon)
-        calibration_factor=1.0 if fee_forecast_source in {"EXACT_OWNED_POOL_OBSERVED_FALLBACK","SAME_PAIR_OWNED_FEE_PRIOR"} else _f(calibration.get("factor"), 1.0)
+        calibration_factor=1.0 if fee_forecast_source in {"EXACT_OWNED_POOL_OBSERVED_FALLBACK","SAME_PAIR_OWNED_FEE_PRIOR","ADVISOR_CANONICAL_ECONOMICS"} else _f(calibration.get("factor"), 1.0)
         calibrated_day = current_day * calibration_factor
         forecast_fees = max(0.0, calibrated_day * horizon * p_h)
         intervention_cost = max(0.0, interventions_month) * 1.5 * horizon / 30.4375
