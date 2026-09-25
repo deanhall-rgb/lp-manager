@@ -505,6 +505,14 @@ class Store:
         return {"linked_events":linked_events,"linked_forecasts":linked_forecasts}
 
 
+    def add_position_gas_cost(self, position_id: str, gas_usd: float) -> float:
+        value=max(0.0,float(gas_usd or 0))
+        with self.connect() as con:
+            con.execute("UPDATE positions SET gas_costs=COALESCE(gas_costs,0)+? WHERE id=?",(value,position_id))
+            row=con.execute("SELECT gas_costs FROM positions WHERE id=?",(position_id,)).fetchone()
+        return float(row[0] or 0) if row else 0.0
+
+
     def record_closed_position_economics(
         self, position_id: str, *, reported_net_pnl: float, reported_net_pnl_pct: float,
         gas_costs: float, quality: str = "ONCHAIN_CLOSE_RECEIPT",
