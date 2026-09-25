@@ -60,14 +60,21 @@ def position_accounting(
         )
     )
 
-    lp_plus_fees = current_principal + fees_earned - gas
-    absolute_pnl = (lp_plus_fees - cost) if basis_ready else None
-    absolute_return = (absolute_pnl / cost * 100.0) if basis_ready and cost > 0 else None
+    # Operator-facing P/L is intentionally simple and auditable:
+    # current LP value + all tracked fees earned - verified opening capital.
+    # Transaction costs remain a separate line so the user can see both gross LP
+    # performance and true after-cost wealth without hidden deductions.
+    strategy_wealth = current_principal + fees_earned
+    gross_pnl = (strategy_wealth - cost) if basis_ready else None
+    gross_return = (gross_pnl / cost * 100.0) if basis_ready and cost > 0 else None
+    net_wealth_after_costs = strategy_wealth - gas
+    net_pnl_after_costs = (net_wealth_after_costs - cost) if basis_ready else None
+    net_return_after_costs = (net_pnl_after_costs / cost * 100.0) if basis_ready and cost > 0 else None
 
     price0 = max(0.0, _f(t0.get("price_usd")))
     price1 = max(0.0, _f(t1.get("price_usd")))
     hodl_value = amount0 * price0 + amount1 * price1 if (amount0 > 0 or amount1 > 0) and (amount0<=0 or price0>0) and (amount1<=0 or price1>0) else None
-    lp_vs_hodl = lp_plus_fees - hodl_value if hodl_value is not None else None
+    lp_vs_hodl = strategy_wealth - hodl_value if hodl_value is not None else None
     lp_vs_hodl_pct = lp_vs_hodl / hodl_value * 100.0 if hodl_value and hodl_value > 0 else None
 
     opened=_f(entry.get("opened_at") or snapshot.get("opened_at") or position.get("opened_at"))
@@ -86,9 +93,13 @@ def position_accounting(
         "current_principal_usd": round(current_principal, 4),
         "fees_earned_usd": round(fees_earned, 4),
         "gas_costs_usd": round(gas, 4),
-        "lp_plus_fees_usd": round(lp_plus_fees, 4),
-        "absolute_pnl_incl_fees_usd": round(absolute_pnl, 4) if absolute_pnl is not None else None,
-        "absolute_return_incl_fees_pct": round(absolute_return, 4) if absolute_return is not None else None,
+        "strategy_wealth_usd": round(strategy_wealth, 4),
+        "lp_plus_fees_usd": round(strategy_wealth, 4),
+        "absolute_pnl_incl_fees_usd": round(gross_pnl, 4) if gross_pnl is not None else None,
+        "absolute_return_incl_fees_pct": round(gross_return, 4) if gross_return is not None else None,
+        "net_wealth_after_costs_usd": round(net_wealth_after_costs, 4),
+        "net_pnl_after_costs_usd": round(net_pnl_after_costs, 4) if net_pnl_after_costs is not None else None,
+        "net_return_after_costs_pct": round(net_return_after_costs, 4) if net_return_after_costs is not None else None,
         "hodl_value_usd": round(hodl_value, 4) if hodl_value is not None else None,
         "lp_vs_hodl_usd": round(lp_vs_hodl, 4) if lp_vs_hodl is not None else None,
         "lp_vs_hodl_pct": round(lp_vs_hodl_pct, 4) if lp_vs_hodl_pct is not None else None,
