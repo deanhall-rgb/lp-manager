@@ -164,14 +164,14 @@ class GeckoTerminalClient:
         api_key=os.getenv("ALCHEMY_API_KEY", "").strip()
         if not api_key:
             return []
-        cfg=chain_config(chain_key)
+        cfg=chain_config(chain_key) if str(chain_key or "").strip() else None
         end=datetime.now(timezone.utc)
         start=end-timedelta(days=max(1,int(days)))
         interval="1h" if str(timeframe).lower()=="hour" else "1d"
         identity={}
         address=str(token.get("address") or "").strip()
         symbol=str(token.get("symbol") or "").strip()
-        if address and cfg.alchemy_slug:
+        if address and cfg and cfg.alchemy_slug:
             identity={"network":cfg.alchemy_slug,"address":address}
         elif symbol:
             identity={"symbol":symbol}
