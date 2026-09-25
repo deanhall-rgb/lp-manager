@@ -664,7 +664,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         if result:
             top=result[0]; hour=int(time.time()//3600)
             try:
-                store.add_decision(Decision(id=uuid.uuid5(uuid.NAMESPACE_URL,f"scout:{chain.upper()}:{top.get('pool_address')}:{hour}").hex,position_id=None,created_at=time.time(),severity="INFO",action="OPPORTUNITY_REVIEW",confidence=max(float((top.get("evaluation") or {}).get("core_pre_score") or 0),float((top.get("evaluation") or {}).get("tactical_pre_score") or 0))/100.0,summary=f"{top.get('pair')} currently leads the {chain.upper()} scout",rationale=f"Current pool quality, TVL and activity rank it highest in this scan; economics shown are estimates pending Strategy Lab.",trigger="SCOUT_REFRESH",source="SCOUT",evidence={"chain":chain.upper(),"pair":top.get("pair"),"pool":top.get("pool_address"),"sleeve":top.get("sleeve"),"est_month_per_1000":(top.get("quick_economics") or {}).get("estimated_operating_net_month_usd",(top.get("quick_economics") or {}).get("estimated_net_month_usd"))}))
+                store.add_decision(Decision(id=uuid.uuid5(uuid.NAMESPACE_URL,f"scout:{chain.upper()}:{top.get('pool_address')}:{hour}").hex,position_id=None,created_at=time.time(),severity="INFO",action="OPPORTUNITY_REVIEW",confidence=max(float((top.get("evaluation") or {}).get("core_pre_score") or 0),float((top.get("evaluation") or {}).get("tactical_pre_score") or 0))/100.0,summary=f"{top.get('pair')} currently leads the {chain.upper()} scout",rationale=f"Current pool quality, TVL and activity rank it highest in this scan; economics shown are estimates pending a full Profit Lab analysis.",trigger="SCOUT_REFRESH",source="SCOUT",evidence={"chain":chain.upper(),"pair":top.get("pair"),"pool":top.get("pool_address"),"sleeve":top.get("sleeve"),"est_month_per_1000":(top.get("quick_economics") or {}).get("estimated_operating_net_month_usd",(top.get("quick_economics") or {}).get("estimated_net_month_usd"))}))
             except Exception:
                 pass
         return {"chain": chain.upper(), "count": len(result), "pools": result, "provider_status":provider_status, "provider_error":provider_error, "stale":False}
@@ -850,7 +850,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             raise HTTPException(503, "Market data is disabled")
         # Opportunity AI is deliberately resilient: a historical-provider
         # failure must not strand the UI on "Investigating…". Resolve the
-        # pool first, then attach whatever Strategy Lab evidence is available.
+        # pool first, then attach whatever unified profit/range evidence is available.
         try:
             resolved, pool = live.market.resolve_pool(chain.upper(), address) if hasattr(live.market, "resolve_pool") else (chain.upper(), live.market.pool(chain.upper(), address))
         except Exception as exc:
@@ -880,7 +880,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             }
         memo = intelligence.opportunity_memo(pool, lab)
         if lab_error:
-            memo["analysis_warning"] = f"Historical Strategy Lab evidence unavailable: {lab_error}"
+            memo["analysis_warning"] = f"Historical profit/range evidence unavailable: {lab_error}"
         return memo
 
     @app.post("/api/portfolio-advisor")
@@ -1010,7 +1010,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def support_bundle():
         path = build_support_bundle(
             store, output_dir=settings.data_dir / "support",
-            extra={"version":"0.8.6", "execution":executor.capabilities(), "scout_universe":scout_universe()},
+            extra={"version":"0.8.7", "execution":executor.capabilities(), "scout_universe":scout_universe()},
         )
         return {"ok": True, "filename": path.name, "download": f"/api/support/bundle/{path.name}"}
 
