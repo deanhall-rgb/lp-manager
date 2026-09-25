@@ -666,56 +666,64 @@ def _recommend_single_pool(
             "intervention_penalty": round(intervention_penalty, 1),
         }
     # Hard guardrails define the admissible set; within that set the winner is
-    # the highest believable expected net cash profit. Historical survival and
-    # regime evidence explain the decision but do not outrank money.
+    # expected net cash profit. Width now has to be believable for the observed
+    # volatility and requested horizon, not merely historically survivable.
+    edge_limits=_volatility_edge_limits(sleeve_u,horizon,regime)
     for row in rows:
         active=_f((row.get("analysis") or {}).get("average_horizon_activity_pct"))
         interventions=_f((row.get("analysis") or {}).get("excursions"))
         inv=row.get("inventory_outcomes") or {}
-        nearest=min(
-            _f(inv.get("distance_below_current_pct"),999.0),
-            _f(inv.get("distance_above_current_pct"),999.0),
-        )
+        below=_f(inv.get("distance_below_current_pct"),0.0)
+        above=_f(inv.get("distance_above_current_pct"),0.0)
+        nearest=min(below,above)
+        farthest=max(below,above)
+        asymmetry=farthest/max(nearest,1e-9) if nearest>0 else 999.0
         blockers=[]
         if sleeve_u=="CORE_INCOME":
-            below=_f(inv.get("distance_below_current_pct"),0.0)
-            above=_f(inv.get("distance_above_current_pct"),0.0)
-            farthest=max(below,above)
-            asymmetry=farthest/max(nearest,1e-9)
-            max_far=20.0 if horizon<=7 else 25.0 if horizon<=14 else 30.0 if horizon<=30 else 40.0
             if active < 45.0:
                 blockers.append("CORE_ACTIVE_TIME_UNDER_45PCT")
             if interventions > 8:
                 blockers.append("CORE_TOO_MANY_HISTORICAL_EXCURSIONS")
-            if nearest < 2.5:
-                blockers.append("CORE_NEAREST_EDGE_UNDER_2_5PCT")
-            if farthest > max_far:
-                blockers.append(f"CORE_FARTHEST_EDGE_OVER_{int(max_far)}PCT")
-            if nearest>0 and asymmetry>2.75:
-                blockers.append("CORE_EXCESSIVE_RANGE_ASYMMETRY")
         else:
             if active < 25.0:
                 blockers.append("TACTICAL_ACTIVE_TIME_UNDER_25PCT")
-            if nearest < 1.0:
-                blockers.append("TACTICAL_NEAREST_EDGE_UNDER_1PCT")
+            if interventions > 12:
+                blockers.append("TACTICAL_TOO_MANY_HISTORICAL_EXCURSIONS")
+        if nearest < _f(edge_limits.get("min_nearest_edge_pct")):
+            blockers.append("NEAREST_EDGE_TOO_TIGHT_FOR_REALIZED_VOLATILITY")
+        if farthest > _f(edge_limits.get("max_farthest_edge_pct")):
+            blockers.append("FARTHEST_EDGE_IMPLAUSIBLY_WIDE_FOR_HORIZON")
+        if nearest>0 and asymmetry>_f(edge_limits.get("max_asymmetry_ratio"),2.0):
+            blockers.append("EXCESSIVE_RANGE_ASYMMETRY")
         row["selection_guardrail"]={
             "eligible":not blockers,
             "blockers":blockers,
-            "principle":"MAX_EXPECTED_NET_PROFIT_SUBJECT_TO_HARD_RANGE_GUARDRAILS",
+            "principle":"MAX_EXPECTED_NET_PROFIT_INSIDE_VOLATILITY_AND_HORIZON_GUARDRAILS",
             "edge_balance":{
+                "below_current_pct":round(below,3),
+                "above_current_pct":round(above,3),
                 "nearest_edge_pct":round(nearest,3),
-                "farthest_edge_pct":round(max(
-                    _f(inv.get("distance_below_current_pct"),0.0),
-                    _f(inv.get("distance_above_current_pct"),0.0),
-                ),3),
-                "core_max_farthest_edge_pct":(
-                    20.0 if horizon<=7 else 25.0 if horizon<=14 else 30.0 if horizon<=30 else 40.0
-                ) if sleeve_u=="CORE_INCOME" else None,
+                "farthest_edge_pct":round(farthest,3),
+                "asymmetry_ratio":round(asymmetry,3),
+                **edge_limits,
             },
         }
 
     eligible=[r for r in rows if (r.get("selection_guardrail") or {}).get("eligible")]
-    ranked_pool=eligible or rows
+    if not eligible:
+        closest=sorted(
+            rows,
+            key=lambda r:(
+                len((r.get("selection_guardrail") or {}).get("blockers") or []),
+                -_f((r.get("forecast") or {}).get("expected_net_usd")),
+            ),
+        )[:3]
+        reasons=sorted({b for r in closest for b in ((r.get("selection_guardrail") or {}).get("blockers") or [])})
+        raise ValueError(
+            "No candidate range passed V0.8.8 volatility/horizon guardrails"
+            + (f": {', '.join(reasons[:4])}" if reasons else "")
+        )
+    ranked_pool=eligible
     ranked_pool.sort(
         key=lambda r:(
             _f((r.get("forecast") or {}).get("expected_net_usd"),-1e18),
