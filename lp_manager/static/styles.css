@@ -28,3 +28,23 @@
 .wallet-picker-note{margin:14px 2px 0}
 @media(max-width:1100px){.performance-four{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:760px){.performance-four{grid-template-columns:1fr}.performance-four .metric .value{font-size:24px}}
+
+/* v0.8.9 bug-fix UX */
+.performance-result{display:block;width:100%}
+.performance-four{width:100%;grid-template-columns:repeat(4,minmax(180px,1fr))}
+.performance-four .metric{min-width:0}
+.performance-four .metric .value{font-size:20px;line-height:1.2;overflow-wrap:anywhere}
+.performance-four .metric .sub{line-height:1.35}
+.fee-audit{margin-top:12px;border:1px solid var(--line);border-radius:10px;background:#0a1520;padding:10px 12px}
+.fee-audit summary{cursor:pointer;color:#cfe0ef;font-weight:650}
+.fee-audit-row{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:9px 2px;border-bottom:1px solid var(--line)}
+.fee-audit-row:last-child{border-bottom:0}
+.fee-audit-row span{min-width:0}
+.fee-audit-row small{display:block;color:var(--muted);font-size:10px;margin-top:2px}
+.wallet-provider-fallback.phantom{background:#7c5cff;color:#fff}
+.wallet-provider-fallback.phantom svg{width:28px;height:28px;display:block}
+.wallet-provider-fallback.phantom path{fill:#fff}
+.wallet-provider-fallback.phantom circle{fill:#7c5cff}
+.wallet-provider-choice:disabled{opacity:.7;cursor:wait}
+@media(max-width:1200px){.performance-four{grid-template-columns:repeat(2,minmax(180px,1fr))}}
+@media(max-width:720px){.performance-four{grid-template-columns:1fr}.fee-audit-row{align-items:flex-start}}
