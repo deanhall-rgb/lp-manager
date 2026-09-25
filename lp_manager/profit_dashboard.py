@@ -6,6 +6,7 @@ from typing import Any
 from .analytics import range_metrics
 from .portfolio_accounting import position_accounting
 from .fee_metrics import observed_fee_metrics, calendar_fee_metrics
+from .financial_truth import portfolio_financial_truth
 
 
 def _f(v: Any, default: float = 0.0) -> float:
@@ -102,6 +103,7 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
     rows.sort(key=lambda r:r["fees_24h"],reverse=True)
     fee_run_rate_month=mature_fee24*30.4375
     lp_vs_hodl=lp_total_for_hodl-hodl_total if hodl_rows else None
+    truth=portfolio_financial_truth(store)
     return {
         "open_positions":len(open_rows),
         "deployed_value":round(deployed,2),
@@ -116,6 +118,7 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
             "today_usd":round(calendar_today,2),
             "week_usd":round(calendar_week,2),
             "month_usd":round(calendar_month,2),
+            "all_time_usd":round(_f(truth.get("all_time_known_fees_usd")),2),
             "resets":{"today":"LOCAL_MIDNIGHT","week":"MONDAY_00:00_LOCAL","month":"FIRST_DAY_00:00_LOCAL"},
             "quality":"PARTIAL" if any(str(x or "").startswith("PARTIAL") for x in calendar_quality) else "COMPLETE",
         },
@@ -127,6 +130,9 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
         "recorded_net_profit":round(absolute_pnl,2) if pnl_basis_rows else None,
         "unrealised_principal_pnl":round(unrealised_principal_pnl,2) if pnl_basis_rows else None,
         "realised_fee_pnl_floor":round(realised_fee_floor,2),
+        "realised_gain_loss_usd":truth.get("realised_gain_loss_usd"),
+        "transaction_costs_usd":truth.get("transaction_costs_usd"),
+        "financial_truth":truth,
         "lp_vs_hodl_usd":round(lp_vs_hodl,2) if lp_vs_hodl is not None else None,
         "hodl_benchmark_value_usd":round(hodl_total,2) if hodl_rows else None,
         "lp_value_for_hodl_comparison_usd":round(lp_total_for_hodl,2) if hodl_rows else None,
@@ -139,5 +145,5 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
         },
         "positions":rows,
         "best_fee_producer":rows[0] if rows else None,
-        "note":"Fee production, absolute P/L and LP-vs-HODL are separate. Monthly fee run-rate excludes positions with less than 24 hours of observations.",
+        "note":"Fee production, gross P/L incl. fees, realised G/L, transaction costs and LP-vs-HODL are separate. Monthly fee run-rate excludes positions with less than 24 hours of observations.",
     }
