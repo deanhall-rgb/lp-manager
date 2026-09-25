@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 import math
+import threading
 from pathlib import Path
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -301,6 +302,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     executor = ExecutionService(settings, store)
     live = LiveDataService(settings, store)
     intelligence = IntelligenceService(settings, store)
+    profit_request_lock = threading.Lock()
 
     def _visible_positions(status: str | None = None) -> list[dict[str, Any]]:
         rows=store.list_positions(status)
@@ -491,31 +493,69 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def profit_recommend(intent: ProfitRangeIntent):
         if not live.market:
             raise HTTPException(503, "Market data is disabled")
+        chain=intent.chain.upper()
+        address=str(intent.pool_address or "").lower()
+        horizon=max(1/24.0,min(90.0,float(intent.horizon_days)))
+        capital_usd=max(1.0,_display_capital_to_usd(intent.capital))
+        sleeve=str(intent.sleeve or "AUTO").upper()
+        target=max(0.0,float(intent.monthly_target_pct))
+        cache_key=(
+            f"profit:last:v089:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
+            f"{round(capital_usd,2)}:{round(target,2)}"
+        )
         pool_fallback=None
-        for op in store.list_opportunities(300):
+        for op in store.list_opportunities(500):
             candidate=dict(op.get("candidate") or {})
-            if str(candidate.get("pool_address") or "").lower()==str(intent.pool_address or "").lower() and str(candidate.get("chain") or op.get("chain") or "").upper()==intent.chain.upper():
-                pool_fallback=candidate; break
-        try:
-            result=recommend_profit_range(
-                live.market, store, intent.chain.upper(), intent.pool_address,
-                horizon_days=max(1/24.0,min(90.0,float(intent.horizon_days))),
-                capital=max(1.0,_display_capital_to_usd(intent.capital)), sleeve=intent.sleeve,
-                monthly_target_pct=max(0.0,float(intent.monthly_target_pct)),
-                history_days=intent.history_days, pool_fallback=pool_fallback,
-            )
-            result["generated_at"]=time.time()
-            result["data_status"]="LIVE_OR_FRESH_HISTORY"
-            audit=store.record_forecast_snapshot(result,model_version="v0.8.8")
-            result["forecast_snapshot_id"]=audit["id"]
-            store.set_setting("profit:last_recommendation", result)
-            cache_key=f"profit:last:{intent.chain.upper()}:{intent.pool_address.lower()}:{round(float(intent.horizon_days),3)}:{str(intent.sleeve).upper()}"
-            store.set_setting(cache_key,result)
-            return result
-        except ValueError as exc:
-            raise HTTPException(400,str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(503,f"Profit recommendation unavailable: {str(exc)[:280]}") from exc
+            if str(candidate.get("pool_address") or "").lower()==address and str(candidate.get("chain") or op.get("chain") or "").upper()==chain:
+                pool_fallback=candidate
+                # Advisor quick economics is part of the canonical persisted
+                # opportunity evidence used by Profit Lab if public volume later
+                # disappears from the provider response.
+                evaluation=dict(op.get("evaluation") or {})
+                if evaluation.get("advisor_economics") and not pool_fallback.get("quick_economics"):
+                    pool_fallback["quick_economics"]=evaluation.get("advisor_economics")
+                break
+
+        with profit_request_lock:
+            recent=store.get_setting(cache_key,None)
+            if isinstance(recent,dict) and time.time()-float(recent.get("generated_at") or 0)<20:
+                reused=dict(recent)
+                reused["data_status"]="RECENT_RESULT_REUSED"
+                reused["provider_warning"]="Rapid repeat request reused the last validated Profit Lab result."
+                return reused
+            try:
+                result=recommend_profit_range(
+                    live.market, store, chain, intent.pool_address,
+                    horizon_days=horizon, capital=capital_usd, sleeve=sleeve,
+                    monthly_target_pct=target,
+                    history_days=intent.history_days, pool_fallback=pool_fallback,
+                )
+                result["generated_at"]=time.time()
+                result["data_status"]="LIVE_OR_VALIDATED_HISTORY"
+                audit=store.record_forecast_snapshot(result,model_version="v0.8.9")
+                result["forecast_snapshot_id"]=audit["id"]
+                store.set_setting("profit:last_recommendation", result)
+                store.set_setting(cache_key,result)
+                return result
+            except Exception as exc:
+                cached=store.get_setting(cache_key,None)
+                if not isinstance(cached,dict):
+                    last=store.get_setting("profit:last_recommendation",None)
+                    if isinstance(last,dict) and str(last.get("chain") or "").upper()==chain and str(last.get("pool_address") or "").lower()==address:
+                        cached=last
+                if isinstance(cached,dict):
+                    fallback=dict(cached)
+                    fallback["data_status"]="STALE_VALIDATED_RECOMMENDATION"
+                    fallback["provider_warning"]=f"Fresh provider evidence was unavailable; reused the last validated result. {str(exc)[:180]}"
+                    fallback["stale_age_seconds"]=round(max(0.0,time.time()-float(cached.get("generated_at") or 0)),1)
+                    return fallback
+                message=str(exc)
+                provider_problem=any(x in message.lower() for x in ("historical sample","rate limit","429","provider cooldown","geckoterminal","market feed"))
+                if provider_problem:
+                    raise HTTPException(503,f"Profit data temporarily unavailable; no validated fallback exists yet. {message[:220]}") from exc
+                if isinstance(exc,ValueError):
+                    raise HTTPException(400,message) from exc
+                raise HTTPException(503,f"Profit recommendation unavailable: {message[:280]}") from exc
 
     @app.post("/api/profit/search")
     def profit_search(intent: ProfitSearchIntent):
@@ -954,8 +994,14 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 width_pct=48.0 if sleeve=="CORE_INCOME" else 22.0,
                 regime={},
             )
+            persisted_candidate={**row,"quick_economics":economics}
+            persisted_evaluation={**evaluation,"advisor_economics":economics,"advisor_sleeve":sleeve}
+            try:
+                store.upsert_opportunity(candidate=persisted_candidate,evaluation=persisted_evaluation,status="WATCH")
+            except Exception:
+                pass
             per_chain.setdefault(chain,[]).append({
-                **row,"evaluation":evaluation,"sleeve":sleeve,"economics":economics,
+                **persisted_candidate,"evaluation":persisted_evaluation,"sleeve":sleeve,"economics":economics,
                 "regime":{"confidence":50,"label":"QUICK_ADVISOR_SCREEN"},
             })
 
