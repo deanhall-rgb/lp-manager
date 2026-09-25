@@ -555,6 +555,25 @@ def _usd_prices(market: dict, token0: str, token1: str) -> tuple[float, float]:
     return 0.0, 0.0
 
 
+def _historical_major_symbol_mark(market: Any, symbol: str, opened_at: float) -> float:
+    """Nearest global USD mark for a major when new-chain address history is sparse."""
+    if not market or not opened_at or str(symbol or "").upper() not in {"WETH","ETH","WBTC","BTC"}:
+        return 0.0
+    if not hasattr(market,"alchemy_symbol_history"):
+        return 0.0
+    try:
+        rows=market.alchemy_symbol_history(str(symbol).upper(),3,timeframe="hour")
+        usable=[x for x in rows or [] if float(x.get("timestamp") or 0)>0 and float(x.get("price_usd") or x.get("close") or 0)>0]
+        if not usable:
+            return 0.0
+        nearest=min(usable,key=lambda x:abs(float(x.get("timestamp") or 0)-float(opened_at)))
+        if abs(float(nearest.get("timestamp") or 0)-float(opened_at))>6*3600:
+            return 0.0
+        return float(nearest.get("price_usd") or nearest.get("close") or 0)
+    except Exception:
+        return 0.0
+
+
 def _historical_pool_marks_at(
     market: GeckoTerminalClient | None, chain: str, pool_address: str, market_row: dict[str, Any],
     token0: str, token1: str, opened_at: float,
@@ -730,6 +749,12 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                                     if e1>0: sources.append(f"HISTORICAL_{s1}_USD")
                                 except Exception:
                                     pass
+                            if dep0>0 and e0<=0 and s0 in {"WETH","ETH","WBTC","BTC"}:
+                                e0=_historical_major_symbol_mark(market,s0,opened_at)
+                                if e0>0: sources.append(f"GLOBAL_{s0}_USD_AT_OPEN")
+                            if dep1>0 and e1<=0 and s1 in {"WETH","ETH","WBTC","BTC"}:
+                                e1=_historical_major_symbol_mark(market,s1,opened_at)
+                                if e1>0: sources.append(f"GLOBAL_{s1}_USD_AT_OPEN")
 
                         # Small/new tokens often have no standalone historical
                         # price feed. Ask the exact pool for base/quote token USD OHLC
