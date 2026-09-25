@@ -645,9 +645,25 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                                 except Exception:
                                     pass
 
+                        # Small/new tokens often have no standalone historical
+                        # price feed. Ask the exact pool for base/quote token USD OHLC
+                        # around the mint time before giving up on opening valuation.
+                        pool_mark_detail={}
+                        if market and opened_at and ((dep0>0 and e0<=0) or (dep1>0 and e1<=0)):
+                            try:
+                                hp0,hp1,pool_mark_detail=_historical_pool_marks_at(
+                                    market,cfg.key,pool,market_row,token0,token1,opened_at
+                                )
+                                if dep0>0 and e0<=0 and hp0>0:
+                                    e0=hp0; sources.append("POOL_HISTORICAL_TOKEN0_USD")
+                                if dep1>0 and e1<=0 and hp1>0:
+                                    e1=hp1; sources.append("POOL_HISTORICAL_TOKEN1_USD")
+                            except Exception:
+                                pool_mark_detail={}
+
                         # If only one side has a USD mark, an opening-block pool ratio
                         # can price the other side. If the RPC is not archive-capable,
-                        # we simply leave the basis incomplete rather than invent P/L.
+                        # we leave the basis incomplete rather than invent P/L.
                         if entry_ratio>0:
                             if e0>0 and e1<=0:
                                 e1=e0/entry_ratio; sources.append("OPENING_POOL_RATIO_DERIVED_TOKEN1")
@@ -673,6 +689,7 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                             "price_source":"+".join(sources) if sources else "UNAVAILABLE",
                             "basis_complete":basis_complete,
                             "missing_opening_price_symbols":missing,
+                            "historical_pool_mark_detail":pool_mark_detail,
                             "quality":"ONCHAIN_MINT_RECONSTRUCTED" if basis_complete else "ONCHAIN_AMOUNTS_PARTIAL_PRICING",
                         }
                     except Exception as exc:
