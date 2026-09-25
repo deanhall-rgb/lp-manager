@@ -44,6 +44,54 @@ def _observed_fee_day(tracker: dict[str, Any]) -> tuple[float, str]:
     return 0.0, "NO_FEE_EVIDENCE"
 
 
+def observed_pool_fee_rate(store, pool: dict[str, Any]) -> dict[str, Any]:
+    """Observed fee/day per USD of owned capital for this exact pool.
+
+    Unlike model calibration this remains usable when public pool volume is zero or
+    missing. It is deliberately exact-pool only and requires at least 24h evidence.
+    """
+    address=str(pool.get("pool_address") or "").lower()
+    chain=str(pool.get("chain") or "").upper()
+    samples=[]
+    for position in store.list_positions("OPEN"):
+        pid=str(position.get("id") or "")
+        snap=store.get_position_snapshot(pid) or {}
+        paddr=str(position.get("pool_address") or snap.get("pool_address") or "").lower()
+        pchain=str(position.get("chain") or "").upper()
+        if not address or paddr!=address or (chain and pchain!=chain):
+            continue
+        tracker=store.get_setting(f"fees:tracker:{pid}",{}) or {}
+        observed_day,method=_observed_fee_day(tracker)
+        age=max(0.0,_f(tracker.get("age_days")))
+        capital=max(_f(position.get("current_value")),_f(position.get("capital_value")))
+        if age<1.0 or observed_day<=0 or capital<=0:
+            continue
+        samples.append({
+            "position_id":pid,
+            "age_days":age,
+            "capital_usd":capital,
+            "observed_fee_day_usd":observed_day,
+            "fee_day_per_usd":observed_day/capital,
+            "method":method,
+            "lower_price":_f(position.get("lower_price")),
+            "upper_price":_f(position.get("upper_price")),
+        })
+    if not samples:
+        return {"available":False,"sample_count":0,"fee_day_per_usd":0.0}
+    weights=[max(1.0,min(7.0,x["age_days"])) for x in samples]
+    total=sum(weights)
+    rate=sum(x["fee_day_per_usd"]*w for x,w in zip(samples,weights))/total
+    return {
+        "available":True,
+        "sample_count":len(samples),
+        "fee_day_per_usd":round(rate,10),
+        "annualised_fee_apr_pct":round(rate*365.0*100.0,2),
+        "max_age_days":round(max(x["age_days"] for x in samples),3),
+        "samples":samples[:6],
+        "method":"EXACT_OWNED_POOL_OBSERVED_FEE_RATE",
+    }
+
+
 def calibration_samples(store) -> list[dict[str, Any]]:
     """Build model-vs-observed fee samples from positions LP Manager actually owns.
 
