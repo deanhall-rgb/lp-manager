@@ -48,3 +48,7 @@
 .wallet-provider-choice:disabled{opacity:.7;cursor:wait}
 @media(max-width:1200px){.performance-four{grid-template-columns:repeat(2,minmax(180px,1fr))}}
 @media(max-width:720px){.performance-four{grid-template-columns:1fr}.fee-audit-row{align-items:flex-start}}
+
+/* v0.8.11 stabilisation */
+.management-rules{margin:14px 0 8px;padding-left:20px;color:var(--text)}
+.management-rules li{margin:7px 0;line-height:1.45}
