@@ -6,3 +6,25 @@
 @media(max-width:760px){.four-col,.economics-grid,.target-strip{grid-template-columns:1fr}.allocation-row{grid-template-columns:1fr}.allocation-row.header{display:none}}
 
 .profit-hero{padding:20px;background:linear-gradient(135deg,rgba(74,215,167,.10),rgba(85,166,255,.07));border:1px solid rgba(74,215,167,.30);border-radius:16px}.profit-hero .price{font-size:30px;font-weight:800}.profit-hero .price-lens{font-size:12px;color:var(--muted);margin-top:5px}
+
+/* v0.8.8 financial-truth / wallet UX */
+.performance-four{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.performance-four .metric{min-width:0}
+.performance-four .metric .value{font-size:21px}
+.wallet-picker-head{padding-right:32px}
+.wallet-picker-head h2{margin:0 0 5px}
+.wallet-picker-head p,.wallet-picker-note{color:var(--muted);font-size:12px}
+.wallet-provider-list{display:grid;margin-top:18px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#09141e}
+.wallet-provider-choice{width:100%;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--text);padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:14px;text-align:left;cursor:pointer;font:inherit}
+.wallet-provider-choice:last-child{border-bottom:0}
+.wallet-provider-choice:hover{background:#132131}
+.wallet-provider-main{display:flex;align-items:center;gap:12px;min-width:0}
+.wallet-provider-main b{display:block;font-size:14px}
+.wallet-provider-main small{display:block;margin-top:3px;color:var(--muted);font-size:10px}
+.wallet-provider-icon,.wallet-provider-fallback{width:34px;height:34px;border-radius:9px;flex:none}
+.wallet-provider-icon{object-fit:cover;background:white}
+.wallet-provider-fallback{display:grid;place-items:center;background:#1d3349;color:#fff;font-weight:800}
+.wallet-provider-state{color:var(--muted);font-size:11px;white-space:nowrap}
+.wallet-picker-note{margin:14px 2px 0}
+@media(max-width:1100px){.performance-four{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:760px){.performance-four{grid-template-columns:1fr}.performance-four .metric .value{font-size:24px}}
