@@ -928,6 +928,12 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
         )
         store.upsert_position(p)
         store.save_position_snapshot(position_id, snap)
+        opening_hash=str(entry.get("transaction_hash") or snap.get("opening_transaction_hash") or "")
+        if opening_hash and hasattr(store,"reconcile_execution_opening"):
+            try:
+                store.reconcile_execution_opening(opening_hash,position_id)
+            except Exception:
+                pass
         imported += 1
     # Never close an LP merely because one discovery source omitted it. Ownership
     # loss is authoritative only when ownerOf explicitly returns another owner.
