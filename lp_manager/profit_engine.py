@@ -7,7 +7,7 @@ from typing import Any
 from .asset_lens import pool_price_lens
 from .economics_engine import estimate_lp_economics, infer_fee_tier_bps, volume_quality
 from .market_regime import analyse_regime
-from .pool_chain import read_v3_pool_metadata
+from .pool_chain import read_v3_pool_metadata, discover_v3_pair_fee_tiers
 from .profit_calibration import fee_calibration_for_pool, observed_pool_fee_rate
 from .fee_metrics import forecast_fee_metrics, pool_fee_revenue_rate
 from .price_units import assert_sane_display_lens
@@ -721,6 +721,25 @@ def _fee_tier_pool_candidates(market, chain: str, seed: dict[str, Any]) -> list[
     if seed_addr:
         discovered[seed_addr]=seed_pool
 
+    # Canonical V3 factory lookup is the primary fee-tier discovery path. Market
+    # provider token-pool pages are useful enrichment, but can omit quieter tiers.
+    token_list=list(target)
+    if len(token_list)==2:
+        try:
+            for factory_row in discover_v3_pair_fee_tiers(chain,token_list[0],token_list[1]):
+                addr=str(factory_row.get("pool_address") or "").lower()
+                if not addr:
+                    continue
+                enriched=dict(factory_row)
+                try:
+                    market_row=market.pool(chain,addr)
+                    enriched={**market_row,**enriched}
+                except Exception:
+                    pass
+                discovered[addr]=enriched
+        except Exception:
+            pass
+
     for token_address in list(target):
         for page in (1, 2):
             try:
@@ -734,7 +753,7 @@ def _fee_tier_pool_candidates(market, chain: str, seed: dict[str, Any]) -> list[
                     continue
                 addr=str(row.get("pool_address") or "").lower()
                 if addr:
-                    discovered[addr]=dict(row)
+                    discovered[addr]={**discovered.get(addr,{}),**dict(row)}
 
     by_tier: dict[float, tuple[float, dict[str, Any]]]={}
     for addr,row in list(discovered.items())[:16]:
