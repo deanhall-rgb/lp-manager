@@ -610,3 +610,29 @@ def test_reconcile_demotes_old_partial_onchain_basis_instead_of_showing_wild_pnl
     assert acct["basis_ready"] is False
     assert acct["absolute_pnl_incl_fees_usd"] is None
 
+def test_verified_entry_evidence_overrides_stale_recorded_capital():
+    position={
+        "source":"live_chain",
+        "capital_value":100.0,
+        "current_value":980.0,
+        "unclaimed_fees":20.0,
+        "cost_basis_quality":"FIRST_OBSERVED",
+        "opened_at":1000.0,
+    }
+    snapshot={
+        "token0":{"price_usd":2500.0},
+        "token1":{"price_usd":1.0},
+        "entry_evidence":{
+            "transaction_hash":"0xopen","opened_at":1000.0,
+            "token0_amount":0.2,"token1_amount":500.0,
+            "token0_price_usd":2500.0,"token1_price_usd":1.0,
+            "entry_value_usd":1000.0,"basis_complete":True,
+            "quality":"ONCHAIN_MINT_RECONSTRUCTED",
+        },
+    }
+    a=position_accounting(position,snapshot,{})
+    assert a["basis_ready"] is True
+    assert a["cost_basis_source"]=="ENTRY_EVIDENCE"
+    assert a["cost_basis_usd"]==pytest.approx(1000.0)
+    assert a["absolute_pnl_incl_fees_usd"]==pytest.approx(0.0)
+
