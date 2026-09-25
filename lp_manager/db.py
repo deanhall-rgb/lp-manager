@@ -505,6 +505,25 @@ class Store:
         return {"linked_events":linked_events,"linked_forecasts":linked_forecasts}
 
 
+    def record_closed_position_economics(
+        self, position_id: str, *, reported_net_pnl: float, reported_net_pnl_pct: float,
+        gas_costs: float, quality: str = "ONCHAIN_CLOSE_RECEIPT",
+    ) -> bool:
+        with self.connect() as con:
+            cur=con.execute(
+                """UPDATE positions SET
+                    reported_net_pnl=?,reported_net_pnl_pct=?,gas_costs=?,
+                    pnl_quality=?,status='CLOSED',lifecycle_stage='CLOSED',
+                    closed_at=CASE WHEN closed_at>0 THEN closed_at ELSE ? END
+                   WHERE id=?""",
+                (
+                    float(reported_net_pnl),float(reported_net_pnl_pct),float(gas_costs),
+                    str(quality or "ONCHAIN_CLOSE_RECEIPT"),time.time(),position_id,
+                ),
+            )
+        return bool(cur.rowcount)
+
+
     def set_setting(self, key: str, value: Any) -> None:
         with self.connect() as con:
             con.execute(
