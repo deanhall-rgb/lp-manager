@@ -315,7 +315,7 @@ def _load_pool_and_history(
             ratio_history = market.alchemy_pool_history(chain, onchain, history_days, timeframe=timeframe)
             if len(ratio_history) >= minimum:
                 candles = ratio_history
-                provider = "ALCHEMY_TOKEN_PRICE_HISTORY" if quote_symbol in stable_symbols else "ALCHEMY_PAIR_RATIO_HISTORY"
+                provider = "ALCHEMY_TOKEN_PRICE_FALLBACK" if quote_symbol in stable_symbols else "ALCHEMY_PAIR_RATIO_HISTORY"
         except Exception as exc:
             warning = str(exc)
 
