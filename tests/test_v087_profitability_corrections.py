@@ -173,10 +173,12 @@ def test_position_accounting_separates_absolute_pnl_from_lp_vs_hodl():
     }
     tracker = {"cumulative_earned_usd": 35.0}
     a = position_accounting(position, snapshot, tracker)
-    assert a["lp_plus_fees_usd"] == pytest.approx(1010.0)
-    assert a["absolute_pnl_incl_fees_usd"] == pytest.approx(10.0)
+    assert a["lp_plus_fees_usd"] == pytest.approx(1015.0)
+    assert a["absolute_pnl_incl_fees_usd"] == pytest.approx(15.0)
+    assert a["gas_costs_usd"] == pytest.approx(5.0)
+    assert a["net_pnl_after_costs_usd"] == pytest.approx(10.0)
     assert a["hodl_value_usd"] == pytest.approx(1000.0)
-    assert a["lp_vs_hodl_usd"] == pytest.approx(10.0)
+    assert a["lp_vs_hodl_usd"] == pytest.approx(15.0)
 
 
 def test_core_weth_stable_boundary_outcomes_are_asymmetric():
