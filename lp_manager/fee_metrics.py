@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timedelta
 from typing import Any
 
 
@@ -67,6 +68,63 @@ def observed_fee_metrics(tracker: dict[str, Any] | None, capital_usd: float) -> 
             if age < 1.0
             else "Observed APR is backward-looking and can change quickly."
         ),
+    }
+
+
+def calendar_fee_metrics(tracker: dict[str, Any] | None, now_ts: float | None = None) -> dict[str, Any]:
+    """Fee income in operator-local calendar periods.
+
+    Today resets at local midnight, week resets Monday 00:00, and month resets on
+    the first day. This is reporting logic; rolling 24h/7d/30d metrics remain
+    available separately for forecasting and calibration.
+    """
+    tracker=tracker or {}
+    now=float(now_ts or __import__("time").time())
+    dt=datetime.fromtimestamp(now).astimezone()
+    today_dt=dt.replace(hour=0,minute=0,second=0,microsecond=0)
+    week_dt=today_dt-timedelta(days=today_dt.weekday())
+    month_dt=today_dt.replace(day=1)
+    starts={
+        "today":today_dt.timestamp(),
+        "week":week_dt.timestamp(),
+        "month":month_dt.timestamp(),
+    }
+    current=max(0.0,_f(tracker.get("cumulative_earned_usd")))
+    opened=max(0.0,_f(tracker.get("opened_at")))
+    observations=sorted(
+        [x for x in (tracker.get("observations") or []) if _f(x.get("timestamp"))>0],
+        key=lambda x:_f(x.get("timestamp")),
+    )
+
+    def period(start: float) -> dict[str, Any]:
+        if opened and opened>=start:
+            baseline=0.0
+            quality="COMPLETE_SINCE_POSITION_OPEN"
+        else:
+            before=[x for x in observations if _f(x.get("timestamp"))<=start]
+            if before:
+                baseline=max(0.0,_f(before[-1].get("cumulative_earned_usd")))
+                quality="COMPLETE_FROM_TRACKER_OBSERVATION"
+            else:
+                # We cannot assign old cumulative fees to a newer calendar period.
+                # Understate rather than falsely count pre-period fees.
+                after=[x for x in observations if _f(x.get("timestamp"))>start]
+                baseline=max(0.0,_f(after[0].get("cumulative_earned_usd"))) if after else current
+                quality="PARTIAL_TRACKER_STARTED_AFTER_PERIOD_BOUNDARY"
+        return {
+            "actual_usd":round(max(0.0,current-baseline),4),
+            "period_start":start,
+            "baseline_cumulative_usd":round(baseline,4),
+            "quality":quality,
+        }
+
+    return {
+        "today":period(starts["today"]),
+        "week":period(starts["week"]),
+        "month":period(starts["month"]),
+        "timezone":str(dt.tzinfo),
+        "as_of":now,
+        "semantics":"CALENDAR_PERIODS_LOCAL_TIME",
     }
 
 
