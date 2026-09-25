@@ -60,6 +60,6 @@ def test_authoritative_history_archives_legacy_delta_identity(tmp_path: Path):
     rows=store.list_positions()
     real=[r for r in rows if str(r.get("token_id"))=="1206967"][0]
     old=[r for r in rows if str(r.get("token_id"))=="999"][0]
-    assert real["display_name"]=="DELTA LP1"
+    assert real["display_name"]=="P1 - WETH/DELTA"
     assert old["monitoring_class"]=="ARCHIVED_SUPERSEDED"
     assert old["display_name"].startswith("Legacy DELTA campaign")
