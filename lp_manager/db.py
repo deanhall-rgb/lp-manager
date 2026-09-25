@@ -129,6 +129,41 @@ CREATE TABLE IF NOT EXISTS opportunities (
     candidate_json TEXT NOT NULL,
     evaluation_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS forecast_snapshots (
+    id TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    position_id TEXT,
+    chain TEXT NOT NULL,
+    pool_address TEXT NOT NULL,
+    pair TEXT NOT NULL,
+    sleeve TEXT NOT NULL,
+    horizon_days REAL NOT NULL,
+    capital_usd REAL NOT NULL,
+    lower_price REAL NOT NULL,
+    upper_price REAL NOT NULL,
+    spot REAL NOT NULL,
+    expected_fees_usd REAL NOT NULL,
+    expected_net_usd REAL NOT NULL,
+    forecast_fee_apr_pct REAL NOT NULL,
+    low_net_usd REAL NOT NULL,
+    high_net_usd REAL NOT NULL,
+    model_version TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS financial_events (
+    id TEXT PRIMARY KEY,
+    position_id TEXT,
+    created_at REAL NOT NULL,
+    occurred_at REAL NOT NULL,
+    event_type TEXT NOT NULL,
+    chain TEXT NOT NULL,
+    tx_hash TEXT NOT NULL DEFAULT '',
+    amount_usd REAL NOT NULL DEFAULT 0,
+    gas_native REAL NOT NULL DEFAULT 0,
+    gas_usd REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'CONFIRMED',
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
 """
 
 
@@ -346,6 +381,103 @@ class Store:
         out=[]
         for r in rows:
             row=dict(r); row["payload"]=json.loads(row.pop("payload_json") or "{}"); out.append(row)
+        return out
+
+    def record_forecast_snapshot(self, result: dict[str, Any], *, model_version: str = "v0.8.8") -> dict[str, Any]:
+        best=dict(result.get("recommended_range") or {})
+        forecast=dict(best.get("forecast") or {})
+        row={
+            "id":uuid.uuid4().hex,
+            "created_at":time.time(),
+            "position_id":None,
+            "chain":str(result.get("chain") or ""),
+            "pool_address":str(result.get("pool_address") or ""),
+            "pair":str(result.get("pair") or ""),
+            "sleeve":str(result.get("sleeve") or ""),
+            "horizon_days":float(result.get("horizon_days") or 0),
+            "capital_usd":float(result.get("capital_usd") or 0),
+            "lower_price":float(best.get("lower") or 0),
+            "upper_price":float(best.get("upper") or 0),
+            "spot":float(result.get("spot") or 0),
+            "expected_fees_usd":float(forecast.get("expected_fees_usd") or 0),
+            "expected_net_usd":float(forecast.get("expected_net_usd") or 0),
+            "forecast_fee_apr_pct":float(forecast.get("forecast_fee_apr_pct") or 0),
+            "low_net_usd":float(forecast.get("low_net_usd") or 0),
+            "high_net_usd":float(forecast.get("high_net_usd") or 0),
+            "model_version":str(model_version or "v0.8.8"),
+            "payload_json":json.dumps(result,sort_keys=True),
+        }
+        with self.connect() as con:
+            con.execute(
+                """INSERT INTO forecast_snapshots(
+                    id,created_at,position_id,chain,pool_address,pair,sleeve,horizon_days,capital_usd,
+                    lower_price,upper_price,spot,expected_fees_usd,expected_net_usd,forecast_fee_apr_pct,
+                    low_net_usd,high_net_usd,model_version,payload_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tuple(row[k] for k in (
+                    "id","created_at","position_id","chain","pool_address","pair","sleeve","horizon_days",
+                    "capital_usd","lower_price","upper_price","spot","expected_fees_usd","expected_net_usd",
+                    "forecast_fee_apr_pct","low_net_usd","high_net_usd","model_version","payload_json"
+                )),
+            )
+        return {k:v for k,v in row.items() if k!="payload_json"}
+
+    def list_forecast_snapshots(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows=con.execute("SELECT * FROM forecast_snapshots ORDER BY created_at DESC LIMIT ?",(limit,)).fetchall()
+        out=[]
+        for r in rows:
+            row=dict(r)
+            try: row["payload"]=json.loads(row.pop("payload_json") or "{}")
+            except Exception: row["payload"]={}
+            out.append(row)
+        return out
+
+    def link_forecast_to_position(self, forecast_id: str, position_id: str) -> bool:
+        with self.connect() as con:
+            cur=con.execute("UPDATE forecast_snapshots SET position_id=? WHERE id=?",(position_id,forecast_id))
+        return bool(cur.rowcount)
+
+    def record_financial_event(
+        self, *, position_id: str | None, event_type: str, chain: str, tx_hash: str = "",
+        occurred_at: float | None = None, amount_usd: float = 0.0, gas_native: float = 0.0,
+        gas_usd: float = 0.0, status: str = "CONFIRMED", payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row={
+            "id":uuid.uuid4().hex,"position_id":position_id,"created_at":time.time(),
+            "occurred_at":float(occurred_at or time.time()),"event_type":str(event_type or ""),
+            "chain":str(chain or ""),"tx_hash":str(tx_hash or ""),"amount_usd":float(amount_usd or 0),
+            "gas_native":float(gas_native or 0),"gas_usd":float(gas_usd or 0),
+            "status":str(status or "CONFIRMED"),"payload_json":json.dumps(payload or {},sort_keys=True),
+        }
+        with self.connect() as con:
+            con.execute(
+                """INSERT INTO financial_events(
+                    id,position_id,created_at,occurred_at,event_type,chain,tx_hash,amount_usd,
+                    gas_native,gas_usd,status,payload_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tuple(row[k] for k in (
+                    "id","position_id","created_at","occurred_at","event_type","chain","tx_hash",
+                    "amount_usd","gas_native","gas_usd","status","payload_json"
+                )),
+            )
+        return {**{k:v for k,v in row.items() if k!="payload_json"},"payload":payload or {}}
+
+    def list_financial_events(self, limit: int = 500, position_id: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            if position_id:
+                rows=con.execute(
+                    "SELECT * FROM financial_events WHERE position_id=? ORDER BY occurred_at DESC LIMIT ?",
+                    (position_id,limit),
+                ).fetchall()
+            else:
+                rows=con.execute("SELECT * FROM financial_events ORDER BY occurred_at DESC LIMIT ?",(limit,)).fetchall()
+        out=[]
+        for r in rows:
+            row=dict(r)
+            try: row["payload"]=json.loads(row.pop("payload_json") or "{}")
+            except Exception: row["payload"]={}
+            out.append(row)
         return out
 
     def set_setting(self, key: str, value: Any) -> None:
