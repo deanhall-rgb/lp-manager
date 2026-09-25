@@ -34,11 +34,12 @@ class _Pool:
 
 def test_wallet_buttons_and_execution_buttons_use_multi_selector():
     js = (Path(__file__).parents[1] / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
-    assert "$('.wallet-provider-choice').forEach" in js
-    assert "$('.exec-send').forEach" in js
+    assert "$$('.wallet-provider-choice').forEach" in js
+    assert "$$('.exec-send').forEach" in js
     # Guard against the exact single-element selector bug without accidentally
-    # matching the second '
-
+    # treating the second dollar in the correct multi-selector helper as a match.
+    assert "\n    $('.wallet-provider-choice').forEach" not in js
+    assert ";$('.exec-send').forEach" not in js
 
 def test_live_fee_growth_math_includes_unrealised_accrual_not_only_stored_owed():
     # Current tick is between -100 and +100.
