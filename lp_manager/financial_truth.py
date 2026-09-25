@@ -46,22 +46,23 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
         snap=store.get_position_snapshot(pid) or {}
         tracker=store.get_setting(f"fees:tracker:{pid}",{}) or {}
         acct=position_accounting(p,snap,tracker)
+        event_collections=sum(
+            max(0.0,_f(e.get("amount_usd")))
+            for e in events
+            if str(e.get("position_id") or "")==pid
+            and str(e.get("event_type") or "").upper()=="COLLECT_FEES"
+            and str(e.get("status") or "").upper()=="CONFIRMED"
+        )
         tracked=max(
             _f(tracker.get("cumulative_earned_usd")),
             _f(p.get("unclaimed_fees"))+_f(p.get("realised_fees")),
+            event_collections+_f(p.get("unclaimed_fees")),
         )
         all_time_fees+=tracked
         status=str(p.get("status") or "").upper()
         if status=="OPEN":
             current_open_principal+=_f(acct.get("current_principal_usd"))
             current_open_wealth+=_f(acct.get("strategy_wealth_usd"))
-            event_collections=sum(
-                max(0.0,_f(e.get("amount_usd")))
-                for e in events
-                if str(e.get("position_id") or "")==pid
-                and str(e.get("event_type") or "").upper()=="COLLECT_FEES"
-                and str(e.get("status") or "").upper()=="CONFIRMED"
-            )
             realised_open_fee_income+=max(
                 max(0.0,_f(p.get("realised_fees"))),
                 max(0.0,_f(tracker.get("collected_lower_bound_usd"))),
