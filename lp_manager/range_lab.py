@@ -124,6 +124,28 @@ def analyse_range(
 
     strict_survival_pct = strict_windows / window_count * 100.0 if window_count else 0.0
     average_horizon_activity_pct = sum(mean_window_activity) / len(mean_window_activity) * 100.0
+
+    # The current absolute range should be judged primarily against the recent
+    # requested horizon. Comparing today's 7-day Tactical range with every fixed
+    # price point from six weeks ago makes trending assets look artificially like
+    # they spent "0% active" in a range that did not exist yet.
+    recent_n=max(1,min(len(rows),horizon_n))
+    recent_activities=activities[-recent_n:]
+    recent_states=states[-recent_n:]
+    recent_active_pct=sum(recent_activities)/len(recent_activities)*100.0
+    recent_excursions=0
+    recent_prev=recent_states[0]
+    recent_oor=recent_longest_oor=0
+    for state in recent_states:
+        if state!="IN":
+            if recent_prev=="IN":
+                recent_excursions+=1
+            recent_oor+=1
+            recent_longest_oor=max(recent_longest_oor,recent_oor)
+        else:
+            recent_oor=0
+        recent_prev=state
+    recent_longest_oor_hours=recent_longest_oor/max(cpd,1e-9)*24.0
     reentry_rate_pct = reentries / excursions * 100.0 if excursions else 100.0
     longest_oor_hours = longest_oor / max(cpd, 1e-9) * 24.0
 
@@ -146,6 +168,9 @@ def analyse_range(
         "volume_capture_pct": round(volume_capture_pct, 3),
         "strict_horizon_survival_pct": round(strict_survival_pct, 3),
         "average_horizon_activity_pct": round(average_horizon_activity_pct, 3),
+        "recent_horizon_active_pct": round(recent_active_pct, 3),
+        "recent_horizon_excursions": recent_excursions,
+        "recent_horizon_longest_out_of_range_hours": round(recent_longest_oor_hours, 3),
         "excursions": excursions,
         "reentries": reentries,
         "reentry_rate_pct": round(reentry_rate_pct, 3),
