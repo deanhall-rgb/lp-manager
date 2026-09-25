@@ -630,8 +630,17 @@ class Store:
         return payload
 
     def live_token_ids(self, chain: str) -> set[int]:
+        """NFTs that belong in the current live refresh loop.
+
+        Historical CLOSED positions are intentionally excluded. Once an OPEN NFT is
+        observed closed, its accounting/history is handled separately and must never
+        block current fee/value/range refreshes for positions that are still open.
+        """
         with self.connect() as con:
-            rows = con.execute("SELECT token_id FROM positions WHERE chain=? AND token_id IS NOT NULL AND (status='OPEN' OR (source='live_chain' AND lifecycle_stage!='CLOSED_FINAL'))", (chain,)).fetchall()
+            rows = con.execute(
+                "SELECT token_id FROM positions WHERE chain=? AND token_id IS NOT NULL AND status='OPEN'",
+                (chain,),
+            ).fetchall()
         out=set()
         for row in rows:
             try: out.add(int(row[0]))
