@@ -695,8 +695,10 @@ def _position_lifecycle_events(
                     "address":Web3.to_checksum_address(manager),
                     "topics":[topic0,topic_id],
                 })
-            except Exception:
-                logs=[]
+            except Exception as exc:
+                raise RuntimeError(
+                    f"LIFECYCLE_LOG_SCAN_FAILED:{event_type}:{start}-{end}: {str(exc)[:160]}"
+                ) from exc
             for log in logs:
                 raw=log.get("data")
                 try:
@@ -1241,6 +1243,20 @@ def finalise_closed_positions_from_store(
             sym0=str(t0.get("symbol") or "TOKEN0"); sym1=str(t1.get("symbol") or "TOKEN1")
             opening=dict(snap.get("entry_evidence") or {})
             opening_block=int(snap.get("opening_block_number") or opening.get("block_number") or 0)
+            if opening_block<=0:
+                opening_tx=str(snap.get("opening_transaction_hash") or opening.get("transaction_hash") or "").strip()
+                if not opening_tx:
+                    raise ValueError("OPENING_BLOCK_UNAVAILABLE: persisted opening transaction/block is missing")
+                try:
+                    receipt=w3.eth.get_transaction_receipt(opening_tx)
+                    opening_block=int(receipt.get("blockNumber") or 0)
+                except Exception as exc:
+                    raise RuntimeError(f"OPENING_BLOCK_LOOKUP_FAILED: {str(exc)[:160]}") from exc
+                if opening_block<=0:
+                    raise ValueError("OPENING_BLOCK_UNAVAILABLE: opening transaction receipt has no block number")
+                snap["opening_block_number"]=opening_block
+                opening["block_number"]=opening_block
+                snap["entry_evidence"]=opening
             pool_c=w3.eth.contract(address=Web3.to_checksum_address(pool),abi=POOL_ABI)
             market_row={}
             final=_closed_position_final(
