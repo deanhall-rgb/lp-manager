@@ -41,7 +41,7 @@
       </div>
       <div class="two-col lower">
         <div class="panel"><div class="panel-head"><div><h2>Attention queue</h2><p>Only positions where the deterministic engine sees material risk.</p></div></div><div id="attention-list" class="card-list compact"></div></div>
-        <div class="panel"><div class="panel-head"><div><h2>Performance</h2><p>Targets are reporting references, never instructions to increase risk.</p></div><div class="inline-controls"><label class="inline-label" for="target-rate">Monthly target %</label><input id="target-rate" type="number" min="0" step="0.5" value="10"><button id="target-calc-btn" class="btn small">Update</button></div></div><div id="target-result" class="metric-grid small-grid"></div></div>
+        <div class="panel"><div class="panel-head"><div><h2>Performance</h2><p>Targets are reporting references, never instructions to increase risk.</p></div><div class="inline-controls"><label class="inline-label" for="target-rate">Monthly target %</label><input id="target-rate" type="number" min="0" step="0.5" value="10"><button id="target-calc-btn" class="btn small">Update</button></div></div><div id="target-result" class="performance-result"></div></div>
       </div>
     </section>
 
@@ -66,7 +66,7 @@
 
 
     <section id="profit-section" class="section">
-      <div class="section-hero"><div><h2>Profit Lab</h2><p>One profit engine chooses the pool/fee tier and range expected to make the most net fee profit for the capital and holding period.</p></div><button id="profit-search-btn" class="btn secondary">Find best across chains</button></div>
+      <div class="section-hero"><div><h2>Profit Lab</h2><p>One profit engine chooses the pool/fee tier and range expected to make the most net fee profit for the capital and holding period.</p></div><button id="profit-advisor-btn" class="btn secondary">Portfolio Advisor</button></div>
       <div class="panel strategy-form"><div class="form-grid">
         <div class="field"><label>Chain</label><select id="profit-chain"><option>BASE</option><option>ETHEREUM</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option><option>ROBINHOOD_CHAIN</option></select></div>
         <div class="field grow"><label>Pool address</label><input id="profit-address" placeholder="Select a pool from Opportunities or paste address"></div>
