@@ -1202,19 +1202,17 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                     "fee_read_at":time.time(),
                     "data_quality": "LIVE_CHAIN_PLUS_MARKET" if (usd0>0 and usd1>0) else "LIVE_CHAIN_PARTIAL_USD_MARKET",
                 }
-                if liquidity<=0 and fees_usd<=0.005:
-                    try:
-                        closed_final=_closed_position_final(
-                            w3=w3,cfg=cfg,wallet=wallet,manager=manager,pool_c=pool_c,pool=pool,
-                            token_id=token_id,opening_block=int(opening_block or discovered.get("block_number") or 0),
-                            latest_block=latest,market=market,market_row=market_row,
-                            token0=token0,token1=token1,sym0=sym0,sym1=sym1,dec0=dec0,dec1=dec1,
-                            opening_entry=entry_evidence,current_unclaimed_usd=fees_usd,
-                            current_owed0=fee0,current_owed1=fee1,
-                        )
-                        snapshot["closed_final"]=closed_final
-                    except Exception as exc:
-                        snapshot["closed_final"]={"complete":False,"quality":"ONCHAIN_LIFECYCLE_PARTIAL","reason":str(exc)[:180]}
+                if liquidity<=0:
+                    # Detect the lifecycle transition immediately, but never launch
+                    # historical reconstruction from the current-live scan. The row
+                    # below is reconciled to CLOSED and historical accounting remains
+                    # a separate/manual workflow.
+                    snapshot["close_detection"]={
+                        "detected_at":time.time(),
+                        "detected_block":latest,
+                        "reason":"ZERO_ACTIVE_LIQUIDITY",
+                        "history_mode":"MANUAL_ONLY",
+                    }
                 unit_label=str(lens.get("unit_label") or "")
                 if " per " in unit_label:
                     quote, base = unit_label.split(" per ",1); pair=f"{base}/{quote}"
