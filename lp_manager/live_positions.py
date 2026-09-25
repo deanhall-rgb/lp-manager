@@ -867,7 +867,7 @@ def _closed_position_final(
         contributions+=opening_basis
         opening_counted=True
 
-    gas_native=gas_usd=0.0; gas_complete=True
+    gas_native=gas_usd=0.0; gas_complete=True; gas_quality="HISTORICAL_NATIVE_PRICE"
     tx_hashes=sorted({str(x.get("transaction_hash") or "") for x in events if x.get("transaction_hash")})
     for txh in tx_hashes:
         try:
@@ -885,6 +885,15 @@ def _closed_position_final(
                 try: ts=float(w3.eth.get_block(block).get("timestamp") or 0)
                 except Exception: ts=0.0
             native_price=_historical_major_symbol_mark(market,"WETH",ts) if market and ts else 0.0
+            if native>0 and native_price<=0 and market:
+                try:
+                    cfg_native=str(cfg.wrapped_native or "")
+                    mark=(market.token_prices(cfg.key,[cfg_native]) or {}).get(cfg_native.lower()) if cfg_native else None
+                    native_price=float(mark or 0)
+                    if native_price>0:
+                        gas_quality="CURRENT_NATIVE_PRICE_FALLBACK"
+                except Exception:
+                    native_price=0.0
             if native>0 and native_price<=0:
                 gas_complete=False
             gas_usd+=native*native_price
@@ -897,11 +906,14 @@ def _closed_position_final(
     pnl=(distributions-contributions-gas_usd) if complete else None
     return {
         "complete":complete,
-        "quality":"ONCHAIN_LIFECYCLE_FINAL" if complete else "ONCHAIN_LIFECYCLE_PARTIAL",
+        "quality":(
+            "ONCHAIN_LIFECYCLE_FINAL_ESTIMATED_GAS" if complete and gas_quality!="HISTORICAL_NATIVE_PRICE"
+            else "ONCHAIN_LIFECYCLE_FINAL" if complete else "ONCHAIN_LIFECYCLE_PARTIAL"
+        ),
         "token_id":str(token_id),"opened_at":float(opening_entry.get("opened_at") or 0),
         "closed_at":closed_at,"opening_capital_usd":round(contributions,4),
         "total_distributions_usd":round(distributions,4),"total_fees_usd":round(fees,4),
-        "gas_native":round(gas_native,10),"gas_usd":round(gas_usd,4),
+        "gas_native":round(gas_native,10),"gas_usd":round(gas_usd,4),"gas_quality":gas_quality,
         "realised_pnl_usd":round(pnl,4) if pnl is not None else None,
         "realised_return_pct":round(pnl/contributions*100.0,4) if pnl is not None and contributions>0 else None,
         "events":events,"fee_events":fee_events,
@@ -1175,6 +1187,86 @@ def _next_live_display_name(store, pair: str) -> str:
     # Backward-compatible helper for tests/older call sites. New reconciliation
     # uses token-id backed labels so rescans never renumber existing live NFTs.
     return _live_display_name(store, f"legacy-{int(time.time()*1000)}", pair)
+
+
+def finalise_closed_positions_from_store(
+    store, cfg: ChainConfig, wallet: str, market: GeckoTerminalClient | None = None, *, limit: int = 20
+) -> dict[str, Any]:
+    """Attempt one-time lifecycle reconstruction for closed live NFTs.
+
+    This deliberately uses the last persisted live snapshot because a closed/burned
+    NFT may no longer be owned and therefore cannot be rebuilt from ownerOf/positions
+    on the normal owned-position scan path.
+    """
+    if not cfg.rpc_url() or not wallet:
+        return {"attempted":0,"finalised":0,"partial":0,"errors":[]}
+    rows=[
+        p for p in store.list_positions("CLOSED")
+        if str(p.get("chain") or "").upper()==cfg.key
+        and str(p.get("source") or "")=="live_chain"
+        and str(p.get("lifecycle_stage") or "").upper()!="CLOSED_FINAL"
+        and str(p.get("token_id") or "").isdigit()
+    ][:max(1,int(limit))]
+    if not rows:
+        return {"attempted":0,"finalised":0,"partial":0,"errors":[]}
+    try:
+        w3=build_read_only_web3(cfg.rpc_url())
+        latest=int(w3.eth.block_number)
+    except Exception as exc:
+        return {"attempted":0,"finalised":0,"partial":len(rows),"errors":[str(exc)]}
+
+    attempted=finalised=partial=0; errors=[]
+    for p in rows:
+        attempted+=1
+        pid=str(p.get("id") or "")
+        snap=store.get_position_snapshot(pid) or {}
+        try:
+            t0=dict(snap.get("token0") or {}); t1=dict(snap.get("token1") or {})
+            pool=str(snap.get("pool_address") or p.get("pool_address") or "")
+            token0=str(t0.get("address") or ""); token1=str(t1.get("address") or "")
+            if not (pool and token0 and token1):
+                raise ValueError("Persisted token/pool metadata is incomplete")
+            dec0=int(t0.get("decimals") or 18); dec1=int(t1.get("decimals") or 18)
+            sym0=str(t0.get("symbol") or "TOKEN0"); sym1=str(t1.get("symbol") or "TOKEN1")
+            opening=dict(snap.get("entry_evidence") or {})
+            opening_block=int(snap.get("opening_block_number") or opening.get("block_number") or 0)
+            pool_c=w3.eth.contract(address=Web3.to_checksum_address(pool),abi=POOL_ABI)
+            market_row={}
+            final=_closed_position_final(
+                w3=w3,cfg=cfg,wallet=wallet,manager=None,pool_c=pool_c,pool=pool,
+                token_id=int(p.get("token_id")),opening_block=opening_block,latest_block=latest,
+                market=market,market_row=market_row,
+                token0=token0,token1=token1,sym0=sym0,sym1=sym1,dec0=dec0,dec1=dec1,
+                opening_entry=opening,current_unclaimed_usd=0.0,current_owed0=0.0,current_owed1=0.0,
+            )
+            snap["closed_final"]=final
+            snap["closed_final_checked_at"]=time.time()
+            store.save_position_snapshot(pid,snap)
+            if final.get("complete"):
+                quality=str(final.get("quality") or "ONCHAIN_LIFECYCLE_FINAL")
+                store.finalize_closed_position(
+                    pid,
+                    opening_capital_usd=float(final.get("opening_capital_usd") or 0),
+                    total_fees_usd=float(final.get("total_fees_usd") or 0),
+                    gas_costs_usd=float(final.get("gas_usd") or 0),
+                    realised_pnl_usd=float(final.get("realised_pnl_usd") or 0),
+                    realised_return_pct=float(final.get("realised_return_pct") or 0),
+                    closed_at=float(final.get("closed_at") or time.time()),
+                    quality=quality,
+                )
+                finalised+=1
+            else:
+                partial+=1
+        except Exception as exc:
+            partial+=1
+            errors.append({"position_id":pid,"error":str(exc)[:220]})
+            snap["closed_final"]={
+                **dict(snap.get("closed_final") or {}),
+                "complete":False,"quality":"ONCHAIN_LIFECYCLE_PARTIAL",
+                "reason":str(exc)[:220],"checked_at":time.time(),
+            }
+            store.save_position_snapshot(pid,snap)
+    return {"attempted":attempted,"finalised":finalised,"partial":partial,"errors":errors}
 
 
 def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
