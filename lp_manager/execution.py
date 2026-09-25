@@ -47,7 +47,7 @@ class ExecutionService:
         if snapshot and position.get("source") == "live_chain" and str(position.get("protocol") or "").upper() == "UNISWAP_V3":
             try:
                 from .live_v3_builder import build_close
-                built = build_close(snapshot)
+                built = build_close({**snapshot, "chain": str(position.get("chain") or snapshot.get("chain") or "")})
                 plan = TransactionPlan(action="CLOSE", chain=str(position.get("chain") or ""), protocol="UNISWAP_V3", wallet=snapshot.get("wallet"), position_id=str(position["id"]), pair=position.get("pair"), intent={"token_id":position.get("token_id"),"liquidity_pct":100.0,"collect_all":True}, calls=[built["call"]], simulation=built["simulation"], constraints={"signing":False,"broadcast":False,"slippage_bps":built.get("slippage_bps"),"deadline":built.get("deadline")}, status="PREPARED" if built["simulation"].get("ok") else "SIMULATION_FAILED")
                 result={"ok":bool(built["simulation"].get("ok")),"status":plan.status,"builder":"live_v3_builder","transaction_plan":plan.to_dict(),"plan_validation":validate_transaction_plan(plan),"build":built}
                 self.store.record_action(position_id=position["id"], action_type="PREPARE_CLOSE", mode="build_only", status=plan.status, payload={"live":True}, result=result)
@@ -100,7 +100,7 @@ class ExecutionService:
         if snapshot and position.get("source") == "live_chain" and str(position.get("protocol") or "").upper() == "UNISWAP_V3":
             try:
                 from .live_v3_builder import build_collect
-                built=build_collect(snapshot)
+                built=build_collect({**snapshot, "chain": str(position.get("chain") or snapshot.get("chain") or "")})
                 plan=TransactionPlan(action="COLLECT", chain=str(position.get("chain") or ""), protocol="UNISWAP_V3", wallet=snapshot.get("wallet"), position_id=str(position["id"]), pair=position.get("pair"), intent={"token_id":position.get("token_id"),"collect_all":True,"expected_unclaimed_value":position.get("unclaimed_fees")}, calls=[built["call"]], simulation=built["simulation"], constraints={"signing":False,"broadcast":False}, status="PREPARED" if built["simulation"].get("ok") else "SIMULATION_FAILED")
                 result={"ok":bool(built["simulation"].get("ok")),"status":plan.status,"builder":"live_v3_builder","transaction_plan":plan.to_dict(),"plan_validation":validate_transaction_plan(plan),"build":built}
                 self.store.record_action(position_id=position["id"], action_type="PREPARE_COLLECT", mode="build_only", status=plan.status, payload={"live":True}, result=result)
