@@ -32,9 +32,19 @@ POSITION_ABI = [{"inputs":[{"name":"tokenId","type":"uint256"}],"name":"position
     {"name":"feeGrowthInside0LastX128","type":"uint256"},{"name":"feeGrowthInside1LastX128","type":"uint256"},
     {"name":"tokensOwed0","type":"uint128"},{"name":"tokensOwed1","type":"uint128"}],"stateMutability":"view","type":"function"}]
 FACTORY_ABI = [{"inputs":[{"name":"tokenA","type":"address"},{"name":"tokenB","type":"address"},{"name":"fee","type":"uint24"}],"name":"getPool","outputs":[{"name":"pool","type":"address"}],"stateMutability":"view","type":"function"}]
-POOL_ABI = [{"inputs":[],"name":"slot0","outputs":[
-    {"name":"sqrtPriceX96","type":"uint160"},{"name":"tick","type":"int24"},{"name":"observationIndex","type":"uint16"},{"name":"observationCardinality","type":"uint16"},
-    {"name":"observationCardinalityNext","type":"uint16"},{"name":"feeProtocol","type":"uint8"},{"name":"unlocked","type":"bool"}],"stateMutability":"view","type":"function"}]
+POOL_ABI = [
+    {"inputs":[],"name":"slot0","outputs":[
+        {"name":"sqrtPriceX96","type":"uint160"},{"name":"tick","type":"int24"},{"name":"observationIndex","type":"uint16"},{"name":"observationCardinality","type":"uint16"},
+        {"name":"observationCardinalityNext","type":"uint16"},{"name":"feeProtocol","type":"uint8"},{"name":"unlocked","type":"bool"}],"stateMutability":"view","type":"function"},
+    {"inputs":[],"name":"feeGrowthGlobal0X128","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+    {"inputs":[],"name":"feeGrowthGlobal1X128","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+    {"inputs":[{"name":"","type":"int24"}],"name":"ticks","outputs":[
+        {"name":"liquidityGross","type":"uint128"},{"name":"liquidityNet","type":"int128"},
+        {"name":"feeGrowthOutside0X128","type":"uint256"},{"name":"feeGrowthOutside1X128","type":"uint256"},
+        {"name":"tickCumulativeOutside","type":"int56"},{"name":"secondsPerLiquidityOutsideX128","type":"uint160"},
+        {"name":"secondsOutside","type":"uint32"},{"name":"initialized","type":"bool"}],
+        "stateMutability":"view","type":"function"},
+]
 TOKEN_ABI = [
     {"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"stateMutability":"view","type":"function"},
     {"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"stateMutability":"view","type":"function"},
@@ -382,6 +392,52 @@ def _entry_basis_complete(entry: dict[str, Any] | None) -> bool:
     if a0<=0 and a1<=0:
         return False
     return (a0<=0 or p0>0) and (a1<=0 or p1>0) and float(entry.get("entry_value_usd") or 0)>0
+
+
+def _u256_sub(a: int, b: int) -> int:
+    return (int(a) - int(b)) % (1 << 256)
+
+
+def _live_v3_fees_from_growth(
+    pool_c: Any, pos: Any, current_tick: int, tick_lower: int, tick_upper: int, liquidity: int,
+    dec0: int, dec1: int,
+) -> tuple[float,float,str]:
+    """Calculate current claimable V3 fees directly from pool fee-growth state.
+
+    NonfungiblePositionManager.positions().tokensOwed is *stored* state and can
+    remain unchanged for long periods. This formula is the same economic state a
+    zero-liquidity burn/collect simulation would realise, but it uses view calls
+    only and therefore does not depend on a provider allowing payable eth_call.
+    """
+    if int(liquidity) < 0:
+        raise ValueError("invalid liquidity")
+    global0=int(pool_c.functions.feeGrowthGlobal0X128().call())
+    global1=int(pool_c.functions.feeGrowthGlobal1X128().call())
+    lower=pool_c.functions.ticks(int(tick_lower)).call()
+    upper=pool_c.functions.ticks(int(tick_upper)).call()
+    lower_out0,lower_out1=int(lower[2]),int(lower[3])
+    upper_out0,upper_out1=int(upper[2]),int(upper[3])
+
+    if int(current_tick) >= int(tick_lower):
+        below0,below1=lower_out0,lower_out1
+    else:
+        below0,below1=_u256_sub(global0,lower_out0),_u256_sub(global1,lower_out1)
+
+    if int(current_tick) < int(tick_upper):
+        above0,above1=upper_out0,upper_out1
+    else:
+        above0,above1=_u256_sub(global0,upper_out0),_u256_sub(global1,upper_out1)
+
+    inside0=_u256_sub(_u256_sub(global0,below0),above0)
+    inside1=_u256_sub(_u256_sub(global1,below1),above1)
+    last0,last1=int(pos[8]),int(pos[9])
+    owed0,owed1=int(pos[10]),int(pos[11])
+    delta0=_u256_sub(inside0,last0)
+    delta1=_u256_sub(inside1,last1)
+    q128=1 << 128
+    raw0=owed0 + (int(liquidity)*delta0 // q128)
+    raw1=owed1 + (int(liquidity)*delta1 // q128)
+    return raw0/(10**int(dec0)), raw1/(10**int(dec1)), "POOL_FEE_GROWTH"
 
 
 def _rolling_fee_tracker(store, position_id: str, snapshot: dict[str,Any], opened_at: float, capital_value: float) -> dict[str,Any]:
@@ -907,12 +963,21 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                 pair=f"{sym0}/{sym1}"; lower=float(lens["lower"]); upper=float(lens["upper"]); current=float(lens["current"]); inverted=bool(lens["inverted"])
                 amount0, amount1 = _amounts(liquidity, tick_lower, tick_upper, current_tick, dec0, dec1)
                 fee0 = fee1 = 0.0
+                fee_source="UNKNOWN"
                 try:
-                    quoted = manager.functions.collect((token_id, Web3.to_checksum_address(wallet), UINT128_MAX, UINT128_MAX)).call({"from": Web3.to_checksum_address(wallet)})
-                    fee0, fee1 = float(quoted[0]) / (10 ** dec0), float(quoted[1]) / (10 ** dec1)
+                    fee0,fee1,fee_source=_live_v3_fees_from_growth(
+                        pool_c,pos,current_tick,tick_lower,tick_upper,liquidity,dec0,dec1
+                    )
                 except Exception:
-                    # tokensOwed is a conservative partial fallback when a provider refuses non-view eth_call.
-                    fee0, fee1 = float(pos[10]) / (10 ** dec0), float(pos[11]) / (10 ** dec1)
+                    try:
+                        quoted = manager.functions.collect((token_id, Web3.to_checksum_address(wallet), UINT128_MAX, UINT128_MAX)).call({"from": Web3.to_checksum_address(wallet)})
+                        fee0, fee1 = float(quoted[0]) / (10 ** dec0), float(quoted[1]) / (10 ** dec1)
+                        fee_source="COLLECT_ETH_CALL"
+                    except Exception:
+                        # Stored tokensOwed can be stale; keep it only as a final
+                        # conservative fallback and expose that quality in snapshot.
+                        fee0, fee1 = float(pos[10]) / (10 ** dec0), float(pos[11]) / (10 ** dec1)
+                        fee_source="STORED_TOKENS_OWED_FALLBACK"
                 market_row={}
                 usd0=usd1=0.0
                 if market:
@@ -1072,6 +1137,8 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                     "display_inverted": inverted, "price_lens": lens, "range_unit": lens["unit"], "range_unit_label": lens["unit_label"],
                     "current_value_usd": value_usd, "unclaimed_fees_usd": fees_usd, "market": market_row,
                     "entry_evidence": entry_evidence,
+                    "fee_source":fee_source,
+                    "fee_read_at":time.time(),
                     "data_quality": "LIVE_CHAIN_PLUS_MARKET" if (usd0>0 and usd1>0) else "LIVE_CHAIN_PARTIAL_USD_MARKET",
                 }
                 if liquidity<=0 and fees_usd<=0.005:
@@ -1215,7 +1282,7 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
             exit_goal=(existing or {}).get("exit_goal") or "",
             lifecycle_stage="ACTIVE" if row.get("active_liquidity") else ("CLOSED_FINAL" if final_complete else "CLOSED"),
             cost_basis_quality=cost_quality,
-            strategy_version="v0.8.9",
+            strategy_version="v0.8.11",
             pool_address=str((row.get("snapshot") or {}).get("pool_address") or (existing or {}).get("pool_address") or ""),
             range_unit=str((row.get("snapshot") or {}).get("range_unit") or (existing or {}).get("range_unit") or "TOKEN1_PER_TOKEN0"),
             closed_at=(float(closed_final.get("closed_at") or 0) if final_complete else (float((existing or {}).get("closed_at") or 0) if not row.get("active_liquidity") else 0)),
