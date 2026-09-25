@@ -97,7 +97,7 @@ def analyse_live_pool(
     target_monthly_pct: float = 10.0, pool_fallback: dict[str, Any] | None = None,
     store=None,
 ) -> dict[str, Any]:
-    """V0.8.7 compatibility view over the unified profit/range engine.
+    """V0.8.8 compatibility view over the unified Profit Lab engine.
 
     Strategy Lab and Profit Lab used to rank different geometries. They now share
     one economic decision engine; this function preserves the Strategy Lab API/UI
@@ -237,7 +237,7 @@ def analyse_live_pool(
             "economics":best.get("economics") or {},
             "no_lookahead":True,
         },
-        "economics_note":"V0.8.7 Strategy Lab is a compatibility view of the unified profit engine. Forecast fee APR, observed fee evidence and LP-vs-HODL accounting remain separate metrics.",
+        "economics_note":"V0.8.8 legacy Strategy endpoint is a compatibility view of Profit Lab. Forecast fee APR, observed fee evidence and LP-vs-HODL accounting remain separate metrics.",
         "data_status":"LIVE_OR_FRESH_HISTORY",
     }
 
