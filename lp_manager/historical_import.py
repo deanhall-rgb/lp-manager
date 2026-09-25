@@ -62,7 +62,7 @@ def import_delta_pool_history(store, payload: dict[str,Any]) -> dict[str,Any]:
             source="live_chain" if live_now else "historical_pool_reconstruction",
             notes=f"Imported from DELTA pool-history reconstruction. Snapshot status was {row.get('status')}; current status requires chain reconciliation.",
             strategy_sleeve="TACTICAL_CAMPAIGN",directional_bias="BULLISH",inventory_intent="BALANCED",target_hold_days=max(0.1,_f(row.get("elapsed_seconds"))/86400),monitoring_class="HISTORICAL",
-            display_name=f"DELTA LP{str(label).lstrip('Pp')}",campaign_label=f"LP{str(label).lstrip('Pp')}",entry_thesis="Historical DELTA/WETH tactical LP evidence",exit_goal="Historical outcome evidence",
+            display_name=f"{str(label).upper()} - {sym0}/{sym1}",campaign_label=str(label).upper(),entry_thesis="Historical DELTA/WETH tactical LP evidence",exit_goal="Historical outcome evidence",
             lifecycle_stage="ACTIVE" if status=="OPEN" else "CLOSED",cost_basis_quality="TOKEN_AMOUNTS_RECONSTRUCTED",strategy_version="historical-import-v0.8",
             pool_address=pool,range_unit=str(lens["unit"]),closed_at=closed,
             reported_net_pnl=reported_pnl,reported_net_pnl_pct=reported_pct,pnl_quality=pnl_quality,
