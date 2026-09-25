@@ -16,6 +16,7 @@ from .models import Position
 from .rpc_client import build_read_only_web3
 from .price_units import display_lens
 from .fee_metrics import observed_fee_metrics
+from .position_identity import authoritative_label
 
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().removeprefix("0x")
 UINT128_MAX = 2**128 - 1
@@ -270,17 +271,17 @@ def _auto_sleeve(pair: str) -> str:
     return "TACTICAL_CAMPAIGN"
 
 
-def _live_display_name(store, token_id: str, pair: str) -> str:
-    """Stable operator labels: historical LP1-3, authoritative current P4-P6."""
+def _live_display_name(store, token_id: str, pair: str, chain: str = "ROBINHOOD_CHAIN") -> str:
+    """Stable operator labels, with immutable P4/P5/P6 NFT identity."""
     key="live:auto-labels:v087"
     mapping=store.get_setting(key,{}) or {}
     tid=str(token_id)
-    authoritative={"1289953":"P4","1290067":"P5","1290077":"P6"}
-    if tid in authoritative:
-        if mapping.get(tid) != authoritative[tid]:
-            mapping[tid]=authoritative[tid]
+    authoritative=authoritative_label(chain,tid)
+    if authoritative:
+        if mapping.get(tid) != authoritative:
+            mapping[tid]=authoritative
             store.set_setting(key,mapping)
-        return f"{authoritative[tid]} · {pair}"
+        return f"{authoritative} · {pair}"
     if tid not in mapping:
         used=[]
         for value in mapping.values():
@@ -291,6 +292,20 @@ def _live_display_name(store, token_id: str, pair: str) -> str:
         mapping[tid]=f"P{next_no}"
         store.set_setting(key,mapping)
     return f"{mapping[tid]} · {pair}"
+
+
+def _entry_basis_complete(entry: dict[str, Any] | None) -> bool:
+    """True only when every deposited token has a USD mark at the opening time."""
+    entry=entry or {}
+    if bool(entry.get("basis_complete")):
+        return True
+    a0=max(0.0,float(entry.get("token0_amount") or 0))
+    a1=max(0.0,float(entry.get("token1_amount") or 0))
+    p0=max(0.0,float(entry.get("token0_price_usd") or 0))
+    p1=max(0.0,float(entry.get("token1_price_usd") or 0))
+    if a0<=0 and a1<=0:
+        return False
+    return (a0<=0 or p0>0) and (a1<=0 or p1>0) and float(entry.get("entry_value_usd") or 0)>0
 
 
 def _rolling_fee_tracker(store, position_id: str, snapshot: dict[str,Any], opened_at: float, capital_value: float) -> dict[str,Any]:
