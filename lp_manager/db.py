@@ -480,6 +480,31 @@ class Store:
             out.append(row)
         return out
 
+    def reconcile_execution_opening(self, tx_hash: str, position_id: str) -> dict[str, Any]:
+        """Attach a confirmed browser-wallet open event/forecast to its discovered NFT."""
+        tx=str(tx_hash or "").lower()
+        if not tx or not position_id:
+            return {"linked_events":0,"linked_forecasts":0}
+        linked_events=linked_forecasts=0
+        with self.connect() as con:
+            rows=con.execute(
+                "SELECT id,payload_json FROM financial_events WHERE lower(tx_hash)=? AND event_type='OPEN_POSITION'",
+                (tx,),
+            ).fetchall()
+            for row in rows:
+                con.execute("UPDATE financial_events SET position_id=? WHERE id=?",(position_id,str(row[0])))
+                linked_events+=1
+                try:
+                    payload=json.loads(row[1] or "{}")
+                except Exception:
+                    payload={}
+                forecast_id=str(payload.get("forecast_id") or "")
+                if forecast_id:
+                    cur=con.execute("UPDATE forecast_snapshots SET position_id=? WHERE id=?",(position_id,forecast_id))
+                    linked_forecasts+=int(cur.rowcount or 0)
+        return {"linked_events":linked_events,"linked_forecasts":linked_forecasts}
+
+
     def set_setting(self, key: str, value: Any) -> None:
         with self.connect() as con:
             con.execute(
