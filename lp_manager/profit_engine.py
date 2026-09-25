@@ -8,7 +8,7 @@ from .asset_lens import pool_price_lens
 from .economics_engine import estimate_lp_economics, infer_fee_tier_bps, volume_quality
 from .market_regime import analyse_regime
 from .pool_chain import read_v3_pool_metadata, discover_v3_pair_fee_tiers
-from .profit_calibration import fee_calibration_for_pool, observed_pool_fee_rate
+from .profit_calibration import fee_calibration_for_pool, observed_pool_fee_rate, observed_pair_fee_prior
 from .fee_metrics import forecast_fee_metrics, pool_fee_revenue_rate
 from .price_units import assert_sane_display_lens
 from .range_lab import analyse_range, candle_activity_fraction, generate_range_candidates, infer_candles_per_day
@@ -49,28 +49,64 @@ def _horizon_persistence(month_factor: float, horizon_days: float) -> float:
 
 
 def _candidate_widths(sleeve: str, horizon_days: float) -> tuple[float, ...]:
+    """Candidate half-widths before volatility/horizon guardrails.
+
+    V0.8.7 allowed survival optimisation to consider geometries that implied
+    implausibly large ETH moves. V0.8.8 deliberately searches a denser, more
+    realistic neighbourhood and lets realised volatility decide the outer limit.
+    """
     sleeve = str(sleeve or "CORE_INCOME").upper()
     h = max(1.0, float(horizon_days))
     if sleeve == "CORE_INCOME":
         if h <= 7:
-            return (5, 6, 8, 10, 12.5, 15, 20, 25, 30)
+            return (3.5, 5, 6.5, 8, 10, 12.5)
         if h <= 14:
-            return (6, 8, 10, 12.5, 15, 20, 25, 30, 35)
-        return (8, 10, 12.5, 15, 20, 25, 30, 35, 40)
+            return (4.5, 6, 8, 10, 12.5, 15)
+        if h <= 30:
+            return (5, 7.5, 10, 12.5, 15, 18)
+        return (7.5, 10, 12.5, 15, 18, 22)
     if h <= 3:
-        return (2.5, 3.5, 4.5, 6, 8, 10, 12.5, 15)
+        return (2, 3, 4, 5, 6)
     if h <= 7:
-        return (3, 4, 5, 6, 8, 10, 12.5, 15, 20)
-    return (4, 5, 6, 8, 10, 12.5, 15, 20, 25)
+        return (2.5, 3.5, 5, 6.5, 8, 10)
+    if h <= 14:
+        return (3, 4.5, 6, 8, 10, 12)
+    return (4, 6, 8, 10, 12.5, 15)
 
 
 def _candidate_skews(regime: dict[str, Any], sleeve: str) -> tuple[float, ...]:
     desired = _f(regime.get("range_skew_pct"))
     if str(sleeve).upper() == "CORE_INCOME":
-        vals = {-12.5, -10, -5, 0, 5, 10, 12.5, round(desired / 2.5) * 2.5}
+        clipped=max(-7.5,min(7.5,desired))
+        vals = {-7.5, -5, -2.5, 0, 2.5, 5, 7.5, round(clipped / 2.5) * 2.5}
     else:
-        vals = {-9, -6, -3, 0, 3, 6, 9, round(desired / 3.0) * 3.0}
+        clipped=max(-4.5,min(4.5,desired))
+        vals = {-4.5, -3, -1.5, 0, 1.5, 3, 4.5, round(clipped / 1.5) * 1.5}
     return tuple(sorted(vals))
+
+
+def _volatility_edge_limits(sleeve: str, horizon_days: float, regime: dict[str, Any]) -> dict[str, float]:
+    """Translate realised daily volatility into a believable horizon envelope."""
+    h=max(1.0,float(horizon_days))
+    vol=max(0.75,_f(regime.get("realised_volatility_pct"),1.5))
+    sigma_h=vol*math.sqrt(h)
+    if str(sleeve).upper()=="CORE_INCOME":
+        hard_cap=18.0 if h<=7 else 23.0 if h<=14 else 30.0 if h<=30 else 40.0
+        max_far=min(hard_cap,max(8.0,sigma_h*2.0+3.0))
+        min_near=max(2.5,min(7.0,sigma_h*0.35))
+        max_asymmetry=2.0
+    else:
+        hard_cap=14.0 if h<=7 else 18.0 if h<=14 else 24.0 if h<=30 else 30.0
+        max_far=min(hard_cap,max(5.0,sigma_h*1.55+1.5))
+        min_near=max(1.5,min(5.0,sigma_h*0.28))
+        max_asymmetry=1.75
+    return {
+        "daily_realised_volatility_pct":round(vol,3),
+        "horizon_one_sigma_pct":round(sigma_h,3),
+        "min_nearest_edge_pct":round(min_near,3),
+        "max_farthest_edge_pct":round(max_far,3),
+        "max_asymmetry_ratio":max_asymmetry,
+    }
 
 
 def _walk_forward(
