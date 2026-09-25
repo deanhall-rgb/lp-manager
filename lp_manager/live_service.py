@@ -8,18 +8,14 @@ from typing import Any
 
 from .chain_registry import CHAINS, registry_status
 from .market_data import GeckoTerminalClient
+from .position_identity import AUTHORITATIVE_LIVE_POSITIONS, authoritative_opening_tx
 
 _ADDR_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
-# Authoritative operator-provided opening references for the three live positions
-# carried into V0.8.7. They are public transaction hashes only; no signing secret
-# or private wallet material is stored.
+# Backward-compatible shape retained for tests/older call sites.
 _AUTHORITATIVE_OPENINGS = {
-    "ROBINHOOD_CHAIN": {
-        1289953: "0x08435860b326074b65d0b3c95634a5531cef061f7017702cb123e37253b3f2a4",
-        1290067: "0xe9de48e6b7ef1f2a238febf8d8fd7bb99462a0ebd35b1f93bf4c1f885f93e92c",
-        1290077: "0x565f672e404ec8f9d2d1d6fbcd064c495a51200611dd6d96072b3a1162cd0a21",
-    }
+    chain: {int(token_id): row["opening_transaction_hash"] for token_id, row in positions.items()}
+    for chain, positions in AUTHORITATIVE_LIVE_POSITIONS.items()
 }
 
 
@@ -87,12 +83,26 @@ class LiveDataService:
                         if str(pos.get("chain") or "").upper()!=c or not pos.get("token_id"):
                             continue
                         snap=self.store.get_position_snapshot(str(pos.get("id"))) or {}
-                        tx=str(snap.get("opening_transaction_hash") or "")
-                        block=int(snap.get("opening_block_number") or 0)
-                        opened=float(snap.get("opened_at") or 0)
+                        tid=int(pos.get("token_id"))
+                        persisted_tx=str(snap.get("opening_transaction_hash") or "")
+                        authoritative_tx=str(authoritative_opening_tx(c,tid) or "")
+                        # For P4/P5/P6 the operator-confirmed opening transaction is
+                        # immutable authority. A stale snapshot must never replace it.
+                        tx=authoritative_tx or persisted_tx
+                        same_tx=(not authoritative_tx) or (persisted_tx.lower()==authoritative_tx.lower())
+                        block=int(snap.get("opening_block_number") or 0) if same_tx else 0
+                        opened=float(snap.get("opened_at") or 0) if same_tx else 0.0
                         if tx or block or opened:
                             try:
-                                seed_evidence[int(pos.get("token_id"))]={**seed_evidence.get(int(pos.get("token_id")),{}),"transaction_hash":tx or seed_evidence.get(int(pos.get("token_id")),{}).get("transaction_hash",""),"block_number":block,"opened_at":opened,"discovery_source":snap.get("discovery_source") or seed_evidence.get(int(pos.get("token_id")),{}).get("discovery_source") or "PERSISTED_OPENING_EVIDENCE"}
+                                seed_evidence[tid]={
+                                    **seed_evidence.get(tid,{}),
+                                    "transaction_hash":tx,
+                                    "block_number":block,
+                                    "opened_at":opened,
+                                    "discovery_source":"AUTHORITATIVE_OPENING_REFERENCE" if authoritative_tx else (
+                                        snap.get("discovery_source") or "PERSISTED_OPENING_EVIDENCE"
+                                    ),
+                                }
                             except Exception:
                                 pass
                     f = pool.submit(
