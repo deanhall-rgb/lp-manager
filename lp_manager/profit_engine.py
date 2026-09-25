@@ -306,14 +306,16 @@ def _load_pool_and_history(
         gecko_token = "quote"
     pool["_history_token"] = gecko_token
 
-    # For non-stable quoted pairs, token USD is not the execution ratio. Prefer the
-    # pair-ratio history reconstructed from token histories when available.
-    if quote_symbol and quote_symbol not in stable_symbols and hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
+    # Prefer configured Alchemy token-price history before spending scarce public
+    # GeckoTerminal OHLC quota. Stable-quoted pairs can reconstruct WETH/USD from
+    # token history (with the stable side fixed near $1); non-stable pairs use the
+    # same routine as an execution-ratio proxy.
+    if hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
         try:
             ratio_history = market.alchemy_pool_history(chain, onchain, history_days, timeframe=timeframe)
             if len(ratio_history) >= minimum:
                 candles = ratio_history
-                provider = "ALCHEMY_PAIR_RATIO_HISTORY"
+                provider = "ALCHEMY_TOKEN_PRICE_HISTORY" if quote_symbol in stable_symbols else "ALCHEMY_PAIR_RATIO_HISTORY"
         except Exception as exc:
             warning = str(exc)
 
