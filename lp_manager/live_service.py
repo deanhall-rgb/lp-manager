@@ -135,8 +135,11 @@ class LiveDataService:
             closed_finalisation=[]
             for c in configured:
                 try:
+                    # Closed lifecycle reconstruction can require many historical RPC reads.
+                    # Keep normal live refresh responsive by advancing at most one closed NFT
+                    # per chain per cycle; failed/partial attempts are throttled by the snapshot.
                     row=finalise_closed_positions_from_store(
-                        self.store,CHAINS[c],self.settings.wallet_address,self.market,limit=20
+                        self.store,CHAINS[c],self.settings.wallet_address,self.market,limit=1
                     )
                     if row.get("attempted"):
                         closed_finalisation.append({"chain":c,**row})
