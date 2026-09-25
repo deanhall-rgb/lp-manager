@@ -7,7 +7,7 @@ from typing import Any
 from .asset_lens import pool_price_lens
 from .economics_engine import estimate_lp_economics, infer_fee_tier_bps, volume_quality
 from .market_regime import analyse_regime
-from .pool_chain import read_v3_pool_metadata, discover_v3_pair_fee_tiers
+from .pool_chain import read_v3_pool_metadata, discover_v3_pair_fee_tiers, read_v3_observation_history
 from .profit_calibration import fee_calibration_for_pool, observed_pool_fee_rate, observed_pair_fee_prior
 from .fee_metrics import forecast_fee_metrics, pool_fee_revenue_rate
 from .price_units import assert_sane_display_lens
@@ -388,6 +388,35 @@ def _load_pool_and_history(
         except Exception as exc:
             warning=warning or str(exc)
 
+    cache_key=f"profit:history:v089:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
+    cached_rows=[]
+    cached_provider=""
+    if store is not None:
+        cached=store.get_setting(cache_key,{}) or {}
+        cached_rows=list(cached.get("candles") or [])
+        cached_provider=str(cached.get("provider") or "PERSISTED_HISTORY_CACHE")
+        if not candles and len(cached_rows)>=minimum and _history_matches_spot(cached_rows,live_spot):
+            candles=cached_rows
+            provider=cached_provider
+            warning=(warning+"; " if warning else "")+"reused validated persisted history"
+
+    # Pool-native V3 observations are independent of public market-data APIs and
+    # therefore the preferred resilience path during provider throttling. They
+    # provide price geometry only; fee economics still use separately evidenced
+    # pool volume / owned fee data.
+    onchain_history=[]
+    if not candles and onchain.get("ok"):
+        try:
+            onchain_history=read_v3_observation_history(chain,address,history_days,timeframe=timeframe)
+            onchain_min=24 if timeframe=="hour" else 12
+            if len(onchain_history)>=onchain_min and _history_matches_spot(onchain_history,live_spot):
+                candles=onchain_history
+                provider="UNISWAP_V3_OBSERVE"
+                if len(onchain_history)<minimum:
+                    warning=(warning+"; " if warning else "")+f"short pool-native history ({len(onchain_history)} samples)"
+        except Exception as exc:
+            warning=warning or str(exc)
+
     if not candles:
         try:
             try:
@@ -416,16 +445,18 @@ def _load_pool_and_history(
         warning=(warning+"; " if warning else "")+"Historical series failed live execution-price sanity check"
         candles=[]
 
-    cache_key=f"profit:history:v088:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
-    if len(candles) < minimum and store is not None:
-        cached=store.get_setting(cache_key,{}) or {}
-        cached_rows=list(cached.get("candles") or [])
-        if len(cached_rows)>=minimum and _history_matches_spot(cached_rows,live_spot):
-            candles=cached_rows
-            provider=str(cached.get("provider") or "PERSISTED_HISTORY_CACHE")
-            warning=(warning+"; " if warning else "")+"using persisted validated history cache"
+    minimum_floor=24 if timeframe=="hour" else 12
+    if len(candles) < minimum_floor and cached_rows and len(cached_rows)>=minimum_floor and _history_matches_spot(cached_rows,live_spot):
+        candles=cached_rows
+        provider=cached_provider or "PERSISTED_HISTORY_CACHE"
+        warning=(warning+"; " if warning else "")+"using shorter persisted validated history"
+    if len(candles) < minimum_floor and onchain_history and len(onchain_history)>=12 and _history_matches_spot(onchain_history,live_spot):
+        candles=onchain_history
+        provider="UNISWAP_V3_OBSERVE_SHORT"
+        minimum_floor=12
+        warning=(warning+"; " if warning else "")+f"using limited pool-native history ({len(onchain_history)} samples)"
 
-    if len(candles) < minimum:
+    if len(candles) < minimum_floor:
         raise ValueError(
             f"Only {len(candles)} {timeframe} historical samples available"
             + (f"; {warning}" if warning else "")
@@ -461,9 +492,9 @@ def _recommend_single_pool(
     spot = _f((onchain.get("price_lens") or {}).get("current")) or _f(candles[-1].get("close")) or _f(pool.get("base_token_price_usd"))
     if spot <= 0:
         raise ValueError("No usable current price")
-    cpd = 24 if hist_days <= 45 else 1
+    cpd = max(1, int(round(infer_candles_per_day(candles))))
     regime_rows = candles
-    if cpd == 1:
+    if cpd <= 2:
         try:
             try:
                 recent = market.ohlcv_days(
