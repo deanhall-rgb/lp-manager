@@ -695,22 +695,50 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
         existing = matched or store.get_position(position_id)
         current_value = float(row.get("current_value") or 0)
         snap=dict(row.get("snapshot") or {})
+        previous_snap=store.get_position_snapshot(position_id) or {}
         entry=dict(snap.get("entry_evidence") or {})
-        reconstructed_capital=float(entry.get("entry_value_usd") or 0)
+        previous_entry=dict(previous_snap.get("entry_evidence") or {})
+
+        # A transient provider/archive-history failure must never erase a previously
+        # complete opening reconstruction. Conversely, an old partial reconstruction
+        # must not be allowed to masquerade as a valid cost basis.
+        if not _entry_basis_complete(entry) and _entry_basis_complete(previous_entry):
+            entry=previous_entry
+            snap["entry_evidence"]=previous_entry
+            for key in ("opening_transaction_hash","opening_block_number","opened_at"):
+                if previous_snap.get(key):
+                    snap[key]=previous_snap.get(key)
+
+        reconstructed_capital=float(entry.get("entry_value_usd") or 0) if _entry_basis_complete(entry) else 0.0
         existing_quality=str((existing or {}).get("cost_basis_quality") or "UNKNOWN").upper()
         existing_capital=float((existing or {}).get("capital_value") or 0)
-        if reconstructed_capital>0 and existing_quality in {"UNKNOWN","FIRST_OBSERVED","LEGACY_LEDGER",""}:
+
+        if reconstructed_capital>0:
+            # Complete on-chain opening evidence is authoritative and replaces any
+            # old first-observed or accidentally partial basis.
             capital_value=reconstructed_capital
-            cost_quality=str(entry.get("quality") or "ONCHAIN_MINT_RECONSTRUCTED")
+            cost_quality="ONCHAIN_MINT_RECONSTRUCTED"
         else:
-            capital_value=existing_capital or current_value
-            cost_quality=str((existing or {}).get("cost_basis_quality") or ("FIRST_OBSERVED" if current_value>0 else "UNKNOWN"))
-        row_opened=float(row.get("opened_at") or entry.get("opened_at") or 0)
+            # If V0.8.7 previously called a partial opening reconstruction strong,
+            # explicitly demote it. Keep a neutral first-observed denominator for
+            # fee pacing, but do not use it for P/L.
+            prior_entry_complete=_entry_basis_complete(previous_entry)
+            if existing_quality=="ONCHAIN_MINT_RECONSTRUCTED" and not prior_entry_complete:
+                capital_value=current_value or existing_capital
+                cost_quality="FIRST_OBSERVED"
+            else:
+                capital_value=existing_capital or current_value
+                cost_quality=existing_quality if existing_quality not in {"","UNKNOWN"} else ("FIRST_OBSERVED" if current_value>0 else "UNKNOWN")
+
+        evidence_opened=float(entry.get("opened_at") or snap.get("opened_at") or row.get("opened_at") or 0)
         existing_opened=float((existing or {}).get("opened_at") or 0)
-        if row_opened>0:
-            opened_at=min(x for x in (row_opened,existing_opened) if x>0) if existing_opened>0 else row_opened
+        # When the opening transaction gives us a timestamp it wins outright.
+        # "Earliest seen" timestamps from previous releases are not stronger evidence.
+        if evidence_opened>0 and (entry.get("transaction_hash") or snap.get("opening_transaction_hash")):
+            opened_at=evidence_opened
         else:
-            opened_at=existing_opened or time.time()
+            opened_at=evidence_opened or existing_opened or time.time()
+
         old_notes = str((existing or {}).get("notes") or "")
         note = old_notes or "Live-chain position; entry economics are reconstructed from the opening NFT transaction when available."
         auto_sleeve=_auto_sleeve(str(row.get("pair") or ""))
@@ -719,8 +747,11 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
         sleeve=existing_sleeve if manual_metadata and existing_sleeve else auto_sleeve
         if not sleeve: sleeve=auto_sleeve
         current_name=str((existing or {}).get("display_name") or "")
-        if (not current_name) or re.match(r"^P\d+\s*·",current_name,re.I):
-            display_name=_live_display_name(store,str(row["token_id"]),str(row.get("pair") or "LP position"))
+        authoritative=authoritative_label(result.chain,str(row["token_id"]))
+        if authoritative or (not current_name) or re.match(r"^P\d+\s*·",current_name,re.I):
+            display_name=_live_display_name(
+                store,str(row["token_id"]),str(row.get("pair") or "LP position"),result.chain
+            )
         else:
             display_name=current_name
         tracker=_rolling_fee_tracker(store,position_id,snap,opened_at,capital_value)
