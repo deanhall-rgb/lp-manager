@@ -559,22 +559,37 @@ def _recommend_single_pool(
             empirical_day=_f(empirical_evidence.get("fee_day_per_usd"))*capital*empirical_width_scale*active_scale
             empirical_source="EXACT_OWNED_POOL" if observed_pool.get("available") else "SAME_PAIR_OWNED_PRIOR"
 
-        if econ.get("mode") == "INSUFFICIENT_DATA" and empirical_day<=0 and advisor_econ.get("mode")!="INSUFFICIENT_DATA":
-            quick_daily=_f((advisor_econ.get("estimated_fee_income") or {}).get("daily"))
+        # Canonical Advisor evidence is a valid fallback whenever the fresh
+        # pool fee model is unusable or has collapsed to zero. V0.8.9 only used
+        # it for mode=INSUFFICIENT_DATA, which allowed a superficially "valid"
+        # zero model to wipe out the exact opportunity economics the Advisor had
+        # just used to rank this pool.
+        quick_daily=_f((advisor_econ.get("estimated_fee_income") or {}).get("daily"))
+        if quick_daily<=0:
+            quick_month=max(
+                _f(advisor_econ.get("estimated_operating_net_month_usd")),
+                _f(advisor_econ.get("estimated_net_month_usd")),
+                _f((advisor_econ.get("estimated_fee_income") or {}).get("monthly")),
+            )
+            if quick_month>0:
+                quick_daily=quick_month/30.4375
+        modeled_daily=_f((econ.get("estimated_fee_income") or {}).get("daily"))
+        advisor_usable=advisor_econ.get("mode")!="INSUFFICIENT_DATA" and quick_daily>0
+        if empirical_day<=0 and advisor_usable and (econ.get("mode")=="INSUFFICIENT_DATA" or modeled_daily<=0):
             quick_cap=max(1.0,_f(advisor_ctx.get("capital_usd"),_f(advisor_econ.get("capital_usd"),1000.0)))
             quick_width=max(1.0,_f(advisor_ctx.get("width_pct"),48.0 if sleeve_u=="CORE_INCOME" else 22.0))
             quick_active=max(1.0,_f(advisor_ctx.get("active_time_pct"),84.0 if sleeve_u=="CORE_INCOME" else 60.0))
-            if quick_daily>0:
-                geometry=max(0.65,min(1.35,math.sqrt(quick_width/max(1.0,candidate.width_pct))))
-                activity=max(0.45,min(1.15,_f(analysis.get("average_horizon_activity_pct"))/quick_active))
-                # The Advisor estimate came from the same pool evidence, but this
-                # transfer is still haircut because the Profit range geometry differs.
-                advisor_day=quick_daily*(capital/quick_cap)*geometry*activity*0.80
-                empirical_day=advisor_day
-                empirical_width_scale=geometry
-                empirical_source="ADVISOR_CANONICAL_ECONOMICS"
+            geometry=max(0.65,min(1.35,math.sqrt(quick_width/max(1.0,candidate.width_pct))))
+            activity=max(0.45,min(1.15,_f(analysis.get("average_horizon_activity_pct"))/quick_active))
+            # Same pool, same fee tier and same Advisor evidence, but the range
+            # geometry differs. Keep the transfer deliberately conservative.
+            advisor_day=quick_daily*(capital/quick_cap)*geometry*activity*0.80
+            empirical_day=advisor_day
+            empirical_width_scale=geometry
+            empirical_source="ADVISOR_CANONICAL_ECONOMICS"
 
-        if econ.get("mode") == "INSUFFICIENT_DATA":
+        fallback_needed=econ.get("mode")=="INSUFFICIENT_DATA" or _f((econ.get("estimated_fee_income") or {}).get("daily"))<=0
+        if fallback_needed:
             if empirical_day<=0:
                 continue
             fee_bps,_fee_source=infer_fee_tier_bps(pool)
@@ -622,7 +637,11 @@ def _recommend_single_pool(
         )
         current_day = _f((econ.get("estimated_fee_income") or {}).get("daily"))
         fee_forecast_source="PUBLIC_POOL_VOLUME_MODEL"
-        if empirical_day>0 and (_f(pool.get("volume_24h_usd"))<=0 or current_day<=0):
+        if empirical_day>0 and (
+            _f(pool.get("volume_24h_usd"))<=0
+            or current_day<=0
+            or empirical_source=="ADVISOR_CANONICAL_ECONOMICS"
+        ):
             current_day=empirical_day
             fee_forecast_source=(
                 "EXACT_OWNED_POOL_OBSERVED_FALLBACK" if empirical_source=="EXACT_OWNED_POOL"
