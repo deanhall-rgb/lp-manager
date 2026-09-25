@@ -80,6 +80,38 @@ def import_delta_pool_history(store, payload: dict[str,Any]) -> dict[str,Any]:
         if live_now:
             live_snap=store.get_position_snapshot(pid) or {}
             live_snap["historical_evidence"]=evidence
+
+            # Historical reconstruction has stronger opening identity than a later
+            # owned-NFT scan which first observed the NFT after mint. Preserve that
+            # immutable opening identity at the top level so the closed lifecycle
+            # finaliser can start from the real mint block.
+            historical_open_tx=str(row.get("open_tx") or "").strip()
+            historical_open_block=int(row.get("open_block") or 0)
+            historical_opened=_f(row.get("open_timestamp"))
+            if historical_open_tx and not live_snap.get("opening_transaction_hash"):
+                live_snap["opening_transaction_hash"]=historical_open_tx
+            if historical_open_block and not int(live_snap.get("opening_block_number") or 0):
+                live_snap["opening_block_number"]=historical_open_block
+            if historical_opened and not float(live_snap.get("opened_at") or 0):
+                live_snap["opened_at"]=historical_opened
+
+            entry=dict(live_snap.get("entry_evidence") or {})
+            if historical_open_tx and not entry.get("transaction_hash"):
+                entry["transaction_hash"]=historical_open_tx
+            if historical_open_block and not int(entry.get("block_number") or 0):
+                entry["block_number"]=historical_open_block
+            if historical_opened and not float(entry.get("opened_at") or 0):
+                entry["opened_at"]=historical_opened
+
+            # The research file contains a previously reviewed opening USD basis.
+            # Retain it as historical-reconciliation evidence rather than forcing a
+            # later RPC refresh to re-price an old mint with current market data.
+            if capital_usd>0 and not float(entry.get("entry_value_usd") or 0):
+                entry["entry_value_usd"]=capital_usd
+                entry["basis_complete"]=True
+                entry["quality"]="HISTORICAL_RECONSTRUCTED_BASIS"
+                entry["price_source"]="REVIEWED_HISTORICAL_RECONSTRUCTION"
+            live_snap["entry_evidence"]=entry
             store.save_position_snapshot(pid,live_snap)
         else:
             store.save_position_snapshot(pid,evidence)
