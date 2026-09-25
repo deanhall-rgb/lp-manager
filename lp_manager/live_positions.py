@@ -726,22 +726,23 @@ def _closed_position_final(
     token_id: int, opening_block: int, latest_block: int, market: Any, market_row: dict[str, Any],
     token0: str, token1: str, sym0: str, sym1: str, dec0: int, dec1: int,
     opening_entry: dict[str, Any], current_unclaimed_usd: float,
+    current_owed0: float = 0.0, current_owed1: float = 0.0,
 ) -> dict[str, Any]:
     """Reconstruct one closed NFT once, then freeze the result.
 
     Cash P/L is based on actual manager events: all liquidity contributions are
     cost basis; all Collect distributions are proceeds; gas is a separate actual
-    transaction cost. Fee income is Collect minus same-transaction liquidity
-    principal removed by DecreaseLiquidity.
+    transaction cost. Fee income is each Collect minus outstanding principal
+    created by earlier DecreaseLiquidity events, including when decrease/collect
+    happen in different transactions.
     """
-    if current_unclaimed_usd>0.005:
+    if current_unclaimed_usd>0.005 or current_owed0>1e-12 or current_owed1>1e-12:
         return {"complete":False,"reason":"UNCLAIMED_TOKENS_REMAIN"}
     events=_position_lifecycle_events(
         w3,cfg.position_manager,token_id,max(0,int(opening_block or 0)),latest_block
     )
     if not events:
         return {"complete":False,"reason":"NO_LIFECYCLE_EVENTS"}
-    tx_groups={}
     block_times={}
     for ev in events:
         block=int(ev.get("block_number") or 0)
@@ -759,40 +760,56 @@ def _closed_position_final(
         ev["token0_price_usd"]=p0; ev["token1_price_usd"]=p1
         ev["value_usd"]=ev["amount0"]*p0+ev["amount1"]*p1 if (p0>0 or ev["amount0"]<=0) and (p1>0 or ev["amount1"]<=0) else None
         ev["price_sources"]=sources
-        tx_groups.setdefault(str(ev.get("transaction_hash") or "").lower(),[]).append(ev)
 
     contributions=distributions=fees=0.0
     valuations_complete=True
     fee_events=[]
-    for txh,rows in tx_groups.items():
-        dec0_amt=sum(float(x.get("amount0") or 0) for x in rows if x["event_type"]=="DECREASE_LIQUIDITY")
-        dec1_amt=sum(float(x.get("amount1") or 0) for x in rows if x["event_type"]=="DECREASE_LIQUIDITY")
-        collect0=sum(float(x.get("amount0") or 0) for x in rows if x["event_type"]=="COLLECT")
-        collect1=sum(float(x.get("amount1") or 0) for x in rows if x["event_type"]=="COLLECT")
-        inc_rows=[x for x in rows if x["event_type"]=="INCREASE_LIQUIDITY"]
-        col_rows=[x for x in rows if x["event_type"]=="COLLECT"]
-        for ev in inc_rows:
-            if ev.get("value_usd") is None: valuations_complete=False
-            else: contributions+=float(ev["value_usd"])
-        for ev in col_rows:
-            if ev.get("value_usd") is None: valuations_complete=False
-            else: distributions+=float(ev["value_usd"])
-        if col_rows:
-            anchor=col_rows[-1]
-            p0=float(anchor.get("token0_price_usd") or 0); p1=float(anchor.get("token1_price_usd") or 0)
-            fee0=max(0.0,collect0-dec0_amt); fee1=max(0.0,collect1-dec1_amt)
+    pending_principal0=pending_principal1=0.0
+    opening_basis=float(opening_entry.get("entry_value_usd") or 0)
+    opening_tx=str(opening_entry.get("transaction_hash") or "").lower()
+    opening_counted=False
+    has_collect=False
+
+    for ev in events:
+        et=str(ev.get("event_type") or "")
+        txh=str(ev.get("transaction_hash") or "").lower()
+        a0=float(ev.get("amount0") or 0); a1=float(ev.get("amount1") or 0)
+        if et=="INCREASE_LIQUIDITY":
+            if (not opening_counted) and opening_tx and txh==opening_tx and bool(opening_entry.get("basis_complete")) and opening_basis>0:
+                contributions+=opening_basis
+                opening_counted=True
+            elif ev.get("value_usd") is None:
+                valuations_complete=False
+            else:
+                contributions+=float(ev["value_usd"])
+        elif et=="DECREASE_LIQUIDITY":
+            pending_principal0+=a0
+            pending_principal1+=a1
+        elif et=="COLLECT":
+            has_collect=True
+            if ev.get("value_usd") is None:
+                valuations_complete=False
+            else:
+                distributions+=float(ev["value_usd"])
+            principal0=min(a0,pending_principal0)
+            principal1=min(a1,pending_principal1)
+            pending_principal0=max(0.0,pending_principal0-principal0)
+            pending_principal1=max(0.0,pending_principal1-principal1)
+            fee0=max(0.0,a0-principal0)
+            fee1=max(0.0,a1-principal1)
+            p0=float(ev.get("token0_price_usd") or 0); p1=float(ev.get("token1_price_usd") or 0)
             if (fee0<=0 or p0>0) and (fee1<=0 or p1>0):
                 fee_value=fee0*p0+fee1*p1
                 fees+=fee_value
-                fee_events.append({"transaction_hash":txh,"timestamp":anchor.get("timestamp"),"token0":fee0,"token1":fee1,"fee_value_usd":fee_value})
+                fee_events.append({"transaction_hash":txh,"timestamp":ev.get("timestamp"),"token0":fee0,"token1":fee1,"fee_value_usd":fee_value})
             elif fee0>0 or fee1>0:
                 valuations_complete=False
 
-    # Opening IncreaseLiquidity should normally be present. If an RPC pruned it
-    # but opening evidence is already verified, retain that authoritative basis.
-    opening_basis=float(opening_entry.get("entry_value_usd") or 0)
-    if contributions<=0 and bool(opening_entry.get("basis_complete")) and opening_basis>0:
-        contributions=opening_basis
+    # Opening IncreaseLiquidity should normally be present. If event valuation was
+    # unavailable but the opening reconstruction is verified, retain that basis.
+    if not opening_counted and bool(opening_entry.get("basis_complete")) and opening_basis>0:
+        contributions+=opening_basis
+        opening_counted=True
 
     gas_native=gas_usd=0.0; gas_complete=True
     tx_hashes=sorted({str(x.get("transaction_hash") or "") for x in events if x.get("transaction_hash")})
@@ -819,7 +836,8 @@ def _closed_position_final(
             gas_complete=False
 
     closed_at=max([float(x.get("timestamp") or 0) for x in events] or [0.0])
-    complete=bool(contributions>0 and distributions>=0 and valuations_complete and gas_complete)
+    principal_settled=pending_principal0<=1e-12 and pending_principal1<=1e-12
+    complete=bool(contributions>0 and has_collect and valuations_complete and gas_complete and principal_settled)
     pnl=(distributions-contributions-gas_usd) if complete else None
     return {
         "complete":complete,
@@ -832,7 +850,8 @@ def _closed_position_final(
         "realised_return_pct":round(pnl/contributions*100.0,4) if pnl is not None and contributions>0 else None,
         "events":events,"fee_events":fee_events,
         "valuation_complete":valuations_complete,"gas_complete":gas_complete,
-        "reason":None if complete else "Historical token/gas valuation evidence is incomplete",
+        "principal_settled":principal_settled,
+        "reason":None if complete else "Historical token/gas valuation or settlement evidence is incomplete",
     }
 
 
@@ -861,6 +880,8 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
         try:
             log_ids, log_evidence = _discover_incoming_token_ids(w3, cfg.position_manager, Web3.to_checksum_address(wallet), start, latest)
             token_ids.update(log_ids)
+            if finalized_token_ids:
+                token_ids.difference_update(set(finalized_token_ids))
             for tid, ev in log_evidence.items(): discovery_evidence.setdefault(tid, ev)
         except Exception:
             # Owned-NFT API + known IDs still allow authoritative ownerOf reads if a
@@ -892,15 +913,23 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                 except Exception:
                     # tokensOwed is a conservative partial fallback when a provider refuses non-view eth_call.
                     fee0, fee1 = float(pos[10]) / (10 ** dec0), float(pos[11]) / (10 ** dec1)
-                market_row = _pool_market(market, cfg.key, pool)
-                usd0, usd1 = _usd_prices(market_row, token0, token1)
-                if market and (usd0 <= 0 or usd1 <= 0):
+                market_row={}
+                usd0=usd1=0.0
+                if market:
                     try:
+                        # token_prices prefers configured Alchemy, preserving the
+                        # scarce GeckoTerminal budget for data that cannot be read
+                        # from chain/Alchemy.
                         marks=market.token_prices(cfg.key,[token0,token1])
-                        usd0=usd0 or float(marks.get(str(token0).lower()) or 0)
-                        usd1=usd1 or float(marks.get(str(token1).lower()) or 0)
+                        usd0=float(marks.get(str(token0).lower()) or 0)
+                        usd1=float(marks.get(str(token1).lower()) or 0)
                     except Exception:
                         pass
+                if market and (usd0<=0 or usd1<=0):
+                    market_row=_pool_market(market,cfg.key,pool)
+                    mp0,mp1=_usd_prices(market_row,token0,token1)
+                    usd0=usd0 or mp0
+                    usd1=usd1 or mp1
                 value_usd = amount0 * usd0 + amount1 * usd1
                 fees_usd = fee0 * usd0 + fee1 * usd1
                 discovered = discovery_evidence.get(token_id) or {}
@@ -984,6 +1013,8 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                         pool_mark_detail={}
                         if market and opened_at and ((dep0>0 and e0<=0) or (dep1>0 and e1<=0)):
                             try:
+                                if not market_row:
+                                    market_row=_pool_market(market,cfg.key,pool)
                                 hp0,hp1,pool_mark_detail=_historical_pool_marks_at(
                                     market,cfg.key,pool,market_row,token0,token1,opened_at
                                 )
@@ -1051,6 +1082,7 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                             latest_block=latest,market=market,market_row=market_row,
                             token0=token0,token1=token1,sym0=sym0,sym1=sym1,dec0=dec0,dec1=dec1,
                             opening_entry=entry_evidence,current_unclaimed_usd=fees_usd,
+                            current_owed0=fee0,current_owed1=fee1,
                         )
                         snapshot["closed_final"]=closed_final
                     except Exception as exc:
