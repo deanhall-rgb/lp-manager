@@ -257,6 +257,7 @@ class ExecutionReceiptIntent(BaseModel):
     gas_used: str | int | None = None
     effective_gas_price: str | int | None = None
     status: str = "CONFIRMED"
+    receipt: dict[str, Any] | None = None
 
 
 class AutomationPolicyIntent(BaseModel):
@@ -1313,6 +1314,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 return value
             text=str(value)
             return int(text,16) if text.lower().startswith("0x") else int(text)
+
+        action=str(intent.action or "").upper()
         gas_used=max(0,_hexint(intent.gas_used))
         gas_price=max(0,_hexint(intent.effective_gas_price))
         gas_native=gas_used*gas_price/1e18
@@ -1324,15 +1327,83 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 gas_usd=gas_native*float(marks.get(str(cfg.wrapped_native).lower()) or 0)
         except Exception:
             gas_usd=0.0
+
+        collected_usd=0.0
+        collected_tokens={}
+        position=store.get_position(intent.position_id) if intent.position_id else None
+        snapshot=store.get_position_snapshot(intent.position_id) if intent.position_id else None
+        receipt_payload=dict(intent.receipt or {})
+        if position and snapshot and receipt_payload and action in {"COLLECT_FEES","CLOSE_POSITION"}:
+            try:
+                from web3 import Web3
+                collect_topic="0x"+Web3.keccak(text="Collect(uint256,address,uint256,uint256)").hex().removeprefix("0x")
+                manager=str(snapshot.get("position_manager") or "").lower()
+                token_id=int(position.get("token_id") or snapshot.get("token_id") or 0)
+                totals=[0,0]
+                for log in receipt_payload.get("logs") or []:
+                    if manager and str(log.get("address") or "").lower()!=manager:
+                        continue
+                    topics=log.get("topics") or []
+                    if len(topics)<2 or str(topics[0]).lower()!=collect_topic.lower():
+                        continue
+                    try:
+                        if int(str(topics[1]),16)!=token_id:
+                            continue
+                        raw=str(log.get("data") or "0x").removeprefix("0x")
+                        data=bytes.fromhex(raw)
+                        if len(data)<96:
+                            continue
+                        # recipient occupies the first 32-byte data word.
+                        totals[0]+=int.from_bytes(data[32:64],"big")
+                        totals[1]+=int.from_bytes(data[64:96],"big")
+                    except Exception:
+                        continue
+                t0=dict(snapshot.get("token0") or {}); t1=dict(snapshot.get("token1") or {})
+                dec0=int(t0.get("decimals") or 18); dec1=int(t1.get("decimals") or 18)
+                a0=totals[0]/(10**dec0); a1=totals[1]/(10**dec1)
+                p0=float(t0.get("price_usd") or 0); p1=float(t1.get("price_usd") or 0)
+                collected_usd=a0*p0+a1*p1
+                collected_tokens={
+                    str(t0.get("symbol") or "token0"):a0,
+                    str(t1.get("symbol") or "token1"):a1,
+                }
+            except Exception:
+                collected_usd=0.0; collected_tokens={}
+
         event=store.record_financial_event(
-            position_id=intent.position_id,event_type=str(intent.action or "").upper(),
-            chain=intent.chain.upper(),tx_hash=intent.tx_hash,gas_native=gas_native,
-            gas_usd=gas_usd,status=intent.status,
-            payload={"gas_used":gas_used,"effective_gas_price":gas_price,"forecast_id":intent.forecast_id},
+            position_id=intent.position_id,event_type=action,
+            chain=intent.chain.upper(),tx_hash=intent.tx_hash,amount_usd=collected_usd,
+            gas_native=gas_native,gas_usd=gas_usd,status=intent.status,
+            payload={
+                "gas_used":gas_used,"effective_gas_price":gas_price,
+                "forecast_id":intent.forecast_id,"collected_tokens":collected_tokens,
+            },
         )
+        cumulative_position_gas=0.0
+        if intent.position_id and str(intent.status).upper()=="CONFIRMED":
+            cumulative_position_gas=store.add_position_gas_cost(intent.position_id,gas_usd)
+
+        if action=="CLOSE_POSITION" and position and snapshot and collected_usd>0 and str(intent.status).upper()=="CONFIRMED":
+            tracker=store.get_setting(f"fees:tracker:{intent.position_id}",{}) or {}
+            acct=position_accounting(position,snapshot,tracker)
+            opening=float(acct.get("cost_basis_usd") or 0)
+            prior_collected=max(float(position.get("realised_fees") or 0),float(tracker.get("collected_lower_bound_usd") or 0))
+            if acct.get("basis_ready") and opening>0:
+                realised=collected_usd+prior_collected-opening-cumulative_position_gas
+                store.record_closed_position_economics(
+                    intent.position_id,reported_net_pnl=realised,
+                    reported_net_pnl_pct=realised/opening*100.0,
+                    gas_costs=cumulative_position_gas,quality="ONCHAIN_CLOSE_RECEIPT",
+                )
+
         if intent.forecast_id and intent.position_id:
             store.link_forecast_to_position(intent.forecast_id,intent.position_id)
-        return {"ok":True,"event":event}
+        return {
+            "ok":True,"event":event,
+            "collected_value_usd":round(collected_usd,4),
+            "collected_tokens":collected_tokens,
+            "position_gas_costs_usd":round(cumulative_position_gas,4),
+        }
 
     @app.get("/api/decisions/grouped")
     def decisions_grouped():
