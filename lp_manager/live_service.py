@@ -72,6 +72,13 @@ class LiveDataService:
                     checkpoint = self.store.get_setting(f"live:checkpoint:{c}", None)
                     from_override = max(0, int(checkpoint) - 128) if checkpoint is not None else None
                     known = self.store.live_token_ids(c)
+                    finalized={
+                        int(p.get("token_id"))
+                        for p in self.store.list_positions("CLOSED")
+                        if str(p.get("chain") or "").upper()==c
+                        and str(p.get("lifecycle_stage") or "").upper()=="CLOSED_FINAL"
+                        and str(p.get("token_id") or "").isdigit()
+                    }
                     seed_evidence={}
                     for token_id, tx_hash in (_AUTHORITATIVE_OPENINGS.get(c) or {}).items():
                         known.add(int(token_id))
@@ -109,6 +116,7 @@ class LiveDataService:
                         scan_chain_positions, CHAINS[c], self.settings.wallet_address,
                         scan_blocks=CHAINS[c].scan_blocks(self.settings.position_scan_blocks), market=self.market,
                         from_block_override=from_override, known_token_ids=known, seed_evidence=seed_evidence,
+                        finalized_token_ids=finalized,
                     )
                     futures[f] = c
                 for f in as_completed(futures):
