@@ -489,6 +489,7 @@ def _recommend_single_pool(
 
     calibration = fee_calibration_for_pool(store, {**pool, "chain": str(chain).upper()}, sleeve=sleeve_u)
     observed_pool = observed_pool_fee_rate(store, {**pool, "chain": str(chain).upper()})
+    observed_pair = observed_pair_fee_prior(store, {**pool, "chain": str(chain).upper()})
     widths = _candidate_widths(sleeve_u, horizon)
     skews = _candidate_skews(regime, sleeve_u)
     candidates = [c for c in generate_range_candidates(spot, half_widths_pct=widths, skews_pct=skews) if c.lower <= spot <= c.upper]
@@ -506,27 +507,31 @@ def _recommend_single_pool(
         )
         empirical_day=0.0
         empirical_width_scale=1.0
-        if observed_pool.get("available"):
-            samples=observed_pool.get("samples") or []
+        empirical_source=None
+        empirical_evidence=observed_pool if observed_pool.get("available") else observed_pair
+        if empirical_evidence.get("available"):
+            samples=empirical_evidence.get("samples") or []
             observed_widths=[]
             for sample in samples:
                 lo=_f(sample.get("lower_price")); hi=_f(sample.get("upper_price"))
                 if lo>0 and hi>lo:
                     observed_widths.append((hi/lo-1.0)*100.0)
             observed_width=statistics.median(observed_widths) if observed_widths else candidate.width_pct
-            # A narrower candidate can earn a higher liquidity share, but never
-            # extrapolate one young owned sample by more than 1.5x on geometry.
-            empirical_width_scale=max(0.65,min(1.50,math.sqrt(max(1.0,observed_width)/max(1.0,candidate.width_pct))))
+            # Geometry transfer is deliberately bounded. Same-pair evidence from a
+            # different pool has already received a 55% transfer haircut.
+            empirical_width_scale=max(0.70,min(1.35,math.sqrt(max(1.0,observed_width)/max(1.0,candidate.width_pct))))
             active_scale=max(0.35,min(1.0,_f(analysis.get("average_horizon_activity_pct"))/100.0))
-            empirical_day=_f(observed_pool.get("fee_day_per_usd"))*capital*empirical_width_scale*active_scale
+            empirical_day=_f(empirical_evidence.get("fee_day_per_usd"))*capital*empirical_width_scale*active_scale
+            empirical_source="EXACT_OWNED_POOL" if observed_pool.get("available") else "SAME_PAIR_OWNED_PRIOR"
 
         if econ.get("mode") == "INSUFFICIENT_DATA":
             if empirical_day<=0:
                 continue
             fee_bps,_fee_source=infer_fee_tier_bps(pool)
-            persistence=0.62 if _f(observed_pool.get("max_age_days"))<3 else 0.72
+            evidence_age=_f(empirical_evidence.get("max_age_days"))
+            persistence=0.58 if empirical_source=="SAME_PAIR_OWNED_PRIOR" else 0.62 if evidence_age<3 else 0.72
             econ={
-                "mode":"ESTIMATED_FROM_EXACT_OWNED_POOL_FEES",
+                "mode":"ESTIMATED_FROM_EXACT_OWNED_POOL_FEES" if empirical_source=="EXACT_OWNED_POOL" else "ESTIMATED_FROM_SAME_PAIR_OWNED_PRIOR",
                 "estimated":True,
                 "capital_usd":round(capital,2),
                 "fee_tier_bps":round(fee_bps,3),
@@ -543,10 +548,13 @@ def _recommend_single_pool(
                 "estimated_net_month_pct":round((empirical_day*30.4375*persistence-max(0.0,interventions_month)*1.5)/capital*100.0,2),
                 "persistence_haircut_factor":persistence,
                 "liquidity_share_baseline_pct":0.0,
-                "fee_share_method":"EXACT_OWNED_POOL_OBSERVED_FEE_RATE",
-                "confidence":"LOW" if _f(observed_pool.get("max_age_days"))<3 else "MODERATE",
-                "observed_pool_fallback":observed_pool,
-                "assumptions":["Public pool volume was unavailable, so the fee forecast is anchored to this exact owned pool's observed fee rate and conservatively adjusted for range width and historical active time."],
+                "fee_share_method":"EXACT_OWNED_POOL_OBSERVED_FEE_RATE" if empirical_source=="EXACT_OWNED_POOL" else "SAME_PAIR_OWNED_FEE_PRIOR",
+                "confidence":"LOW" if empirical_source=="SAME_PAIR_OWNED_PRIOR" or evidence_age<3 else "MODERATE",
+                "observed_pool_fallback":empirical_evidence,
+                "assumptions":[
+                    "Public pool volume was unavailable, so fee economics use owned live evidence.",
+                    "Exact-pool evidence is preferred. Same-pair evidence from another pool is heavily haircut and remains LOW confidence.",
+                ],
             }
         share = _f(econ.get("liquidity_share_baseline_pct")) / 100.0
         wf = _walk_forward(
@@ -558,10 +566,10 @@ def _recommend_single_pool(
         fee_forecast_source="PUBLIC_POOL_VOLUME_MODEL"
         if empirical_day>0 and (_f(pool.get("volume_24h_usd"))<=0 or current_day<=0):
             current_day=empirical_day
-            fee_forecast_source="EXACT_OWNED_POOL_OBSERVED_FALLBACK"
+            fee_forecast_source="EXACT_OWNED_POOL_OBSERVED_FALLBACK" if empirical_source=="EXACT_OWNED_POOL" else "SAME_PAIR_OWNED_FEE_PRIOR"
         p_month = _f(econ.get("persistence_haircut_factor"), 0.65)
         p_h = _horizon_persistence(p_month, horizon)
-        calibration_factor=1.0 if fee_forecast_source=="EXACT_OWNED_POOL_OBSERVED_FALLBACK" else _f(calibration.get("factor"), 1.0)
+        calibration_factor=1.0 if fee_forecast_source in {"EXACT_OWNED_POOL_OBSERVED_FALLBACK","SAME_PAIR_OWNED_FEE_PRIOR"} else _f(calibration.get("factor"), 1.0)
         calibrated_day = current_day * calibration_factor
         forecast_fees = max(0.0, calibrated_day * horizon * p_h)
         intervention_cost = max(0.0, interventions_month) * 1.5 * horizon / 30.4375
@@ -600,6 +608,7 @@ def _recommend_single_pool(
                 "fee_day_current_calibrated_usd": round(calibrated_day, 4),
                 "fee_forecast_source":fee_forecast_source,
                 "owned_pool_observed_apr_pct":observed_pool.get("annualised_fee_apr_pct"),
+                "owned_pair_prior_apr_pct":observed_pair.get("annualised_fee_apr_pct"),
                 "empirical_width_scale":round(empirical_width_scale,4) if empirical_day>0 else None,
                 "horizon_persistence_factor": round(p_h, 4),
                 "expected_fees_usd": round(forecast_fees, 2),
@@ -757,7 +766,7 @@ def _recommend_single_pool(
         "sleeve": sleeve_u, "capital_usd": round(capital, 2), "horizon_days": round(horizon, 3),
         "monthly_target_pct": round(float(monthly_target_pct), 3), "spot": spot,
         "price_lens": pool_price_lens(pool, current=spot), "pool": pool,
-        "regime": regime, "fee_calibration": calibration, "owned_pool_fee_evidence": observed_pool, "evidence": evidence,
+        "regime": regime, "fee_calibration": calibration, "owned_pool_fee_evidence": observed_pool, "owned_pair_fee_prior": observed_pair, "evidence": evidence,
         "price_series": [{"timestamp":c.get("timestamp"),"close":c.get("close")} for c in candles[-240:]],
         "confidence": confidence, "confidence_score": min(100, confidence_points),
         "recommended_range": {**best, "rank": 1},
