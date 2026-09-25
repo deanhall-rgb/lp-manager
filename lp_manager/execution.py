@@ -33,7 +33,7 @@ class ExecutionService:
             "manual_wallet_stage_available": True,
             "live_v3_collect_simulation": True,
             "live_v3_close_simulation": True,
-            "safety_message": "V0.8 can build/simulate V3 open/collect/close calls. Explicitly approved open calls may be signed by the connected browser wallet; the server never stores keys or autonomously signs/broadcasts.",
+            "safety_message": "LP Manager can build/simulate V3 open, collect-fees and close calls. Any prepared call may be sent only after explicit human approval through the connected browser wallet; the server never stores keys or autonomously signs/broadcasts.",
         }
 
     def _legacy_import(self, module_name: str):
