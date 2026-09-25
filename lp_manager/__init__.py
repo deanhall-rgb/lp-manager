@@ -1,3 +1,3 @@
-"""LP Manager v0.8.9 - provider resilience, lifecycle accounting and wallet fixes."""
+"""LP Manager v0.8.10 - stabilisation hotfixes for Profit Lab, wallets and closed accounting."""
 
-__version__ = "0.8.9"
+__version__ = "0.8.10"
