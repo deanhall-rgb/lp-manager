@@ -827,12 +827,16 @@ def _closed_position_final(
     opening_tx=str(opening_entry.get("transaction_hash") or "").lower()
     opening_counted=False
     has_collect=False
+    liquidity_balance=0
+    close_transaction_hash=""
+    close_timestamp=0.0
 
     for ev in events:
         et=str(ev.get("event_type") or "")
         txh=str(ev.get("transaction_hash") or "").lower()
         a0=float(ev.get("amount0") or 0); a1=float(ev.get("amount1") or 0)
         if et=="INCREASE_LIQUIDITY":
+            liquidity_balance+=int(ev.get("liquidity") or 0)
             if (not opening_counted) and opening_tx and txh==opening_tx and bool(opening_entry.get("basis_complete")) and opening_basis>0:
                 contributions+=opening_basis
                 opening_counted=True
@@ -841,6 +845,11 @@ def _closed_position_final(
             else:
                 contributions+=float(ev["value_usd"])
         elif et=="DECREASE_LIQUIDITY":
+            before_liquidity=liquidity_balance
+            liquidity_balance=max(0,liquidity_balance-int(ev.get("liquidity") or 0))
+            if before_liquidity>0 and liquidity_balance==0:
+                close_transaction_hash=txh
+                close_timestamp=float(ev.get("timestamp") or 0)
             pending_principal0+=a0
             pending_principal1+=a1
         elif et=="COLLECT":
@@ -902,7 +911,19 @@ def _closed_position_final(
         except Exception:
             gas_complete=False
 
-    closed_at=max([float(x.get("timestamp") or 0) for x in events] or [0.0])
+    lifecycle_transaction_hashes=[]
+    decrease_transaction_hashes=[]
+    collect_transaction_hashes=[]
+    for ev in events:
+        txh=str(ev.get("transaction_hash") or "")
+        if txh and txh not in lifecycle_transaction_hashes:
+            lifecycle_transaction_hashes.append(txh)
+        if str(ev.get("event_type") or "")=="DECREASE_LIQUIDITY" and txh and txh not in decrease_transaction_hashes:
+            decrease_transaction_hashes.append(txh)
+        if str(ev.get("event_type") or "")=="COLLECT" and txh and txh not in collect_transaction_hashes:
+            collect_transaction_hashes.append(txh)
+
+    closed_at=close_timestamp or max([float(x.get("timestamp") or 0) for x in events] or [0.0])
     principal_settled=pending_principal0<=1e-12 and pending_principal1<=1e-12
     complete=bool(contributions>0 and has_collect and valuations_complete and gas_complete and principal_settled)
     pnl=(distributions-contributions-gas_usd) if complete else None
@@ -919,6 +940,11 @@ def _closed_position_final(
         "realised_pnl_usd":round(pnl,4) if pnl is not None else None,
         "realised_return_pct":round(pnl/contributions*100.0,4) if pnl is not None and contributions>0 else None,
         "events":events,"fee_events":fee_events,
+        "lifecycle_transaction_hashes":lifecycle_transaction_hashes,
+        "decrease_transaction_hashes":decrease_transaction_hashes,
+        "collect_transaction_hashes":collect_transaction_hashes,
+        "close_transaction_hash":close_transaction_hash,
+        "liquidity_settled":liquidity_balance==0,
         "valuation_complete":valuations_complete,"gas_complete":gas_complete,
         "principal_settled":principal_settled,
         "reason":None if complete else "Historical token/gas valuation or settlement evidence is incomplete",
@@ -1242,23 +1268,71 @@ def finalise_closed_positions_from_store(
             dec0=int(t0.get("decimals") or 18); dec1=int(t1.get("decimals") or 18)
             sym0=str(t0.get("symbol") or "TOKEN0"); sym1=str(t1.get("symbol") or "TOKEN1")
             opening=dict(snap.get("entry_evidence") or {})
-            opening_block=int(snap.get("opening_block_number") or opening.get("block_number") or 0)
+            historical=dict(snap.get("historical_evidence") or {})
+            historical_raw=dict(historical.get("raw_position_summary") or {})
+            historical_fin=dict(historical.get("financial_evidence") or {})
+
+            opening_tx=str(
+                snap.get("opening_transaction_hash")
+                or opening.get("transaction_hash")
+                or historical_raw.get("open_tx")
+                or authoritative_opening_tx(cfg.key,p.get("token_id"))
+                or ""
+            ).strip()
+            opening_block=int(
+                snap.get("opening_block_number")
+                or opening.get("block_number")
+                or historical_raw.get("open_block")
+                or 0
+            )
+            opening_time=float(
+                opening.get("opened_at")
+                or snap.get("opened_at")
+                or historical_raw.get("open_timestamp")
+                or p.get("opened_at")
+                or 0
+            )
+
             if opening_block<=0:
-                opening_tx=str(snap.get("opening_transaction_hash") or opening.get("transaction_hash") or "").strip()
                 if not opening_tx:
-                    raise ValueError("OPENING_BLOCK_UNAVAILABLE: persisted opening transaction/block is missing")
+                    raise ValueError("OPENING_BLOCK_UNAVAILABLE: persisted/verified opening transaction is missing")
                 try:
                     receipt=w3.eth.get_transaction_receipt(opening_tx)
                     opening_block=int(receipt.get("blockNumber") or 0)
+                    if opening_time<=0 and opening_block:
+                        try:
+                            opening_time=float(w3.eth.get_block(opening_block).get("timestamp") or 0)
+                        except Exception:
+                            pass
                 except Exception as exc:
                     raise RuntimeError(f"OPENING_BLOCK_LOOKUP_FAILED: {str(exc)[:160]}") from exc
                 if opening_block<=0:
                     raise ValueError("OPENING_BLOCK_UNAVAILABLE: opening transaction receipt has no block number")
-                snap["opening_block_number"]=opening_block
-                opening["block_number"]=opening_block
-                snap["entry_evidence"]=opening
+
+            if opening_tx:
+                snap["opening_transaction_hash"]=opening_tx
+                opening["transaction_hash"]=opening_tx
+            snap["opening_block_number"]=opening_block
+            opening["block_number"]=opening_block
+            if opening_time>0:
+                snap["opened_at"]=opening_time
+                opening["opened_at"]=opening_time
+
+            reviewed_basis=float(historical_fin.get("initial_value_usd") or 0)
+            if reviewed_basis>0 and not float(opening.get("entry_value_usd") or 0):
+                opening["entry_value_usd"]=reviewed_basis
+                opening["basis_complete"]=True
+                opening["quality"]="HISTORICAL_RECONSTRUCTED_BASIS"
+                opening["price_source"]="REVIEWED_HISTORICAL_RECONSTRUCTION"
+            snap["entry_evidence"]=opening
+
             pool_c=w3.eth.contract(address=Web3.to_checksum_address(pool),abi=POOL_ABI)
             market_row={}
+            if market:
+                try:
+                    market_row=_pool_market(market,cfg.key,pool)
+                except Exception:
+                    market_row={}
             final=_closed_position_final(
                 w3=w3,cfg=cfg,wallet=wallet,manager=None,pool_c=pool_c,pool=pool,
                 token_id=int(p.get("token_id")),opening_block=opening_block,latest_block=latest,
@@ -1266,6 +1340,26 @@ def finalise_closed_positions_from_store(
                 token0=token0,token1=token1,sym0=sym0,sym1=sym1,dec0=dec0,dec1=dec1,
                 opening_entry=opening,current_unclaimed_usd=0.0,current_owed0=0.0,current_owed1=0.0,
             )
+            if (
+                not final.get("complete")
+                and bool(historical_fin.get("realised"))
+                and str(historical_fin.get("quality") or "").upper()=="RECONCILED_CLOSE_AND_FEE_CLAIM"
+                and bool(final.get("lifecycle_transaction_hashes"))
+                and bool(final.get("close_transaction_hash"))
+            ):
+                final={
+                    **final,
+                    "complete":True,
+                    "quality":"HISTORICAL_RECONCILED_FINAL_WITH_ONCHAIN_LIFECYCLE",
+                    "accounting_source":"REVIEWED_HISTORICAL_ECONOMICS+ONCHAIN_LIFECYCLE",
+                    "opening_capital_usd":float(historical_fin.get("initial_value_usd") or 0),
+                    "total_fees_usd":float(historical_fin.get("fee_value_usd") or 0),
+                    "realised_pnl_usd":float(historical_fin.get("absolute_profit_usd") or 0),
+                    "realised_return_pct":float(historical_fin.get("absolute_return_pct") or 0),
+                    "closed_at":float(historical_raw.get("close_timestamp") or final.get("closed_at") or time.time()),
+                    "reason":None,
+                }
+
             snap["closed_final"]=final
             snap["closed_final_checked_at"]=time.time()
             store.save_position_snapshot(pid,snap)
@@ -1321,6 +1415,31 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
         previous_snap=store.get_position_snapshot(position_id) or {}
         entry=dict(snap.get("entry_evidence") or {})
         previous_entry=dict(previous_snap.get("entry_evidence") or {})
+
+        if previous_snap.get("historical_evidence") and not snap.get("historical_evidence"):
+            snap["historical_evidence"]=previous_snap.get("historical_evidence")
+        if previous_snap.get("closed_final") and not snap.get("closed_final"):
+            snap["closed_final"]=previous_snap.get("closed_final")
+            if previous_snap.get("closed_final_checked_at"):
+                snap["closed_final_checked_at"]=previous_snap.get("closed_final_checked_at")
+
+        # Opening identity is immutable evidence and must survive even when a later
+        # owned-NFT provider cannot rediscover the mint transfer.
+        if not snap.get("opening_transaction_hash"):
+            snap["opening_transaction_hash"]=(
+                previous_snap.get("opening_transaction_hash")
+                or previous_entry.get("transaction_hash")
+                or authoritative_opening_tx(result.chain,row.get("token_id"))
+                or ""
+            )
+        if not int(snap.get("opening_block_number") or 0):
+            snap["opening_block_number"]=int(
+                previous_snap.get("opening_block_number")
+                or previous_entry.get("block_number")
+                or 0
+            )
+        if not float(snap.get("opened_at") or 0) and float(previous_snap.get("opened_at") or 0)>0:
+            snap["opened_at"]=float(previous_snap.get("opened_at") or 0)
 
         # A transient provider/archive-history failure must never erase a previously
         # complete opening reconstruction. Conversely, an old partial reconstruction
