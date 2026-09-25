@@ -23,12 +23,12 @@ def test_bundled_delta_financial_calibration_is_not_zeroed(tmp_path: Path):
     store=Store(tmp_path/"db.sqlite")
     import_delta_pool_history(store,_bundled())
     rows={r["display_name"]:r for r in store.list_positions()}
-    assert rows["DELTA LP2"]["reported_net_pnl"] == 81.00
+    assert rows["P2 - WETH/DELTA"]["reported_net_pnl"] == 81.00
     assert rows["DELTA LP2"]["reported_net_pnl_pct"] == 36.75
-    assert rows["DELTA LP2"]["realised_fees"] == 46.16
-    assert rows["DELTA LP3"]["reported_net_pnl"] == 14.11
+    assert rows["P2 - WETH/DELTA"]["realised_fees"] == 46.16
+    assert rows["P3 - WETH/DELTA"]["reported_net_pnl"] == 14.11
     assert rows["DELTA LP3"]["reported_net_pnl_pct"] == 10.73
-    assert rows["DELTA LP3"]["realised_fees"] == 4.70
+    assert rows["P3 - WETH/DELTA"]["realised_fees"] == 4.70
     assert rows["DELTA LP1"]["reported_net_pnl"] == 0  # no final close settlement invented
     for row in rows.values():
         assert row["current_price"] == 0
