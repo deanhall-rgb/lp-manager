@@ -17,8 +17,10 @@ from .rpc_client import build_read_only_web3
 from .price_units import display_lens
 from .fee_metrics import observed_fee_metrics
 from .position_identity import authoritative_label
+from .v3_math import Q96, tick_to_sqrt_price_x96
 
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().removeprefix("0x")
+INCREASE_LIQUIDITY_TOPIC = "0x" + Web3.keccak(text="IncreaseLiquidity(uint256,uint128,uint256,uint256)").hex().removeprefix("0x")
 UINT128_MAX = 2**128 - 1
 
 OWNER_ABI = [{"inputs":[{"name":"tokenId","type":"uint256"}],"name":"ownerOf","outputs":[{"name":"","type":"address"}],"stateMutability":"view","type":"function"}]
@@ -260,6 +262,78 @@ def _erc20_deposits_from_receipt(receipt: Any, *, pool: str, token0: str, token1
         except Exception:
             continue
     return totals[str(token0).lower()]/(10**int(dec0)), totals[str(token1).lower()]/(10**int(dec1))
+
+
+def _opening_liquidity_event(
+    receipt: Any, *, manager: str, token_id: int, tick_lower: int, tick_upper: int,
+    dec0: int, dec1: int,
+) -> dict[str, Any]:
+    """Decode the NFT manager IncreaseLiquidity event from the opening receipt.
+
+    This gives the exact liquidity and token amounts actually accepted by the mint.
+    From L, amount0/amount1 and the position ticks we can reconstruct the opening
+    sqrt price even when the RPC cannot serve historical slot0 state.
+    """
+    manager_l=str(manager or "").lower()
+    topic0=INCREASE_LIQUIDITY_TOPIC.lower()
+    for log in receipt.get("logs") or []:
+        if str(log.get("address") or "").lower()!=manager_l:
+            continue
+        topics=log.get("topics") or []
+        if len(topics)<2 or _hex_topic(topics[0]).lower()!=topic0:
+            continue
+        try:
+            event_token=int(_hex_topic(topics[1]),16)
+        except Exception:
+            continue
+        if int(event_token)!=int(token_id):
+            continue
+        raw=log.get("data")
+        if isinstance(raw,(bytes,bytearray)) or hasattr(raw,"hex"):
+            data=bytes(raw)
+        else:
+            text=str(raw or "0x").removeprefix("0x")
+            data=bytes.fromhex(text)
+        if len(data)<96:
+            continue
+        liquidity=int.from_bytes(data[0:32],"big")
+        amount0_raw=int.from_bytes(data[32:64],"big")
+        amount1_raw=int.from_bytes(data[64:96],"big")
+        if liquidity<=0:
+            continue
+        sqrt_a=tick_to_sqrt_price_x96(int(tick_lower))
+        sqrt_b=tick_to_sqrt_price_x96(int(tick_upper))
+        if sqrt_a>sqrt_b:
+            sqrt_a,sqrt_b=sqrt_b,sqrt_a
+        candidates=[]
+        if amount1_raw>0:
+            p1=sqrt_a+(float(amount1_raw)*Q96/float(liquidity))
+            if sqrt_a<=p1<=sqrt_b:
+                candidates.append(p1)
+        if amount0_raw>0:
+            denom=float(amount0_raw)*sqrt_b+float(liquidity)*Q96
+            if denom>0:
+                p0=float(liquidity)*Q96*sqrt_b/denom
+                if sqrt_a<=p0<=sqrt_b:
+                    candidates.append(p0)
+        sqrt_p=sum(candidates)/len(candidates) if candidates else 0.0
+        tick=None
+        if sqrt_p>0:
+            try:
+                tick=int(round(2.0*math.log(sqrt_p/Q96)/math.log(1.0001)))
+            except Exception:
+                tick=None
+        return {
+            "liquidity":liquidity,
+            "amount0_raw":amount0_raw,
+            "amount1_raw":amount1_raw,
+            "amount0":amount0_raw/(10**int(dec0)),
+            "amount1":amount1_raw/(10**int(dec1)),
+            "sqrt_price_x96":sqrt_p,
+            "reconstructed_tick":tick,
+            "price_source":"OPENING_INCREASE_LIQUIDITY_EVENT",
+        }
+    return {}
 
 
 def _auto_sleeve(pair: str) -> str:
@@ -611,10 +685,22 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                             except Exception:
                                 pass
                         dep0,dep1=_erc20_deposits_from_receipt(receipt,pool=pool,token0=token0,token1=token1,dec0=dec0,dec1=dec1)
+                        mint_event=_opening_liquidity_event(
+                            receipt,manager=cfg.position_manager,token_id=token_id,
+                            tick_lower=tick_lower,tick_upper=tick_upper,dec0=dec0,dec1=dec1,
+                        )
+                        if mint_event:
+                            # IncreaseLiquidity reports the amounts actually accepted
+                            # by the NFT manager, which is stronger evidence than
+                            # summing all token transfers in a complex transaction.
+                            dep0=float(mint_event.get("amount0") or dep0)
+                            dep1=float(mint_event.get("amount1") or dep1)
                         entry_tick=None
                         if opening_block:
                             try: entry_tick=int(pool_c.functions.slot0().call(block_identifier=opening_block)[1])
                             except Exception: entry_tick=None
+                        if entry_tick is None and mint_event.get("reconstructed_tick") is not None:
+                            entry_tick=int(mint_event["reconstructed_tick"])
                         entry_ratio=_raw_price_at_tick(entry_tick,dec0,dec1) if entry_tick is not None else 0.0
                         e0=e1=0.0
                         sources=[]
@@ -690,12 +776,13 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                             "basis_complete":basis_complete,
                             "missing_opening_price_symbols":missing,
                             "historical_pool_mark_detail":pool_mark_detail,
+                            "opening_liquidity_event":mint_event,
                             "quality":"ONCHAIN_MINT_RECONSTRUCTED" if basis_complete else "ONCHAIN_AMOUNTS_PARTIAL_PRICING",
                         }
                     except Exception as exc:
                         entry_evidence={"transaction_hash":opening_tx,"block_number":opening_block,"opened_at":opened_at,"quality":"OPENING_TX_FOUND_RECONSTRUCTION_FAILED","error":str(exc)[:180]}
                 snapshot = {
-                    "live": True, "chain_id": cfg.chain_id, "block_number": latest, "read_at": time.time(),
+                    "live": True, "chain": cfg.key, "chain_id": cfg.chain_id, "block_number": latest, "read_at": time.time(),
                     "discovery_source": discovered.get("discovery_source") or ("BLOCKSCOUT_OWNED_NFT" if token_id in explorer_ids else "ALCHEMY_OWNED_NFT" if token_id in alchemy_ids else "KNOWN_POSITION"),
                     "opening_transaction_hash": discovered.get("transaction_hash") or "",
                     "opening_block_number": int(opening_block or discovered.get("block_number") or 0),
@@ -831,7 +918,7 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
             exit_goal=(existing or {}).get("exit_goal") or "",
             lifecycle_stage="ACTIVE" if row.get("active_liquidity") else "CLOSED",
             cost_basis_quality=cost_quality,
-            strategy_version="v0.8.7",
+            strategy_version="v0.8.8",
             pool_address=str((row.get("snapshot") or {}).get("pool_address") or (existing or {}).get("pool_address") or ""),
             range_unit=str((row.get("snapshot") or {}).get("range_unit") or (existing or {}).get("range_unit") or "TOKEN1_PER_TOKEN0"),
             closed_at=(time.time() if not row.get("active_liquidity") else float((existing or {}).get("closed_at") or 0)),
