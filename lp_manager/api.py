@@ -51,6 +51,7 @@ from .profit_calibration import fee_calibration_for_pool, calibration_samples
 from .capital_allocation import rank_capital_candidates
 from .portfolio_accounting import position_accounting
 from .fee_metrics import observed_fee_metrics
+from .position_identity import canonical_display_name, authoritative_position
 
 
 class ScoutIntent(BaseModel):
@@ -289,7 +290,38 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     def _visible_positions(status: str | None = None) -> list[dict[str, Any]]:
         rows=store.list_positions(status)
-        return [r for r in rows if str(r.get("monitoring_class") or "").upper() != "ARCHIVED_SUPERSEDED"]
+        out=[]
+        for r in rows:
+            if str(r.get("monitoring_class") or "").upper()=="ARCHIVED_SUPERSEDED":
+                continue
+            row=dict(r)
+            if str(row.get("source") or "")=="live_chain" and row.get("token_id"):
+                row["display_name"]=canonical_display_name(
+                    str(row.get("chain") or ""),str(row.get("token_id")),
+                    str(row.get("pair") or "LP position"),str(row.get("display_name") or "")
+                )
+            out.append(row)
+        return out
+
+    def _attach_live_accounting(row: dict[str, Any], snap: dict[str, Any] | None = None) -> dict[str, Any]:
+        snap=snap or {}
+        pid=str(row.get("id") or "")
+        tracker=store.get_setting(f"fees:tracker:{pid}",{}) or {}
+        acct=position_accounting(row,snap,tracker)
+        row["accounting"]=acct
+        row["fee_metrics"]=observed_fee_metrics(
+            tracker,float(row.get("capital_value") or row.get("current_value") or 0)
+        )
+        # Canonical P4/P5/P6 identity is a read invariant as well as a refresh invariant.
+        if str(row.get("source") or "")=="live_chain" and row.get("token_id"):
+            row["display_name"]=canonical_display_name(
+                str(row.get("chain") or ""),str(row.get("token_id")),
+                str(row.get("pair") or "LP position"),str(row.get("display_name") or "")
+            )
+            authority=authoritative_position(str(row.get("chain") or ""),str(row.get("token_id")))
+            if authority:
+                row["authoritative_identity"]=authority
+        return row
 
     def _display_capital_to_usd(value: float) -> float:
         """UI money inputs are in the configured display currency (GBP by default)."""
@@ -373,7 +405,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.8.6", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.8.7", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -385,7 +417,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.8.6",
+            "version": "0.8.7",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -403,9 +435,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             snap = store.get_position_snapshot(str(p.get("id")))
             if snap:
                 row["live_snapshot"] = snap
-            tracker=store.get_setting(f"fees:tracker:{p.get('id')}", {}) or {}
-            row["accounting"]=position_accounting(p,snap or {},tracker)
-            row["fee_metrics"]=observed_fee_metrics(tracker,float(p.get("capital_value") or p.get("current_value") or 0))
+            row=_attach_live_accounting(row,snap)
             enriched.append(row)
         open_positions = [p for p in enriched if p["status"] == "OPEN"]
         attention = sorted(
@@ -1015,6 +1045,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             row["risk"] = edge_risk(p)
             snap=store.get_position_snapshot(str(p.get("id")))
             if snap: row["live_snapshot"]=snap
+            row=_attach_live_accounting(row,snap)
             row=_attach_historical_live_context(row,snap,pool_cache)
             out.append(row)
         return out
@@ -1027,6 +1058,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         payload={**enrich_position(row), "risk": edge_risk(row)}
         snap=store.get_position_snapshot(position_id)
         if snap: payload["live_snapshot"]=snap
+        payload=_attach_live_accounting(payload,snap)
         return _attach_historical_live_context(payload,snap,{})
 
     @app.post("/api/positions/{position_id}/metadata")
