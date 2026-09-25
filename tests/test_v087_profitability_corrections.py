@@ -165,6 +165,9 @@ def test_position_accounting_separates_absolute_pnl_from_lp_vs_hodl():
             "token0_amount": 0.2,
             "token1_amount": 500.0,
             "entry_value_usd": 1000.0,
+            "token0_price_usd": 2500.0,
+            "token1_price_usd": 1.0,
+            "basis_complete": True,
         },
     }
     tracker = {"cumulative_earned_usd": 35.0}
@@ -437,6 +440,8 @@ def test_acceptance_p4_p5_p6_have_authoritative_identity_opening_refs_and_accoun
                 "transaction_hash":refs[token_id],"opened_at":opened,
                 "entry_value_usd":entry,"quality":"ONCHAIN_MINT_RECONSTRUCTED",
                 "token0_amount":0.18,"token1_amount":430.0,
+                "token0_price_usd":2750.0,"token1_price_usd":1.0,
+                "basis_complete":True,
             },
         }
         positions.append({
@@ -490,4 +495,118 @@ def test_next_capital_allocator_exposes_expected_downside_efficiency_interventio
         assert "intervention_quality" in evidence
         assert "existing_pair_concentration_pct" in evidence
         assert "existing_chain_concentration_pct" in evidence
+
+def test_partial_opening_value_is_never_presented_as_absolute_pnl():
+    position={
+        "source":"live_chain",
+        "capital_value":100.0,
+        "current_value":200.0,
+        "unclaimed_fees":10.0,
+        "cost_basis_quality":"ONCHAIN_MINT_RECONSTRUCTED",
+        "opened_at":1_800_000_000.0,
+    }
+    snapshot={
+        "token0":{"price_usd":2700.0},
+        "token1":{"price_usd":1.0},
+        "entry_evidence":{
+            "transaction_hash":"0xopen",
+            "opened_at":1_800_000_000.0,
+            "token0_amount":0.05,
+            "token1_amount":100.0,
+            "token0_price_usd":0.0,
+            "token1_price_usd":1.0,
+            "entry_value_usd":100.0,
+            "partial_entry_value_usd":100.0,
+            "basis_complete":False,
+            "quality":"ONCHAIN_AMOUNTS_PARTIAL_PRICING",
+        },
+    }
+    a=position_accounting(position,snapshot,{})
+    assert a["basis_ready"] is False
+    assert a["absolute_pnl_incl_fees_usd"] is None
+    assert a["absolute_return_incl_fees_pct"] is None
+    # Opening inventory is still useful for HODL even though opening USD basis is not.
+    assert a["hodl_value_usd"] == pytest.approx(235.0)
+
+
+def test_authoritative_p4_p5_p6_labels_replace_stale_p6_p7_p8_on_reconcile(tmp_path):
+    from lp_manager.db import Store
+    from lp_manager.live_positions import ScanResult, reconcile_scan
+    from lp_manager.models import Position
+
+    store=Store(tmp_path/"labels.sqlite3")
+    stale={
+        "1289953":"P6 · WETH/USDG",
+        "1290067":"P7 · WETH/DELTA",
+        "1290077":"P8 · WETH/HOOKR",
+    }
+    pairs={"1289953":"WETH/USDG","1290067":"WETH/DELTA","1290077":"WETH/HOOKR"}
+    for tid,name in stale.items():
+        store.upsert_position(Position(
+            id=f"live:ROBINHOOD_CHAIN:{tid}",protocol="UNISWAP_V3",chain="ROBINHOOD_CHAIN",
+            pair=pairs[tid],status="OPEN",lower_price=1,upper_price=2,current_price=1.5,
+            capital_value=100,current_value=100,unclaimed_fees=0,fees_today=0,fees_7d=0,
+            fees_30d=0,realised_fees=0,estimated_il=0,gas_costs=0,apr_current=0,apr_7d=0,
+            opened_at=1234,token_id=tid,source="live_chain",display_name=name,
+            cost_basis_quality="FIRST_OBSERVED",
+        ))
+    rows=[]
+    for tid,pair in pairs.items():
+        rows.append({
+            "pair":pair,"lower_price":1,"upper_price":2,"current_price":1.5,
+            "current_value":100,"unclaimed_fees":0,"token_id":tid,
+            "active_liquidity":True,"opened_at":1234,
+            "snapshot":{"live":True,"opened_at":1234,"entry_evidence":{}},
+        })
+    reconcile_scan(store,ScanResult("ROBINHOOD_CHAIN",True,rows,latest_block=10))
+    assert store.find_position_by_token("ROBINHOOD_CHAIN","1289953")["display_name"].startswith("P4")
+    assert store.find_position_by_token("ROBINHOOD_CHAIN","1290067")["display_name"].startswith("P5")
+    assert store.find_position_by_token("ROBINHOOD_CHAIN","1290077")["display_name"].startswith("P6")
+
+
+def test_reconcile_demotes_old_partial_onchain_basis_instead_of_showing_wild_pnl(tmp_path):
+    from lp_manager.db import Store
+    from lp_manager.live_positions import ScanResult, reconcile_scan
+    from lp_manager.models import Position
+
+    store=Store(tmp_path/"partial.sqlite3")
+    pid="live:ROBINHOOD_CHAIN:1289953"
+    store.upsert_position(Position(
+        id=pid,protocol="UNISWAP_V3",chain="ROBINHOOD_CHAIN",pair="WETH/USDG",status="OPEN",
+        lower_price=2400,upper_price=3000,current_price=2700,
+        capital_value=100,current_value=200,unclaimed_fees=5,fees_today=0,fees_7d=0,fees_30d=0,
+        realised_fees=0,estimated_il=0,gas_costs=0,apr_current=0,apr_7d=0,opened_at=2000,
+        token_id="1289953",source="live_chain",display_name="P6 · WETH/USDG",
+        cost_basis_quality="ONCHAIN_MINT_RECONSTRUCTED",
+    ))
+    store.save_position_snapshot(pid,{
+        "live":True,"opened_at":2000,
+        "entry_evidence":{
+            "transaction_hash":"0xold","opened_at":2000,
+            "token0_amount":0.05,"token1_amount":100,
+            "token0_price_usd":0,"token1_price_usd":1,
+            "entry_value_usd":100,"basis_complete":False,
+            "quality":"ONCHAIN_AMOUNTS_PARTIAL_PRICING",
+        },
+    })
+    reconcile_scan(store,ScanResult("ROBINHOOD_CHAIN",True,[{
+        "pair":"WETH/USDG","lower_price":2400,"upper_price":3000,"current_price":2700,
+        "current_value":205,"unclaimed_fees":5,"token_id":"1289953","active_liquidity":True,
+        "opened_at":2000,"snapshot":{
+            "live":True,"opened_at":2000,
+            "entry_evidence":{
+                "transaction_hash":"0xopen","opened_at":2000,
+                "token0_amount":0.05,"token1_amount":100,
+                "token0_price_usd":0,"token1_price_usd":1,
+                "entry_value_usd":0,"partial_entry_value_usd":100,
+                "basis_complete":False,"quality":"ONCHAIN_AMOUNTS_PARTIAL_PRICING",
+            },
+        },
+    }],latest_block=10))
+    row=store.get_position(pid)
+    assert row["cost_basis_quality"]=="FIRST_OBSERVED"
+    assert row["capital_value"]==pytest.approx(205.0)
+    acct=position_accounting(row,store.get_position_snapshot(pid),{})
+    assert acct["basis_ready"] is False
+    assert acct["absolute_pnl_incl_fees_usd"] is None
 
