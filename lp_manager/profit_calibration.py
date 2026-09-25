@@ -92,6 +92,80 @@ def observed_pool_fee_rate(store, pool: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _pair_symbols(pair: str) -> frozenset[str]:
+    return frozenset(
+        x.strip().upper()
+        for x in str(pair or "").replace("-", "/").split("/")
+        if x.strip()
+    )
+
+
+def observed_pair_fee_prior(store, pool: dict[str, Any]) -> dict[str, Any]:
+    """Low-confidence fee prior from owned positions in the same token pair/chain.
+
+    This is only a fallback when the candidate pool has no usable public volume and
+    no exact-pool observation. It is deliberately haircut because fee tier,
+    liquidity competition and routing can differ materially between pools.
+    """
+    chain=str(pool.get("chain") or "").upper()
+    target=_pair_symbols(str(pool.get("pair") or ""))
+    address=str(pool.get("pool_address") or "").lower()
+    target_fee=_f(pool.get("fee_tier_bps") or pool.get("fee_bps"))
+    if len(target)<2:
+        return {"available":False,"sample_count":0,"fee_day_per_usd":0.0}
+    samples=[]
+    for position in store.list_positions("OPEN"):
+        if str(position.get("chain") or "").upper()!=chain:
+            continue
+        if _pair_symbols(str(position.get("pair") or ""))!=target:
+            continue
+        pid=str(position.get("id") or "")
+        tracker=store.get_setting(f"fees:tracker:{pid}",{}) or {}
+        observed_day,method=_observed_fee_day(tracker)
+        age=max(0.0,_f(tracker.get("age_days")))
+        capital=max(_f(position.get("current_value")),_f(position.get("capital_value")))
+        if age<1.0 or observed_day<=0 or capital<=0:
+            continue
+        snap=store.get_position_snapshot(pid) or {}
+        sample_pool=dict(snap.get("market") or {})
+        sample_fee=_f(sample_pool.get("fee_tier_bps") or sample_pool.get("fee_bps") or (snap.get("fee_tier") or 0))
+        if sample_fee>=100:
+            sample_fee/=100.0
+        fee_scale=1.0
+        if target_fee>0 and sample_fee>0:
+            # Fee tier alone does not scale fees linearly because routing responds
+            # to price/fee differences; constrain the transfer heavily.
+            fee_scale=max(0.65,min(1.35,math.sqrt(target_fee/sample_fee)))
+        exact=str(position.get("pool_address") or snap.get("pool_address") or "").lower()==address and bool(address)
+        transfer_haircut=1.0 if exact else 0.45
+        rate=observed_day/capital*fee_scale*transfer_haircut
+        samples.append({
+            "position_id":pid,"age_days":age,"capital_usd":capital,
+            "observed_fee_day_usd":observed_day,"fee_day_per_usd":rate,
+            "raw_fee_day_per_usd":observed_day/capital,
+            "method":method,"exact_pool":exact,"transfer_haircut":transfer_haircut,
+            "fee_scale":fee_scale,
+            "lower_price":_f(position.get("lower_price")),
+            "upper_price":_f(position.get("upper_price")),
+        })
+    if not samples:
+        return {"available":False,"sample_count":0,"fee_day_per_usd":0.0}
+    weights=[max(1.0,min(7.0,x["age_days"])) for x in samples]
+    total=sum(weights)
+    rate=sum(x["fee_day_per_usd"]*w for x,w in zip(samples,weights))/total
+    return {
+        "available":True,
+        "sample_count":len(samples),
+        "fee_day_per_usd":round(rate,10),
+        "annualised_fee_apr_pct":round(rate*365.0*100.0,2),
+        "max_age_days":round(max(x["age_days"] for x in samples),3),
+        "samples":samples[:6],
+        "method":"SAME_PAIR_OWNED_FEE_PRIOR",
+        "confidence":"LOW",
+        "warning":"Different pools can have materially different routing and active-liquidity competition; a 55% transfer haircut is applied before this prior may replace missing public volume.",
+    }
+
+
 def calibration_samples(store) -> list[dict[str, Any]]:
     """Build model-vs-observed fee samples from positions LP Manager actually owns.
 
