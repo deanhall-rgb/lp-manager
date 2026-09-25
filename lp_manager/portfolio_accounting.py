@@ -28,7 +28,7 @@ def position_accounting(
     t0 = dict(snapshot.get("token0") or {})
     t1 = dict(snapshot.get("token1") or {})
 
-    cost = max(0.0, _f(position.get("capital_value") or entry.get("entry_value_usd")))
+    recorded_cost = max(0.0, _f(position.get("capital_value")))
     current_principal = max(0.0, _f(position.get("current_value") or snapshot.get("current_value_usd")))
     unclaimed = max(0.0, _f(position.get("unclaimed_fees") or snapshot.get("unclaimed_fees_usd")))
     realised = max(0.0, _f(position.get("realised_fees")))
@@ -46,7 +46,9 @@ def position_accounting(
         and (amount1<=0 or entry_price1>0)
         and _f(entry.get("entry_value_usd"))>0
     )
-    basis_quality=str(position.get("cost_basis_quality") or entry.get("quality") or "UNKNOWN").upper()
+    entry_cost=max(0.0,_f(entry.get("entry_value_usd")))
+    cost=entry_cost if entry_complete and entry_cost>0 else recorded_cost
+    basis_quality=str((entry.get("quality") if entry_complete else position.get("cost_basis_quality")) or position.get("cost_basis_quality") or "UNKNOWN").upper()
     basis_ready=bool(
         cost>0
         and (
@@ -78,7 +80,8 @@ def position_accounting(
         "opening_time_quality": "ONCHAIN_OPENING_TX" if opening_tx and opened else ("FIRST_OBSERVED" if opened else "UNKNOWN"),
         "opening_transaction_hash": opening_tx,
         "cost_basis_usd": round(cost, 4),
-        "cost_basis_quality": position.get("cost_basis_quality") or entry.get("quality") or "UNKNOWN",
+        "cost_basis_quality": (entry.get("quality") if entry_complete else position.get("cost_basis_quality")) or "UNKNOWN",
+        "cost_basis_source": "ENTRY_EVIDENCE" if entry_complete and entry_cost>0 else "POSITION_RECORD",
         "basis_ready": basis_ready,
         "current_principal_usd": round(current_principal, 4),
         "fees_earned_usd": round(fees_earned, 4),
