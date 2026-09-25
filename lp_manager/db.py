@@ -607,7 +607,7 @@ class Store:
 
     def live_token_ids(self, chain: str) -> set[int]:
         with self.connect() as con:
-            rows = con.execute("SELECT token_id FROM positions WHERE chain=? AND token_id IS NOT NULL AND (status='OPEN' OR source='live_chain')", (chain,)).fetchall()
+            rows = con.execute("SELECT token_id FROM positions WHERE chain=? AND token_id IS NOT NULL AND (status='OPEN' OR (source='live_chain' AND lifecycle_stage!='CLOSED_FINAL'))", (chain,)).fetchall()
         out=set()
         for row in rows:
             try: out.add(int(row[0]))
