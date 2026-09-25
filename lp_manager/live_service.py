@@ -53,7 +53,7 @@ class LiveDataService:
         }
 
     def refresh_positions(self, chains: list[str] | None = None) -> dict[str, Any]:
-        from .live_positions import reconcile_scan, scan_chain_positions
+        from .live_positions import reconcile_scan, scan_chain_positions, finalise_closed_positions_from_store
 
         if not self._refresh_lock.acquire(blocking=False):
             return {"ok": False, "busy": True, "error": "A live refresh is already running", "chains": []}
@@ -132,7 +132,21 @@ class LiveDataService:
                     source=CHAINS[c].rpc_source()
                     reason="Public RPC available for reads/health; broad position scanning requires an explicit/Alchemy RPC" if source=="PUBLIC_FALLBACK" else f"{CHAINS[c].rpc_env} not configured"
                     results.append({"chain": c, "ok": False, "skipped": True, "rpc_source":source, "error": reason})
-            payload = {"ok": any(r.get("ok") for r in results), "read_at": time.time(), "chains": sorted(results, key=lambda r: r.get("chain", ""))}
+            closed_finalisation=[]
+            for c in configured:
+                try:
+                    row=finalise_closed_positions_from_store(
+                        self.store,CHAINS[c],self.settings.wallet_address,self.market,limit=20
+                    )
+                    if row.get("attempted"):
+                        closed_finalisation.append({"chain":c,**row})
+                except Exception as exc:
+                    closed_finalisation.append({"chain":c,"attempted":0,"finalised":0,"partial":0,"errors":[str(exc)]})
+            payload = {
+                "ok": any(r.get("ok") for r in results), "read_at": time.time(),
+                "chains": sorted(results, key=lambda r: r.get("chain", "")),
+                "closed_finalisation":closed_finalisation,
+            }
             self.store.set_setting("live:last_refresh", payload)
             payload["risk_decisions_recorded"] = self._record_position_risk_decisions()
             return payload
