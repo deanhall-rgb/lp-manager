@@ -574,27 +574,64 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                             try: entry_tick=int(pool_c.functions.slot0().call(block_identifier=opening_block)[1])
                             except Exception: entry_tick=None
                         entry_ratio=_raw_price_at_tick(entry_tick,dec0,dec1) if entry_tick is not None else 0.0
-                        e0=e1=0.0; price_source="UNAVAILABLE"
+                        e0=e1=0.0
+                        sources=[]
                         s0,s1=sym0.upper(),sym1.upper()
                         if s0 in STABLES:
-                            e0=1.0; e1=(e0/entry_ratio if entry_ratio>0 else 0.0); price_source="POOL_RATIO_STABLE_QUOTE"
-                        elif s1 in STABLES:
-                            e1=1.0; e0=(entry_ratio*e1 if entry_ratio>0 else 0.0); price_source="POOL_RATIO_STABLE_QUOTE"
-                        elif market and opened_at and (s0 in ETH_QUOTES or s1 in ETH_QUOTES):
-                            eth_token={"address":token0 if s0 in ETH_QUOTES else token1,"symbol":"WETH"}
-                            eth_usd=float(market.historical_token_price_at(cfg.key,eth_token,opened_at) or 0)
-                            if eth_usd>0:
-                                if s0 in ETH_QUOTES:
-                                    e0=eth_usd; e1=(e0/entry_ratio if entry_ratio>0 else 0.0)
-                                else:
-                                    e1=eth_usd; e0=(entry_ratio*e1 if entry_ratio>0 else 0.0)
-                                price_source="ALCHEMY_HISTORICAL_WETH_PLUS_POOL_RATIO"
-                        entry_value=dep0*e0+dep1*e1 if (e0>0 or e1>0) else 0.0
+                            e0=1.0; sources.append(f"{s0}_PEG")
+                        if s1 in STABLES:
+                            e1=1.0; sources.append(f"{s1}_PEG")
+
+                        # Prefer direct historical USD marks for each non-stable token.
+                        # This avoids requiring an archive-capable RPC merely to value
+                        # the mint when Alchemy price history is available.
+                        if market and opened_at:
+                            if dep0>0 and e0<=0:
+                                try:
+                                    e0=float(market.historical_token_price_at(
+                                        cfg.key,{"address":token0,"symbol":sym0},opened_at
+                                    ) or 0)
+                                    if e0>0: sources.append(f"HISTORICAL_{s0}_USD")
+                                except Exception:
+                                    pass
+                            if dep1>0 and e1<=0:
+                                try:
+                                    e1=float(market.historical_token_price_at(
+                                        cfg.key,{"address":token1,"symbol":sym1},opened_at
+                                    ) or 0)
+                                    if e1>0: sources.append(f"HISTORICAL_{s1}_USD")
+                                except Exception:
+                                    pass
+
+                        # If only one side has a USD mark, an opening-block pool ratio
+                        # can price the other side. If the RPC is not archive-capable,
+                        # we simply leave the basis incomplete rather than invent P/L.
+                        if entry_ratio>0:
+                            if e0>0 and e1<=0:
+                                e1=e0/entry_ratio; sources.append("OPENING_POOL_RATIO_DERIVED_TOKEN1")
+                            elif e1>0 and e0<=0:
+                                e0=entry_ratio*e1; sources.append("OPENING_POOL_RATIO_DERIVED_TOKEN0")
+
+                        has_deposit=(dep0>0 or dep1>0)
+                        basis_complete=bool(
+                            has_deposit
+                            and (dep0<=0 or e0>0)
+                            and (dep1<=0 or e1>0)
+                        )
+                        partial_entry_value=dep0*e0+dep1*e1 if (e0>0 or e1>0) else 0.0
+                        entry_value=partial_entry_value if basis_complete else 0.0
+                        missing=[]
+                        if dep0>0 and e0<=0: missing.append(sym0)
+                        if dep1>0 and e1<=0: missing.append(sym1)
                         entry_evidence={
                             "transaction_hash":opening_tx,"block_number":opening_block,"opened_at":opened_at,
                             "token0_amount":dep0,"token1_amount":dep1,"token0_price_usd":e0,"token1_price_usd":e1,
-                            "entry_value_usd":entry_value,"entry_tick":entry_tick,"raw_token1_per_token0":entry_ratio,
-                            "price_source":price_source,"quality":"ONCHAIN_MINT_RECONSTRUCTED" if entry_value>0 else "ONCHAIN_AMOUNTS_ONLY",
+                            "entry_value_usd":entry_value,"partial_entry_value_usd":partial_entry_value,
+                            "entry_tick":entry_tick,"raw_token1_per_token0":entry_ratio,
+                            "price_source":"+".join(sources) if sources else "UNAVAILABLE",
+                            "basis_complete":basis_complete,
+                            "missing_opening_price_symbols":missing,
+                            "quality":"ONCHAIN_MINT_RECONSTRUCTED" if basis_complete else "ONCHAIN_AMOUNTS_PARTIAL_PRICING",
                         }
                     except Exception as exc:
                         entry_evidence={"transaction_hash":opening_tx,"block_number":opening_block,"opened_at":opened_at,"quality":"OPENING_TX_FOUND_RECONSTRUCTION_FAILED","error":str(exc)[:180]}
