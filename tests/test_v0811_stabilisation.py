@@ -190,9 +190,19 @@ def test_closed_finaliser_resolves_opening_block_before_lifecycle_scan(monkeypat
     assert store.saved["entry_evidence"]["block_number"] == 777
 
 
-def test_normal_refresh_advances_only_one_closed_reconstruction_per_chain():
+def test_normal_refresh_never_runs_historical_closed_reconstruction():
     service_source = (Path(__file__).parents[1] / "lp_manager" / "live_service.py").read_text(encoding="utf-8")
-    assert "self.store,CHAINS[c],self.settings.wallet_address,self.market,limit=1" in service_source
+    refresh_body = service_source.split("def refresh_positions", 1)[1].split("def import_opening_transactions", 1)[0]
+    assert "finalise_closed_positions_from_store" not in refresh_body
+    assert '"closed_history_mode":"MANUAL_ONLY"' in refresh_body
+
+
+def test_background_loop_refreshes_current_positions_independent_of_optional_automation():
+    service_source = (Path(__file__).parents[1] / "lp_manager" / "live_service.py").read_text(encoding="utf-8")
+    worker_body = service_source.split("def worker():", 1)[1].split("self._thread = threading.Thread", 1)[0]
+    assert "self.refresh_positions()" in worker_body
+    assert 'if policy.get("market_monitoring"' not in worker_body
+    assert '"live:background_health"' in worker_body
 
 
 def test_historical_closed_nfts_have_operator_confirmed_opening_transactions():
