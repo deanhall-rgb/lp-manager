@@ -270,3 +270,32 @@ def test_reconcile_source_preserves_historical_and_opening_identity():
     source = (Path(__file__).parents[1] / "lp_manager" / "live_positions.py").read_text(encoding="utf-8")
     assert 'snap["historical_evidence"]=previous_snap.get("historical_evidence")' in source
     assert 'authoritative_opening_tx(result.chain,row.get("token_id"))' in source
+
+
+def test_live_token_ids_excludes_closed_historical_positions(tmp_path):
+    store = Store(tmp_path / "live_ids.sqlite3")
+    common = dict(
+        protocol="UNISWAP_V3", chain="ROBINHOOD_CHAIN", pair="WETH/TEST",
+        lower_price=1, upper_price=2, current_price=1.5,
+        capital_value=100, current_value=100, unclaimed_fees=0,
+        fees_today=0, fees_7d=0, fees_30d=0, realised_fees=0,
+        estimated_il=0, gas_costs=0, apr_current=0, apr_7d=0,
+        opened_at=1_700_000_000, source="live_chain",
+        strategy_sleeve="TACTICAL_CAMPAIGN",
+    )
+    store.upsert_position(Position(
+        id="live:ROBINHOOD_CHAIN:111", status="OPEN", token_id="111",
+        lifecycle_stage="ACTIVE", **common,
+    ))
+    store.upsert_position(Position(
+        id="live:ROBINHOOD_CHAIN:222", status="CLOSED", token_id="222",
+        lifecycle_stage="CLOSED", **common,
+    ))
+    assert store.live_token_ids("ROBINHOOD_CHAIN") == {111}
+
+
+def test_current_chain_scanner_cannot_launch_historical_closed_finaliser():
+    source = (Path(__file__).parents[1] / "lp_manager" / "live_positions.py").read_text(encoding="utf-8")
+    scan_body = source.split("def scan_chain_positions", 1)[1].split("def _next_live_display_name", 1)[0]
+    assert "_closed_position_final(" not in scan_body
+    assert '"history_mode":"MANUAL_ONLY"' in scan_body
