@@ -577,12 +577,21 @@ def _recommend_single_pool(
         )
         blockers=[]
         if sleeve_u=="CORE_INCOME":
+            below=_f(inv.get("distance_below_current_pct"),0.0)
+            above=_f(inv.get("distance_above_current_pct"),0.0)
+            farthest=max(below,above)
+            asymmetry=farthest/max(nearest,1e-9)
+            max_far=20.0 if horizon<=7 else 25.0 if horizon<=14 else 30.0 if horizon<=30 else 40.0
             if active < 45.0:
                 blockers.append("CORE_ACTIVE_TIME_UNDER_45PCT")
             if interventions > 8:
                 blockers.append("CORE_TOO_MANY_HISTORICAL_EXCURSIONS")
             if nearest < 2.5:
                 blockers.append("CORE_NEAREST_EDGE_UNDER_2_5PCT")
+            if farthest > max_far:
+                blockers.append(f"CORE_FARTHEST_EDGE_OVER_{int(max_far)}PCT")
+            if nearest>0 and asymmetry>2.75:
+                blockers.append("CORE_EXCESSIVE_RANGE_ASYMMETRY")
         else:
             if active < 25.0:
                 blockers.append("TACTICAL_ACTIVE_TIME_UNDER_25PCT")
@@ -592,6 +601,16 @@ def _recommend_single_pool(
             "eligible":not blockers,
             "blockers":blockers,
             "principle":"MAX_EXPECTED_NET_PROFIT_SUBJECT_TO_HARD_RANGE_GUARDRAILS",
+            "edge_balance":{
+                "nearest_edge_pct":round(nearest,3),
+                "farthest_edge_pct":round(max(
+                    _f(inv.get("distance_below_current_pct"),0.0),
+                    _f(inv.get("distance_above_current_pct"),0.0),
+                ),3),
+                "core_max_farthest_edge_pct":(
+                    20.0 if horizon<=7 else 25.0 if horizon<=14 else 30.0 if horizon<=30 else 40.0
+                ) if sleeve_u=="CORE_INCOME" else None,
+            },
         }
 
     eligible=[r for r in rows if (r.get("selection_guardrail") or {}).get("eligible")]
