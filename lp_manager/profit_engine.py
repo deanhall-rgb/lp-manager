@@ -680,13 +680,9 @@ def _recommend_single_pool(
         asymmetry=farthest/max(nearest,1e-9) if nearest>0 else 999.0
         blockers=[]
         if sleeve_u=="CORE_INCOME":
-            if active < 45.0:
-                blockers.append("CORE_ACTIVE_TIME_UNDER_45PCT")
             if interventions > 8:
                 blockers.append("CORE_TOO_MANY_HISTORICAL_EXCURSIONS")
         else:
-            if active < 25.0:
-                blockers.append("TACTICAL_ACTIVE_TIME_UNDER_25PCT")
             if interventions > 12:
                 blockers.append("TACTICAL_TOO_MANY_HISTORICAL_EXCURSIONS")
         if nearest < _f(edge_limits.get("min_nearest_edge_pct")):
@@ -699,6 +695,8 @@ def _recommend_single_pool(
             "eligible":not blockers,
             "blockers":blockers,
             "principle":"MAX_EXPECTED_NET_PROFIT_INSIDE_VOLATILITY_AND_HORIZON_GUARDRAILS",
+            "historical_activity_pct":round(active,3),
+            "activity_role":"RANKING_EVIDENCE_NOT_HARD_GATE",
             "edge_balance":{
                 "below_current_pct":round(below,3),
                 "above_current_pct":round(above,3),
