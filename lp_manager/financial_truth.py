@@ -39,6 +39,8 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
     realised_open_fee_income=0.0
     closed_reported_pnl=0.0
     closed_reported_count=0
+    fee_breakdown=[]
+    provisional_fee_rows=0
     rows=[]
 
     for p in positions:
@@ -53,13 +55,39 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
             and str(e.get("event_type") or "").upper()=="COLLECT_FEES"
             and str(e.get("status") or "").upper()=="CONFIRMED"
         )
-        tracked=max(
-            _f(tracker.get("cumulative_earned_usd")),
-            _f(p.get("unclaimed_fees"))+_f(p.get("realised_fees")),
-            event_collections+_f(p.get("unclaimed_fees")),
-        )
-        all_time_fees+=tracked
         status=str(p.get("status") or "").upper()
+        closed_final=dict(snap.get("closed_final") or {})
+        if status=="CLOSED" and closed_final.get("complete"):
+            tracked=max(0.0,_f(closed_final.get("total_fees_usd")))
+            fee_source="ONCHAIN_LIFECYCLE_FINAL"
+            fee_quality="VERIFIED"
+        elif status=="CLOSED":
+            tracked=max(
+                0.0,
+                _f(p.get("realised_fees")),
+                event_collections,
+                _f(tracker.get("cumulative_earned_usd")),
+            )
+            fee_source="BEST_AVAILABLE_CLOSED_EVIDENCE"
+            fee_quality="PROVISIONAL"
+            provisional_fee_rows+=1
+        else:
+            tracked=max(
+                _f(tracker.get("cumulative_earned_usd")),
+                _f(p.get("unclaimed_fees"))+_f(p.get("realised_fees")),
+                event_collections+_f(p.get("unclaimed_fees")),
+            )
+            fee_source="OPEN_POSITION_TRACKER"
+            fee_quality="LIVE"
+        all_time_fees+=tracked
+        fee_breakdown.append({
+            "position_id":pid,
+            "display_name":p.get("display_name") or p.get("pair"),
+            "status":status,
+            "fees_usd":round(tracked,4),
+            "source":fee_source,
+            "quality":fee_quality,
+        })
         if status=="OPEN":
             current_open_principal+=_f(acct.get("current_principal_usd"))
             current_open_wealth+=_f(acct.get("strategy_wealth_usd"))
@@ -151,6 +179,8 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
         "current_open_strategy_wealth_usd":round(current_open_wealth,2),
         "gross_open_pnl_incl_fees_usd":round(gross_open_pnl,2) if gross_open_pnl is not None else None,
         "all_time_known_fees_usd":round(all_time_fees,2),
+        "all_time_fee_quality":"PARTIAL" if provisional_fee_rows else "COMPLETE",
+        "all_time_fee_breakdown":sorted(fee_breakdown,key=lambda x:x["fees_usd"],reverse=True),
         "realised_gain_loss_usd":round(realised_gain_loss,2),
         "realised_open_fee_income_usd":round(realised_open_fee_income,2),
         "closed_reported_pnl_usd":round(closed_reported_pnl,2),
@@ -161,5 +191,5 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
         "closed_realised_coverage":{"verified_closed_positions":closed_reported_count,"closed_positions":sum(1 for p in positions if str(p.get("status") or "").upper()=="CLOSED")},
         "forecast_audit":{"snapshots":len(forecasts),"linked_to_positions":len(linked),"comparisons":comparisons[:20]},
         "position_rows":rows,
-        "evidence_note":"Realised G/L only includes collected fees on open positions, confirmed transaction costs, and closed-position P/L with explicit evidence. Unknown historical closes are not invented.",
+        "evidence_note":"All-time fees are auditable per position. Closed positions use frozen on-chain lifecycle fees when available; provisional closed tracker values are explicitly labelled until reconstruction completes. Realised G/L only includes collected fees on open positions, confirmed transaction costs, and closed-position P/L with explicit evidence.",
     }
