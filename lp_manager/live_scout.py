@@ -6,8 +6,9 @@ from typing import Any
 from .risk_engine import assess_pool_risk
 from .economics_engine import volume_quality
 
-MAJORS = {"WETH","ETH","WBTC","BTC","USDC","USDT","USDG","DAI","USDS","FRAX"}
-STABLES = {"USDC","USDT","USDG","DAI","USDS","FRAX"}
+RISK_MAJORS = {"WETH","ETH","WBTC","BTC"}
+STABLES = {"USDC","USDT","USDG","DAI","USDS","USDBC","FRAX","GHO","LUSD"}
+MAJORS = RISK_MAJORS | STABLES
 
 
 def _age_days(value: Any) -> float:
@@ -30,6 +31,8 @@ def preliminary_pool_evaluation(pool: dict[str, Any]) -> dict[str, Any]:
     age = _age_days(pool.get("pool_created_at"))
     major_count = len(symbols & MAJORS)
     has_stable = bool(symbols & STABLES)
+    core_pair = bool(symbols & RISK_MAJORS) and bool(symbols & STABLES)
+    stable_pair = len(symbols) >= 2 and symbols.issubset(STABLES)
     asset_quality = 98.0 if major_count == 2 else 82.0 if major_count == 1 else 48.0
     liquidity_score = min(100.0, 35.0 + 13.0 * max(0.0, __import__('math').log10(max(1.0, tvl / 10000))))
     activity = min(100.0, 30.0 + 18.0 * max(0.0, __import__('math').log10(max(1.0, vol / 10000))))
@@ -56,7 +59,12 @@ def preliminary_pool_evaluation(pool: dict[str, Any]) -> dict[str, Any]:
         "activity_quality_flags": activity_quality["flags"],
     }
     preferred = None
-    if not severe_activity_anomaly and core_pre >= 72 and asset_quality >= 90 and age >= 90 and tvl >= 1_000_000:
+    # Sleeve is first an inventory/risk philosophy, then a quality gate. A WETH/
+    # stable pool does not become a Tactical campaign merely because it is young.
+    # Liquidity/risk gates can still reject the pool later.
+    if core_pair or stable_pair:
+        preferred = "CORE_INCOME"
+    elif not severe_activity_anomaly and core_pre >= 72 and asset_quality >= 90 and age >= 90 and tvl >= 1_000_000:
         preferred = "CORE_INCOME"
     elif not severe_activity_anomaly and tactical_pre >= 68 and tvl >= 50_000:
         preferred = "TACTICAL_CAMPAIGN"
@@ -65,9 +73,10 @@ def preliminary_pool_evaluation(pool: dict[str, Any]) -> dict[str, Any]:
         "core_pre_score": round(core_pre, 1),
         "tactical_pre_score": round(tactical_pre, 1),
         "preferred_sleeve": preferred,
+        "pair_policy_sleeve": "CORE_INCOME" if (core_pair or stable_pair) else "TACTICAL_CAMPAIGN",
         "quality": {"asset": round(asset_quality,1), "liquidity": round(liquidity_score,1), "activity": round(activity,1), "age_days": round(age,1), "activity_persistence": round(activity_quality["factor"]*100,1)},
         "quality_flags": activity_quality["flags"],
         "risk_core": assess_pool_risk(candidate, sleeve="CORE_INCOME"),
         "risk_tactical": assess_pool_risk(candidate, sleeve="TACTICAL_CAMPAIGN"),
-        "note": "Pre-score uses current live market structure only. Extreme one-day turnover/price anomalies block automatic sleeve preference until investigated; historical fee stability/range durability is added by Strategy Lab.",
+        "note": "Pair policy classifies major/stable and stable/stable inventory as Core. Pre-score then measures whether the specific pool is attractive; risk gates may still reject it. Historical fee stability/range durability is added by Profit Lab.",
     }
