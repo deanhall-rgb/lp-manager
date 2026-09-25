@@ -213,6 +213,16 @@ class GeckoTerminalClient:
             return 0.0
         return _float(nearest.get("price_usd"))
 
+    def alchemy_symbol_history(self, symbol: str, days: int, *, timeframe: str="hour") -> list[dict[str, Any]]:
+        """Global symbol USD history, used only as a sanity fallback for majors.
+
+        Wrapped ETH on a very new chain can have sparse address-specific history
+        even though ETH/WETH USD history is mature. Callers must still validate the
+        result against the live on-chain execution price before using it.
+        """
+        return self._alchemy_historical_token("", {"symbol": str(symbol or "").upper()}, days=days, timeframe=timeframe)
+
+
     def alchemy_pool_history(self, chain_key: str, onchain: dict[str, Any], days: int, *, timeframe: str="hour") -> list[dict[str, Any]]:
         """Construct a deterministic pair-price series from Alchemy token histories.
 
