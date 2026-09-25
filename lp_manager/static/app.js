@@ -50,9 +50,10 @@ function positionCard(p){
   if(closed&&live){
     const opening=closedFinal.opening_capital_usd??(acct.basis_ready?acct.cost_basis_usd:p.capital_value);
     const fees=closedFinal.total_fees_usd??p.realised_fees??0;
-    const pnl=closedFinal.complete&&closedFinal.realised_pnl_usd!=null?`${Number(closedFinal.realised_pnl_usd)>=0?"+":""}${money(closedFinal.realised_pnl_usd)}`:(String(p.pnl_quality||"").includes("FINAL")?`${Number(p.reported_net_pnl||0)>=0?"+":""}${money(p.reported_net_pnl||0)}`:"Reconstructing…");
+    const blocker=String(closedFinal.reason||'').replaceAll('_',' ');
+    const pnl=closedFinal.complete&&closedFinal.realised_pnl_usd!=null?`${Number(closedFinal.realised_pnl_usd)>=0?"+":""}${money(closedFinal.realised_pnl_usd)}`:(String(p.pnl_quality||"").includes("FINAL")?`${Number(p.reported_net_pnl||0)>=0?"+":""}${money(p.reported_net_pnl||0)}`:(blocker?`Waiting: ${blocker}`:"Reconstructing…"));
     const closedAt=closedFinal.closed_at||p.closed_at;
-    stats=[["Opening capital",opening?money(opening):"Pending evidence"],["Total fees earned",money(fees||0)],["Realised P/L",pnl],["Closed",closedAt?when(closedAt):"Reconstructing…"]];
+    stats=[["Opening capital",opening?money(opening):"Pending evidence"],["Total fees earned",money(fees||0)],["Realised P/L",pnl],["Closed",closedAt?when(closedAt):(blocker?"Evidence scan pending":"Reconstructing…")]];
   } else if(h){
     const feeText=fin.fee_value_usd!=null?money(fin.fee_value_usd):fin.snapshots?.length?money(fin.snapshots[fin.snapshots.length-1].fees_value_usd||0):`${priceNum(fee.reconstructed_weth_lower_bound||0)} WETH+`;
     const profitText=fin.realised?`${money(fin.absolute_profit_usd||0)} (${pct(fin.absolute_return_pct||0)})`:fin.snapshots?.length?`${money((fin.snapshots[fin.snapshots.length-1].total_value_usd||0)-(fin.initial_value_usd||0))} observed*`:'Pending final settlement';
