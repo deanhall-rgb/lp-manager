@@ -277,9 +277,22 @@ def _diverse_alternatives(rows: list[dict[str, Any]], best: dict[str, Any], limi
     return selected[:limit]
 
 
+def _history_matches_spot(candles: list[dict[str, Any]], live_spot: float) -> bool:
+    if live_spot<=0 or not candles:
+        return True
+    recent=[_f(c.get("close")) for c in candles[-min(24,len(candles)):] if _f(c.get("close"))>0]
+    if not recent:
+        return False
+    med=statistics.median(recent)
+    ratio=med/live_spot if live_spot>0 else 1.0
+    # This is a unit/orientation sanity check, not a market prediction. A recent
+    # series that is 10x/1000x away from the live execution price is the wrong lens.
+    return 0.45 <= ratio <= 2.20
+
+
 def _load_pool_and_history(
     market, chain: str, address: str, history_days: int,
-    pool_fallback: dict[str, Any] | None = None,
+    pool_fallback: dict[str, Any] | None = None, store=None,
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], str, str | None]:
     """Load one V3 pool with an execution-price history in the same units as ticks.
 
@@ -346,14 +359,34 @@ def _load_pool_and_history(
     # GeckoTerminal OHLC quota. Stable-quoted pairs can reconstruct WETH/USD from
     # token history (with the stable side fixed near $1); non-stable pairs use the
     # same routine as an execution-ratio proxy.
+    live_spot=_f((onchain.get("price_lens") or {}).get("current"))
     if hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
         try:
             ratio_history = market.alchemy_pool_history(chain, onchain, history_days, timeframe=timeframe)
-            if len(ratio_history) >= minimum:
+            if len(ratio_history) >= minimum and _history_matches_spot(ratio_history,live_spot):
                 candles = ratio_history
                 provider = "ALCHEMY_TOKEN_PRICE_FALLBACK" if quote_symbol in stable_symbols else "ALCHEMY_PAIR_RATIO_HISTORY"
+            elif len(ratio_history) >= minimum:
+                warning="Alchemy address history failed execution-price sanity check"
         except Exception as exc:
             warning = str(exc)
+
+    # A wrapped major on a new chain can have sparse/wrong address-specific price
+    # history while the global WETH/ETH market history is sound.
+    if not candles and quote_symbol in stable_symbols and base_symbol in {"WETH","ETH","WBTC","BTC"} and hasattr(market,"alchemy_symbol_history"):
+        try:
+            points=market.alchemy_symbol_history(base_symbol,history_days,timeframe=timeframe)
+            symbol_history=[
+                {"timestamp":p.get("timestamp"),"open":p.get("price_usd"),"high":p.get("price_usd"),
+                 "low":p.get("price_usd"),"close":p.get("price_usd"),"volume":0.0,
+                 "source":"ALCHEMY_MAJOR_SYMBOL_HISTORY"}
+                for p in points if _f(p.get("price_usd"))>0
+            ]
+            if len(symbol_history)>=minimum and _history_matches_spot(symbol_history,live_spot):
+                candles=symbol_history
+                provider="ALCHEMY_MAJOR_SYMBOL_HISTORY"
+        except Exception as exc:
+            warning=warning or str(exc)
 
     if not candles:
         try:
@@ -379,11 +412,32 @@ def _load_pool_and_history(
             candles = fallback
             provider = "ALCHEMY_TOKEN_PRICE_FALLBACK" if quote_symbol in stable_symbols else "ALCHEMY_PAIR_RATIO_HISTORY"
 
+    if len(candles) >= minimum and live_spot>0 and not _history_matches_spot(candles,live_spot):
+        warning=(warning+"; " if warning else "")+"Historical series failed live execution-price sanity check"
+        candles=[]
+
+    cache_key=f"profit:history:v088:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
+    if len(candles) < minimum and store is not None:
+        cached=store.get_setting(cache_key,{}) or {}
+        cached_rows=list(cached.get("candles") or [])
+        if len(cached_rows)>=minimum and _history_matches_spot(cached_rows,live_spot):
+            candles=cached_rows
+            provider=str(cached.get("provider") or "PERSISTED_HISTORY_CACHE")
+            warning=(warning+"; " if warning else "")+"using persisted validated history cache"
+
     if len(candles) < minimum:
         raise ValueError(
             f"Only {len(candles)} {timeframe} historical samples available"
             + (f"; {warning}" if warning else "")
         )
+    if store is not None:
+        try:
+            store.set_setting(cache_key,{
+                "saved_at":__import__("time").time(),"provider":provider,
+                "candles":candles[-max(minimum,2200):],
+            })
+        except Exception:
+            pass
     return pool, onchain, candles, provider, warning
 
 def _recommend_single_pool(
@@ -401,7 +455,7 @@ def _recommend_single_pool(
     horizon = max(1.0 / 24.0, min(90.0, float(horizon_days)))
     capital = max(1.0, float(capital))
     hist_days = int(history_days or max(30, min(180, round(horizon * 6))))
-    pool, onchain, candles, provider, warning = _load_pool_and_history(market, chain, address, hist_days, pool_fallback)
+    pool, onchain, candles, provider, warning = _load_pool_and_history(market, chain, address, hist_days, pool_fallback, store)
     # Current execution price is authoritative on-chain. Historical token-USD
     # candles are only a path proxy and must never overwrite the live pool ratio.
     spot = _f((onchain.get("price_lens") or {}).get("current")) or _f(candles[-1].get("close")) or _f(pool.get("base_token_price_usd"))
