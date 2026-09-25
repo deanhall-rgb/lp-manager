@@ -6,9 +6,10 @@ import pytest
 
 from lp_manager.db import Store
 from lp_manager import live_positions as live_positions_module
-from lp_manager.live_positions import _live_v3_fees_from_growth, _position_lifecycle_events, finalise_closed_positions_from_store
+from lp_manager.live_positions import _live_v3_fees_from_growth, _position_lifecycle_events, _closed_position_final, finalise_closed_positions_from_store
 from lp_manager.models import Position
 from lp_manager.range_lab import analyse_range
+from lp_manager.position_identity import authoritative_opening_tx
 
 
 class _Call:
@@ -192,3 +193,70 @@ def test_closed_finaliser_resolves_opening_block_before_lifecycle_scan(monkeypat
 def test_normal_refresh_advances_only_one_closed_reconstruction_per_chain():
     service_source = (Path(__file__).parents[1] / "lp_manager" / "live_service.py").read_text(encoding="utf-8")
     assert "self.store,CHAINS[c],self.settings.wallet_address,self.market,limit=1" in service_source
+
+
+def test_historical_closed_nfts_have_operator_confirmed_opening_transactions():
+    assert authoritative_opening_tx("ROBINHOOD_CHAIN", "1206967") == "0xd78b7cff1fe65d1b61ca77bc6b47ecbe8cc60a37dcdcbb1b89740367080ce55a"
+    assert authoritative_opening_tx("ROBINHOOD_CHAIN", "1157839") == "0x4894f2748ce17a76810e46e4954a627a8e86ad72c2183d4fc978f7aee557a82c"
+    assert authoritative_opening_tx("ROBINHOOD_CHAIN", "1206612") == "0xfd0c071eece65685b528300d9f7080024ddfa116242702d1d9f9ac3cf149266e"
+
+
+class _LifecycleEth:
+    def get_block(self, block):
+        return {"timestamp": 1000 if int(block) == 100 else 2000}
+
+    def get_transaction_receipt(self, _txh):
+        return {"blockNumber": 200, "gasUsed": 0, "effectiveGasPrice": 0}
+
+    def get_transaction(self, _txh):
+        return {"from": "0x" + "9" * 40, "gasPrice": 0}
+
+
+class _LifecycleWeb3:
+    eth = _LifecycleEth()
+
+
+def test_closed_lifecycle_records_exact_close_transaction(monkeypatch):
+    events = [
+        {"event_type": "INCREASE_LIQUIDITY", "block_number": 100, "log_index": 1,
+         "transaction_hash": "0xopen", "liquidity": 100, "amount0_raw": 100, "amount1_raw": 0},
+        {"event_type": "DECREASE_LIQUIDITY", "block_number": 200, "log_index": 1,
+         "transaction_hash": "0xclose", "liquidity": 100, "amount0_raw": 110, "amount1_raw": 0},
+        {"event_type": "COLLECT", "block_number": 200, "log_index": 2,
+         "transaction_hash": "0xclose", "liquidity": 0, "amount0_raw": 112, "amount1_raw": 0},
+    ]
+    monkeypatch.setattr(live_positions_module, "_position_lifecycle_events", lambda *_a, **_k: [dict(x) for x in events])
+    monkeypatch.setattr(
+        live_positions_module, "_event_token_marks",
+        lambda **_kwargs: (1.0, 1.0, ["TEST_USD"]),
+    )
+
+    class _Cfg:
+        position_manager = "0x" + "1" * 40
+        key = "ROBINHOOD_CHAIN"
+        wrapped_native = ""
+
+    final = _closed_position_final(
+        w3=_LifecycleWeb3(), cfg=_Cfg(), wallet="0x" + "5" * 40,
+        manager=None, pool_c=object(), pool="0x" + "2" * 40,
+        token_id=123, opening_block=100, latest_block=200, market=None, market_row={},
+        token0="0x" + "3" * 40, token1="0x" + "4" * 40,
+        sym0="WETH", sym1="TEST", dec0=0, dec1=0,
+        opening_entry={"transaction_hash": "0xopen"},
+        current_unclaimed_usd=0.0, current_owed0=0.0, current_owed1=0.0,
+    )
+
+    assert final["complete"] is True
+    assert final["close_transaction_hash"] == "0xclose"
+    assert final["decrease_transaction_hashes"] == ["0xclose"]
+    assert final["collect_transaction_hashes"] == ["0xclose"]
+    assert final["lifecycle_transaction_hashes"] == ["0xopen", "0xclose"]
+    assert final["closed_at"] == 2000
+    assert final["total_fees_usd"] == pytest.approx(2.0)
+    assert final["realised_pnl_usd"] == pytest.approx(12.0)
+
+
+def test_reconcile_source_preserves_historical_and_opening_identity():
+    source = (Path(__file__).parents[1] / "lp_manager" / "live_positions.py").read_text(encoding="utf-8")
+    assert 'snap["historical_evidence"]=previous_snap.get("historical_evidence")' in source
+    assert 'authoritative_opening_tx(result.chain,row.get("token_id"))' in source
