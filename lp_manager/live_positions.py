@@ -21,6 +21,8 @@ from .v3_math import Q96, tick_to_sqrt_price_x96
 
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().removeprefix("0x")
 INCREASE_LIQUIDITY_TOPIC = "0x" + Web3.keccak(text="IncreaseLiquidity(uint256,uint128,uint256,uint256)").hex().removeprefix("0x")
+DECREASE_LIQUIDITY_TOPIC = "0x" + Web3.keccak(text="DecreaseLiquidity(uint256,uint128,uint256,uint256)").hex().removeprefix("0x")
+COLLECT_TOPIC = "0x" + Web3.keccak(text="Collect(uint256,address,uint256,uint256)").hex().removeprefix("0x")
 UINT128_MAX = 2**128 - 1
 
 OWNER_ABI = [{"inputs":[{"name":"tokenId","type":"uint256"}],"name":"ownerOf","outputs":[{"name":"","type":"address"}],"stateMutability":"view","type":"function"}]
@@ -616,7 +618,225 @@ def _historical_pool_marks_at(
     return p0,p1,details
 
 
-def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, market: GeckoTerminalClient | None = None, from_block_override: int | None = None, known_token_ids: set[int] | None = None, seed_token_ids: set[int] | None = None, seed_evidence: dict[int, dict[str, Any]] | None = None) -> ScanResult:
+def _position_lifecycle_events(
+    w3: Web3, manager: str, token_id: int, from_block: int, to_block: int, *, chunk: int = 25_000
+) -> list[dict[str, Any]]:
+    """Read immutable manager lifecycle events for one V3 NFT."""
+    topic_id="0x"+int(token_id).to_bytes(32,"big").hex()
+    definitions={
+        "INCREASE_LIQUIDITY":INCREASE_LIQUIDITY_TOPIC,
+        "DECREASE_LIQUIDITY":DECREASE_LIQUIDITY_TOPIC,
+        "COLLECT":COLLECT_TOPIC,
+    }
+    out=[]
+    start=max(0,int(from_block or 0)); end_block=max(start,int(to_block or start))
+    while start<=end_block:
+        end=min(end_block,start+chunk-1)
+        for event_type,topic0 in definitions.items():
+            try:
+                logs=w3.eth.get_logs({
+                    "fromBlock":start,"toBlock":end,
+                    "address":Web3.to_checksum_address(manager),
+                    "topics":[topic0,topic_id],
+                })
+            except Exception:
+                logs=[]
+            for log in logs:
+                raw=log.get("data")
+                try:
+                    if isinstance(raw,(bytes,bytearray)) or hasattr(raw,"hex"):
+                        data=bytes(raw)
+                    else:
+                        data=bytes.fromhex(str(raw or "0x").removeprefix("0x"))
+                    if event_type=="COLLECT":
+                        if len(data)<96: continue
+                        amount0=int.from_bytes(data[32:64],"big")
+                        amount1=int.from_bytes(data[64:96],"big")
+                        liquidity=0
+                    else:
+                        if len(data)<96: continue
+                        liquidity=int.from_bytes(data[0:32],"big")
+                        amount0=int.from_bytes(data[32:64],"big")
+                        amount1=int.from_bytes(data[64:96],"big")
+                    txh=log.get("transactionHash")
+                    out.append({
+                        "event_type":event_type,
+                        "block_number":int(log.get("blockNumber") or 0),
+                        "log_index":int(log.get("logIndex") or 0),
+                        "transaction_hash":txh.hex() if hasattr(txh,"hex") else str(txh or ""),
+                        "liquidity":liquidity,"amount0_raw":amount0,"amount1_raw":amount1,
+                    })
+                except Exception:
+                    continue
+        start=end+1
+    out.sort(key=lambda x:(x["block_number"],x["log_index"]))
+    return out
+
+
+def _event_token_marks(
+    *, w3: Web3, pool_c: Any, market: Any, cfg: ChainConfig, pool: str, market_row: dict[str, Any],
+    token0: str, token1: str, sym0: str, sym1: str, dec0: int, dec1: int,
+    block_number: int, timestamp: float,
+) -> tuple[float,float,list[str]]:
+    """Best historical USD marks at one lifecycle event."""
+    p0=p1=0.0; sources=[]
+    s0,s1=str(sym0).upper(),str(sym1).upper()
+    if s0 in STABLES: p0=1.0; sources.append(f"{s0}_PEG")
+    if s1 in STABLES: p1=1.0; sources.append(f"{s1}_PEG")
+    if market and timestamp:
+        if p0<=0:
+            try:
+                p0=float(market.historical_token_price_at(cfg.key,{"address":token0,"symbol":sym0},timestamp) or 0)
+                if p0>0: sources.append(f"HISTORICAL_{s0}_USD")
+            except Exception: pass
+        if p1<=0:
+            try:
+                p1=float(market.historical_token_price_at(cfg.key,{"address":token1,"symbol":sym1},timestamp) or 0)
+                if p1>0: sources.append(f"HISTORICAL_{s1}_USD")
+            except Exception: pass
+        if p0<=0 and s0 in MAJORS:
+            p0=_historical_major_symbol_mark(market,s0,timestamp)
+            if p0>0: sources.append(f"GLOBAL_{s0}_USD")
+        if p1<=0 and s1 in MAJORS:
+            p1=_historical_major_symbol_mark(market,s1,timestamp)
+            if p1>0: sources.append(f"GLOBAL_{s1}_USD")
+        if (p0<=0 or p1<=0) and market_row:
+            try:
+                hp0,hp1,_=_historical_pool_marks_at(market,cfg.key,pool,market_row,token0,token1,timestamp)
+                if p0<=0 and hp0>0: p0=hp0; sources.append("POOL_TOKEN0_USD")
+                if p1<=0 and hp1>0: p1=hp1; sources.append("POOL_TOKEN1_USD")
+            except Exception: pass
+
+    ratio=0.0
+    if block_number:
+        try:
+            tick=int(pool_c.functions.slot0().call(block_identifier=int(block_number))[1])
+            ratio=_raw_price_at_tick(tick,dec0,dec1)
+            if ratio>0: sources.append("ARCHIVE_POOL_RATIO")
+        except Exception:
+            ratio=0.0
+    if ratio>0:
+        if p0>0 and p1<=0: p1=p0/ratio; sources.append("POOL_RATIO_DERIVED_TOKEN1")
+        elif p1>0 and p0<=0: p0=ratio*p1; sources.append("POOL_RATIO_DERIVED_TOKEN0")
+    return p0,p1,sources
+
+
+def _closed_position_final(
+    *, w3: Web3, cfg: ChainConfig, wallet: str, manager: Any, pool_c: Any, pool: str,
+    token_id: int, opening_block: int, latest_block: int, market: Any, market_row: dict[str, Any],
+    token0: str, token1: str, sym0: str, sym1: str, dec0: int, dec1: int,
+    opening_entry: dict[str, Any], current_unclaimed_usd: float,
+) -> dict[str, Any]:
+    """Reconstruct one closed NFT once, then freeze the result.
+
+    Cash P/L is based on actual manager events: all liquidity contributions are
+    cost basis; all Collect distributions are proceeds; gas is a separate actual
+    transaction cost. Fee income is Collect minus same-transaction liquidity
+    principal removed by DecreaseLiquidity.
+    """
+    if current_unclaimed_usd>0.005:
+        return {"complete":False,"reason":"UNCLAIMED_TOKENS_REMAIN"}
+    events=_position_lifecycle_events(
+        w3,cfg.position_manager,token_id,max(0,int(opening_block or 0)),latest_block
+    )
+    if not events:
+        return {"complete":False,"reason":"NO_LIFECYCLE_EVENTS"}
+    tx_groups={}
+    block_times={}
+    for ev in events:
+        block=int(ev.get("block_number") or 0)
+        if block not in block_times:
+            try: block_times[block]=float(w3.eth.get_block(block).get("timestamp") or 0)
+            except Exception: block_times[block]=0.0
+        ev["timestamp"]=block_times[block]
+        ev["amount0"]=float(ev.get("amount0_raw") or 0)/(10**int(dec0))
+        ev["amount1"]=float(ev.get("amount1_raw") or 0)/(10**int(dec1))
+        p0,p1,sources=_event_token_marks(
+            w3=w3,pool_c=pool_c,market=market,cfg=cfg,pool=pool,market_row=market_row,
+            token0=token0,token1=token1,sym0=sym0,sym1=sym1,dec0=dec0,dec1=dec1,
+            block_number=block,timestamp=ev["timestamp"],
+        )
+        ev["token0_price_usd"]=p0; ev["token1_price_usd"]=p1
+        ev["value_usd"]=ev["amount0"]*p0+ev["amount1"]*p1 if (p0>0 or ev["amount0"]<=0) and (p1>0 or ev["amount1"]<=0) else None
+        ev["price_sources"]=sources
+        tx_groups.setdefault(str(ev.get("transaction_hash") or "").lower(),[]).append(ev)
+
+    contributions=distributions=fees=0.0
+    valuations_complete=True
+    fee_events=[]
+    for txh,rows in tx_groups.items():
+        dec0_amt=sum(float(x.get("amount0") or 0) for x in rows if x["event_type"]=="DECREASE_LIQUIDITY")
+        dec1_amt=sum(float(x.get("amount1") or 0) for x in rows if x["event_type"]=="DECREASE_LIQUIDITY")
+        collect0=sum(float(x.get("amount0") or 0) for x in rows if x["event_type"]=="COLLECT")
+        collect1=sum(float(x.get("amount1") or 0) for x in rows if x["event_type"]=="COLLECT")
+        inc_rows=[x for x in rows if x["event_type"]=="INCREASE_LIQUIDITY"]
+        col_rows=[x for x in rows if x["event_type"]=="COLLECT"]
+        for ev in inc_rows:
+            if ev.get("value_usd") is None: valuations_complete=False
+            else: contributions+=float(ev["value_usd"])
+        for ev in col_rows:
+            if ev.get("value_usd") is None: valuations_complete=False
+            else: distributions+=float(ev["value_usd"])
+        if col_rows:
+            anchor=col_rows[-1]
+            p0=float(anchor.get("token0_price_usd") or 0); p1=float(anchor.get("token1_price_usd") or 0)
+            fee0=max(0.0,collect0-dec0_amt); fee1=max(0.0,collect1-dec1_amt)
+            if (fee0<=0 or p0>0) and (fee1<=0 or p1>0):
+                fee_value=fee0*p0+fee1*p1
+                fees+=fee_value
+                fee_events.append({"transaction_hash":txh,"timestamp":anchor.get("timestamp"),"token0":fee0,"token1":fee1,"fee_value_usd":fee_value})
+            elif fee0>0 or fee1>0:
+                valuations_complete=False
+
+    # Opening IncreaseLiquidity should normally be present. If an RPC pruned it
+    # but opening evidence is already verified, retain that authoritative basis.
+    opening_basis=float(opening_entry.get("entry_value_usd") or 0)
+    if contributions<=0 and bool(opening_entry.get("basis_complete")) and opening_basis>0:
+        contributions=opening_basis
+
+    gas_native=gas_usd=0.0; gas_complete=True
+    tx_hashes=sorted({str(x.get("transaction_hash") or "") for x in events if x.get("transaction_hash")})
+    for txh in tx_hashes:
+        try:
+            receipt=w3.eth.get_transaction_receipt(txh)
+            tx=w3.eth.get_transaction(txh)
+            if str(tx.get("from") or "").lower()!=str(wallet).lower():
+                continue
+            used=int(receipt.get("gasUsed") or 0)
+            price=int(receipt.get("effectiveGasPrice") or tx.get("gasPrice") or 0)
+            native=used*price/1e18
+            gas_native+=native
+            block=int(receipt.get("blockNumber") or 0)
+            ts=block_times.get(block,0.0)
+            if not ts:
+                try: ts=float(w3.eth.get_block(block).get("timestamp") or 0)
+                except Exception: ts=0.0
+            native_price=_historical_major_symbol_mark(market,"WETH",ts) if market and ts else 0.0
+            if native>0 and native_price<=0:
+                gas_complete=False
+            gas_usd+=native*native_price
+        except Exception:
+            gas_complete=False
+
+    closed_at=max([float(x.get("timestamp") or 0) for x in events] or [0.0])
+    complete=bool(contributions>0 and distributions>=0 and valuations_complete and gas_complete)
+    pnl=(distributions-contributions-gas_usd) if complete else None
+    return {
+        "complete":complete,
+        "quality":"ONCHAIN_LIFECYCLE_FINAL" if complete else "ONCHAIN_LIFECYCLE_PARTIAL",
+        "token_id":str(token_id),"opened_at":float(opening_entry.get("opened_at") or 0),
+        "closed_at":closed_at,"opening_capital_usd":round(contributions,4),
+        "total_distributions_usd":round(distributions,4),"total_fees_usd":round(fees,4),
+        "gas_native":round(gas_native,10),"gas_usd":round(gas_usd,4),
+        "realised_pnl_usd":round(pnl,4) if pnl is not None else None,
+        "realised_return_pct":round(pnl/contributions*100.0,4) if pnl is not None and contributions>0 else None,
+        "events":events,"fee_events":fee_events,
+        "valuation_complete":valuations_complete,"gas_complete":gas_complete,
+        "reason":None if complete else "Historical token/gas valuation evidence is incomplete",
+    }
+
+
+def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, market: GeckoTerminalClient | None = None, from_block_override: int | None = None, known_token_ids: set[int] | None = None, seed_token_ids: set[int] | None = None, seed_evidence: dict[int, dict[str, Any]] | None = None, finalized_token_ids: set[int] | None = None) -> ScanResult:
     if not cfg.rpc_url():
         return ScanResult(cfg.key, False, [], error=f"{cfg.rpc_env} not configured")
     if not wallet or not Web3.is_address(wallet):
@@ -635,6 +855,8 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
         alchemy_ids = _discover_owned_token_ids_alchemy(cfg, Web3.to_checksum_address(wallet))
         token_ids.update(explorer_ids)
         token_ids.update(alchemy_ids)
+        if finalized_token_ids:
+            token_ids.difference_update(set(finalized_token_ids))
         log_ids: set[int] = set()
         try:
             log_ids, log_evidence = _discover_incoming_token_ids(w3, cfg.position_manager, Web3.to_checksum_address(wallet), start, latest)
@@ -821,6 +1043,18 @@ def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, mar
                     "entry_evidence": entry_evidence,
                     "data_quality": "LIVE_CHAIN_PLUS_MARKET" if (usd0>0 and usd1>0) else "LIVE_CHAIN_PARTIAL_USD_MARKET",
                 }
+                if liquidity<=0 and fees_usd<=0.005:
+                    try:
+                        closed_final=_closed_position_final(
+                            w3=w3,cfg=cfg,wallet=wallet,manager=manager,pool_c=pool_c,pool=pool,
+                            token_id=token_id,opening_block=int(opening_block or discovered.get("block_number") or 0),
+                            latest_block=latest,market=market,market_row=market_row,
+                            token0=token0,token1=token1,sym0=sym0,sym1=sym1,dec0=dec0,dec1=dec1,
+                            opening_entry=entry_evidence,current_unclaimed_usd=fees_usd,
+                        )
+                        snapshot["closed_final"]=closed_final
+                    except Exception as exc:
+                        snapshot["closed_final"]={"complete":False,"quality":"ONCHAIN_LIFECYCLE_PARTIAL","reason":str(exc)[:180]}
                 unit_label=str(lens.get("unit_label") or "")
                 if " per " in unit_label:
                     quote, base = unit_label.split(" per ",1); pair=f"{base}/{quote}"
@@ -927,6 +1161,12 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
             display_name=current_name
         tracker=_rolling_fee_tracker(store,position_id,snap,opened_at,capital_value)
         realised=max(float((existing or {}).get("realised_fees") or 0),float(tracker.get("collected_lower_bound_usd") or 0))
+        closed_final=dict(snap.get("closed_final") or {})
+        final_complete=bool(closed_final.get("complete"))
+        if final_complete:
+            realised=max(realised,float(closed_final.get("total_fees_usd") or 0))
+            capital_value=float(closed_final.get("opening_capital_usd") or capital_value)
+            cost_quality="ONCHAIN_MINT_RECONSTRUCTED"
         p = Position(
             id=position_id, protocol="UNISWAP_V3", chain=result.chain, pair=str(row["pair"]), status="OPEN" if row.get("active_liquidity") else "CLOSED",
             lower_price=float(row["lower_price"]), upper_price=float(row["upper_price"]), current_price=float(row["current_price"]),
@@ -941,15 +1181,15 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
             campaign_label=(existing or {}).get("campaign_label") or "",
             entry_thesis=(existing or {}).get("entry_thesis") or "",
             exit_goal=(existing or {}).get("exit_goal") or "",
-            lifecycle_stage="ACTIVE" if row.get("active_liquidity") else "CLOSED",
+            lifecycle_stage="ACTIVE" if row.get("active_liquidity") else ("CLOSED_FINAL" if final_complete else "CLOSED"),
             cost_basis_quality=cost_quality,
-            strategy_version="v0.8.8",
+            strategy_version="v0.8.9",
             pool_address=str((row.get("snapshot") or {}).get("pool_address") or (existing or {}).get("pool_address") or ""),
             range_unit=str((row.get("snapshot") or {}).get("range_unit") or (existing or {}).get("range_unit") or "TOKEN1_PER_TOKEN0"),
-            closed_at=(time.time() if not row.get("active_liquidity") else float((existing or {}).get("closed_at") or 0)),
-            reported_net_pnl=float((existing or {}).get("reported_net_pnl") or 0),
-            reported_net_pnl_pct=float((existing or {}).get("reported_net_pnl_pct") or 0),
-            pnl_quality=str((existing or {}).get("pnl_quality") or "UNKNOWN"),
+            closed_at=(float(closed_final.get("closed_at") or 0) if final_complete else (float((existing or {}).get("closed_at") or 0) if not row.get("active_liquidity") else 0)),
+            reported_net_pnl=(float(closed_final.get("realised_pnl_usd") or 0) if final_complete else float((existing or {}).get("reported_net_pnl") or 0)),
+            reported_net_pnl_pct=(float(closed_final.get("realised_return_pct") or 0) if final_complete else float((existing or {}).get("reported_net_pnl_pct") or 0)),
+            pnl_quality=("ONCHAIN_LIFECYCLE_FINAL" if final_complete else str((existing or {}).get("pnl_quality") or "UNKNOWN")),
         )
         store.upsert_position(p)
         store.save_position_snapshot(position_id, snap)
