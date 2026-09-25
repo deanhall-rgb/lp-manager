@@ -46,6 +46,8 @@ def test_delta_reconstruction_uses_delta_per_weth_and_is_historical_not_live(tmp
     assert result["imported"] == 1
     row = store.list_positions()[0]
     assert row["status"] == "CLOSED"  # snapshot-open is not current ownership proof
+    assert row["display_name"] == "P1 - WETH/DELTA"
+    assert row["campaign_label"] == "P1"
     assert row["range_unit"] == "DELTA_PER_WETH"
     assert 140_000 < row["lower_price"] < 160_000
     assert row["current_price"] == 0  # entry is not allowed to masquerade as today's pool price
