@@ -26,7 +26,7 @@ from .live_scout import preliminary_pool_evaluation
 from .strategy_lab import analyse_live_pool
 from .intelligence import IntelligenceService
 from .automation_policy import get_policy as get_automation_policy, update_policy as update_automation_policy
-from .chain_registry import CHAINS
+from .chain_registry import CHAINS, chain_config
 from .fx import money_context, display_amount_to_usd
 from .portfolio_policy import policies_payload
 from .risk_engine import assess_pool_risk
@@ -53,6 +53,7 @@ from .capital_allocation import rank_capital_candidates
 from .portfolio_accounting import position_accounting
 from .fee_metrics import observed_fee_metrics
 from .position_identity import canonical_display_name, authoritative_position
+from .financial_truth import portfolio_financial_truth
 
 
 class ScoutIntent(BaseModel):
@@ -247,6 +248,17 @@ class ExecutionQuoteIntent(BaseModel):
     known_side: int = 0
     known_amount: float = 0.0
 
+class ExecutionReceiptIntent(BaseModel):
+    chain: str
+    action: str
+    tx_hash: str
+    position_id: str | None = None
+    forecast_id: str | None = None
+    gas_used: str | int | None = None
+    effective_gas_price: str | int | None = None
+    status: str = "CONFIRMED"
+
+
 class AutomationPolicyIntent(BaseModel):
     changes: dict[str, bool] = Field(default_factory=dict)
 
@@ -406,7 +418,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.8.7", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.8.8", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -418,7 +430,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.8.7",
+            "version": "0.8.8",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -493,6 +505,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             )
             result["generated_at"]=time.time()
             result["data_status"]="LIVE_OR_FRESH_HISTORY"
+            audit=store.record_forecast_snapshot(result,model_version="v0.8.8")
+            result["forecast_snapshot_id"]=audit["id"]
             store.set_setting("profit:last_recommendation", result)
             cache_key=f"profit:last:{intent.chain.upper()}:{intent.pool_address.lower()}:{round(float(intent.horizon_days),3)}:{str(intent.sleeve).upper()}"
             store.set_setting(cache_key,result)
@@ -1088,6 +1102,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "today":"LOCAL_MIDNIGHT","week":"MONDAY_00:00_LOCAL","month":"FIRST_DAY_00:00_LOCAL"
         }
         result["data_quality"]=cal.get("quality") or "UNKNOWN"
+        result["all_time"]={"actual":float(cal.get("all_time_usd") or score.get("tracked_fees_since_open") or 0)}
         return result
 
     @app.get("/api/positions")
@@ -1284,6 +1299,40 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             raise HTTPException(400,str(exc)) from exc
         except Exception as exc:
             raise HTTPException(502,str(exc)) from exc
+
+    @app.get("/api/financial-truth")
+    def financial_truth():
+        return portfolio_financial_truth(store)
+
+    @app.post("/api/execution/receipt")
+    def execution_receipt(intent: ExecutionReceiptIntent):
+        def _hexint(value):
+            if value in (None,""):
+                return 0
+            if isinstance(value,int):
+                return value
+            text=str(value)
+            return int(text,16) if text.lower().startswith("0x") else int(text)
+        gas_used=max(0,_hexint(intent.gas_used))
+        gas_price=max(0,_hexint(intent.effective_gas_price))
+        gas_native=gas_used*gas_price/1e18
+        gas_usd=0.0
+        try:
+            cfg=chain_config(intent.chain.upper())
+            if live.market and cfg.wrapped_native and gas_native>0:
+                marks=live.market.token_prices(cfg.key,[cfg.wrapped_native])
+                gas_usd=gas_native*float(marks.get(str(cfg.wrapped_native).lower()) or 0)
+        except Exception:
+            gas_usd=0.0
+        event=store.record_financial_event(
+            position_id=intent.position_id,event_type=str(intent.action or "").upper(),
+            chain=intent.chain.upper(),tx_hash=intent.tx_hash,gas_native=gas_native,
+            gas_usd=gas_usd,status=intent.status,
+            payload={"gas_used":gas_used,"effective_gas_price":gas_price,"forecast_id":intent.forecast_id},
+        )
+        if intent.forecast_id and intent.position_id:
+            store.link_forecast_to_position(intent.forecast_id,intent.position_id)
+        return {"ok":True,"event":event}
 
     @app.get("/api/decisions/grouped")
     def decisions_grouped():
