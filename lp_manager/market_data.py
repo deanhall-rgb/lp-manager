@@ -19,23 +19,34 @@ class GeckoTerminalClient:
 
     def __init__(self, session: requests.Session | None = None):
         self.session = session or requests.Session()
-        self.session.headers.update({"Accept": "application/json;version=20230203", "User-Agent": "LP-Manager/0.8.5"})
+        self.session.headers.update({"Accept": "application/json;version=20230203", "User-Agent": "LP-Manager/0.8.9"})
         self._cache: dict[str, tuple[float, dict]] = {}
         self._last_request_at = 0.0
-        # Public GeckoTerminal is rate limited and cached upstream. A small client-side
-        # gap plus batching prevents Wallet refreshes from starving Scout/Replay.
-        self._min_request_gap = 0.35
+        self._blocked_until = 0.0
+        # Public GeckoTerminal is rate limited and cached upstream. V0.8.9 treats
+        # 429 as a provider cooldown rather than something worth hammering harder.
+        self._min_request_gap = 0.55
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> dict:
         url = f"{self.BASE}{path}"
         cache_key = url + "?" + "&".join(f"{k}={v}" for k,v in sorted((params or {}).items()))
         cached = self._cache.get(cache_key)
         is_ohlcv = "/ohlcv/" in path
-        cache_ttl = 5 * 60 if is_ohlcv else 20
+        cache_ttl = 15 * 60 if is_ohlcv else 45
         if cached and time.time() - cached[0] < cache_ttl:
             return cached[1]
+        # During a provider cooldown, return stale-but-valid data immediately
+        # instead of issuing another request from every UI refresh.
+        if time.time() < self._blocked_until:
+            stale_limit = 24 * 60 * 60 if is_ohlcv else 30 * 60
+            if cached and time.time() - cached[0] < stale_limit:
+                payload = dict(cached[1])
+                payload["_lp_manager_cache_status"] = "STALE_PROVIDER_COOLDOWN"
+                payload["_lp_manager_cache_age_seconds"] = round(time.time() - cached[0], 1)
+                return payload
+            raise MarketDataError("GeckoTerminal provider cooldown active after rate limiting")
         last: Exception | None = None
-        attempts = 2 if is_ohlcv else 4
+        attempts = 1 if is_ohlcv else 2
         timeout_seconds = 12 if is_ohlcv else 25
         for attempt in range(attempts):
             try:
@@ -50,8 +61,14 @@ class GeckoTerminalClient:
                         delay = max(1.0, min(15.0, float(retry))) if retry else min(8.0, 2.0 * (attempt + 1))
                     except Exception:
                         delay = min(8.0, 2.0 * (attempt + 1))
-                    last = MarketDataError(f"GeckoTerminal rate limited (429); retrying in {delay:.1f}s")
-                    time.sleep(delay)
+                    self._blocked_until = max(self._blocked_until, time.time() + max(20.0, delay * 3.0))
+                    last = MarketDataError(f"GeckoTerminal rate limited (429); provider cooling down")
+                    if cached:
+                        payload = dict(cached[1])
+                        payload["_lp_manager_cache_status"] = "STALE_AFTER_429"
+                        payload["_lp_manager_cache_age_seconds"] = round(time.time() - cached[0], 1)
+                        return payload
+                    time.sleep(min(1.0, delay))
                     continue
                 r.raise_for_status()
                 payload = r.json()
@@ -64,7 +81,7 @@ class GeckoTerminalClient:
         # Prefer slightly stale market data over turning the whole Scout into a 502.
         # Callers can still inspect source_updated_at on normalised rows.
         stale = self._cache.get(cache_key)
-        stale_limit = 60 * 60 if is_ohlcv else 15 * 60
+        stale_limit = 24 * 60 * 60 if is_ohlcv else 30 * 60
         if stale and time.time() - stale[0] < stale_limit:
             payload = dict(stale[1])
             payload["_lp_manager_cache_status"] = "STALE_FALLBACK"
