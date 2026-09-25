@@ -481,6 +481,48 @@ def _usd_prices(market: dict, token0: str, token1: str) -> tuple[float, float]:
     return 0.0, 0.0
 
 
+def _historical_pool_marks_at(
+    market: GeckoTerminalClient | None, chain: str, pool_address: str, market_row: dict[str, Any],
+    token0: str, token1: str, opened_at: float,
+) -> tuple[float, float, dict[str, Any]]:
+    """Nearest same-pool token/USD marks around the mint timestamp.
+
+    GeckoTerminal can return OHLC in USD for either the pool base or quote token.
+    That gives us a defensible opening USD mark for small tokens which may not have
+    standalone historical price coverage, while keeping the exact deposited token
+    amounts authoritative from the mint transaction receipt.
+    """
+    if not market or not opened_at or not pool_address or not market_row:
+        return 0.0,0.0,{"source":"UNAVAILABLE"}
+    age_days=max(2,min(30,int((time.time()-float(opened_at))/86400)+2))
+    base_addr=str((market_row.get("base_token") or {}).get("address") or "").lower()
+    quote_addr=str((market_row.get("quote_token") or {}).get("address") or "").lower()
+    marks={}
+    details={}
+    for side in ("base","quote"):
+        try:
+            rows=market.ohlcv_days(chain,pool_address,age_days,timeframe="hour",token=side)
+        except Exception as exc:
+            details[f"{side}_error"]=str(exc)[:120]
+            continue
+        if not rows:
+            continue
+        nearest=min(rows,key=lambda r:abs(float(r.get("timestamp") or 0)-float(opened_at)))
+        delta=abs(float(nearest.get("timestamp") or 0)-float(opened_at))
+        if delta<=6*3600:
+            marks[side]=max(0.0,float(nearest.get("close") or 0))
+            details[f"{side}_timestamp"]=float(nearest.get("timestamp") or 0)
+            details[f"{side}_distance_seconds"]=round(delta,1)
+    a0=str(token0 or "").lower(); a1=str(token1 or "").lower()
+    p0=p1=0.0
+    if a0==base_addr: p0=marks.get("base",0.0)
+    elif a0==quote_addr: p0=marks.get("quote",0.0)
+    if a1==base_addr: p1=marks.get("base",0.0)
+    elif a1==quote_addr: p1=marks.get("quote",0.0)
+    details["source"]="GECKOTERMINAL_SAME_POOL_TOKEN_USD_AT_OPEN" if (p0>0 or p1>0) else "UNAVAILABLE"
+    return p0,p1,details
+
+
 def scan_chain_positions(cfg: ChainConfig, wallet: str, *, scan_blocks: int, market: GeckoTerminalClient | None = None, from_block_override: int | None = None, known_token_ids: set[int] | None = None, seed_token_ids: set[int] | None = None, seed_evidence: dict[int, dict[str, Any]] | None = None) -> ScanResult:
     if not cfg.rpc_url():
         return ScanResult(cfg.key, False, [], error=f"{cfg.rpc_env} not configured")
