@@ -544,6 +544,30 @@ class Store:
         return bool(cur.rowcount)
 
 
+    def finalize_closed_position(
+        self, position_id: str, *, opening_capital_usd: float, total_fees_usd: float,
+        gas_costs_usd: float, realised_pnl_usd: float, realised_return_pct: float,
+        closed_at: float, quality: str,
+    ) -> bool:
+        """Freeze a completed closed-position lifecycle into the portfolio ledger."""
+        with self.connect() as con:
+            cur=con.execute(
+                """UPDATE positions SET
+                    status='CLOSED',lifecycle_stage='CLOSED_FINAL',
+                    capital_value=?,current_value=0,unclaimed_fees=0,
+                    realised_fees=?,gas_costs=?,reported_net_pnl=?,reported_net_pnl_pct=?,
+                    pnl_quality=?,closed_at=?,strategy_version='v0.8.11'
+                   WHERE id=?""",
+                (
+                    float(opening_capital_usd),float(total_fees_usd),float(gas_costs_usd),
+                    float(realised_pnl_usd),float(realised_return_pct),
+                    str(quality or "ONCHAIN_LIFECYCLE_FINAL"),float(closed_at or time.time()),
+                    position_id,
+                ),
+            )
+        return bool(cur.rowcount)
+
+
     def set_setting(self, key: str, value: Any) -> None:
         with self.connect() as con:
             con.execute(
