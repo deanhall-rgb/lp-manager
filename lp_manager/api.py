@@ -994,7 +994,16 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 width_pct=48.0 if sleeve=="CORE_INCOME" else 22.0,
                 regime={},
             )
-            persisted_candidate={**row,"quick_economics":economics}
+            persisted_candidate={
+                **row,
+                "quick_economics":economics,
+                "quick_economics_context":{
+                    "capital_usd":1000.0,
+                    "active_time_pct":84.0 if sleeve=="CORE_INCOME" else 60.0,
+                    "width_pct":48.0 if sleeve=="CORE_INCOME" else 22.0,
+                    "source":"PORTFOLIO_ADVISOR_CANONICAL_SCREEN",
+                },
+            }
             persisted_evaluation={**evaluation,"advisor_economics":economics,"advisor_sleeve":sleeve}
             try:
                 store.upsert_opportunity(candidate=persisted_candidate,evaluation=persisted_evaluation,status="WATCH")
