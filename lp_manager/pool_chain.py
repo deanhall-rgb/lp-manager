@@ -23,6 +23,9 @@ TOKEN_ABI=[
  {"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"stateMutability":"view","type":"function"},
  {"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"stateMutability":"view","type":"function"},
 ]
+FACTORY_ABI=[
+ {"inputs":[{"name":"tokenA","type":"address"},{"name":"tokenB","type":"address"},{"name":"fee","type":"uint24"}],"name":"getPool","outputs":[{"name":"pool","type":"address"}],"stateMutability":"view","type":"function"},
+]
 
 
 def _require_web3():
@@ -39,6 +42,37 @@ def _token_meta(w3,address: str)->tuple[str,int]:
     try: dec=int(c.functions.decimals().call())
     except Exception: dec=18
     return sym,dec
+
+
+def discover_v3_pair_fee_tiers(
+    chain: str, token_a: str, token_b: str, fee_tiers: tuple[int,...]=(100,500,3000,10000)
+) -> list[dict[str,Any]]:
+    """Discover canonical Uniswap V3 pair pools directly from the factory.
+
+    This avoids relying on a market-data provider's first page when comparing
+    0.01%, 0.05%, 0.3% and 1% fee tiers.
+    """
+    cfg=chain_config(chain); url=cfg.rpc_url()
+    if not url or not cfg.factory:
+        return []
+    try:
+        W3=_require_web3()
+        w3=build_read_only_web3(url)
+        factory=w3.eth.contract(address=W3.to_checksum_address(cfg.factory),abi=FACTORY_ABI)
+        a=W3.to_checksum_address(token_a); b=W3.to_checksum_address(token_b)
+        zero="0x0000000000000000000000000000000000000000"
+        out=[]
+        for fee in fee_tiers:
+            try:
+                address=str(factory.functions.getPool(a,b,int(fee)).call())
+            except Exception:
+                continue
+            if not address or address.lower()==zero:
+                continue
+            out.append({"pool_address":address,"fee_tier":int(fee),"fee_tier_bps":int(fee)/100.0,"source":"UNISWAP_V3_FACTORY"})
+        return out
+    except Exception:
+        return []
 
 
 def read_v3_pool_metadata(chain: str, address: str) -> dict[str,Any]:
