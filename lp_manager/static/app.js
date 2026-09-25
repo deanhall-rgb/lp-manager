@@ -187,30 +187,32 @@ async function loadExecutionPool(silent=false){const chain=$('#exec-chain').valu
 function scheduleExecutionQuote(delay=350){clearTimeout(execQuoteTimer);execQuoteTimer=setTimeout(()=>quoteExecutionAmounts().catch(e=>{const chip=$('#exec-live-price');if(chip){chip.textContent='Quote error';chip.className='status-chip warn'}console.warn(e)}),delay)}
 async function quoteExecutionAmounts(){if(execQuoteBusy||!execPoolMeta)return;const lower=Number($('#exec-lower').value),upper=Number($('#exec-upper').value),known=execLastEditedSide===1?1:0,amount=Number((known===0?$('#exec-amount0'):$('#exec-amount1')).value||0);if(!(lower>0&&upper>lower&&amount>0))return;execQuoteBusy=true;try{const q=await api('/api/execution/open/quote',{method:'POST',timeoutMs:30000,body:JSON.stringify({chain:$('#exec-chain').value,pool_address:$('#exec-pool').value.trim(),lower_price:lower,upper_price:upper,known_side:known,known_amount:amount})});const quoted=q.quote||q;if(known===0)$('#exec-amount1').value=Number(quoted.amount1||0).toPrecision(10);else $('#exec-amount0').value=Number(quoted.amount0||0).toPrecision(10);execLastRequoteAt=Date.now();const chip=$('#exec-live-price');if(chip){chip.textContent=`LIVE ${priceNum(execPoolMeta?.price_lens?.current)} · paired`;chip.className='status-chip good'}}finally{execQuoteBusy=false}}
 function setExecutionLiveMode(on){clearInterval(execPriceTimer);execPriceTimer=null;if(!on)return;if(execPoolMeta&&$('#exec-pool').value.trim())execPriceTimer=setInterval(()=>loadExecutionPool(true).catch(()=>{}),5000)}
+function walletFamily(provider,info={}){
+  const rdns=String(info.rdns||'').toLowerCase(),name=String(info.name||'').toLowerCase();
+  if(rdns.includes('metamask')||name.includes('metamask')||(provider?.isMetaMask&&!provider?.isPhantom&&!provider?.isCoinbaseWallet&&!provider?.isRabby))return 'metamask';
+  if(rdns.includes('phantom')||name.includes('phantom')||provider?.isPhantom)return 'phantom';
+  if(rdns.includes('coinbase')||name.includes('coinbase')||provider?.isCoinbaseWallet)return 'coinbase';
+  if(rdns.includes('rabby')||name.includes('rabby')||provider?.isRabby)return 'rabby';
+  if(rdns.includes('uniswap')||name.includes('uniswap'))return 'uniswap';
+  return rdns||name||'browser-evm';
+}
 function walletProviderChoices(){
-  const out=[];const seenProviders=new Set(),seenWallets=new Set();
-  const add=(provider,info={})=>{
+  const byFamily=new Map(),seenProviders=new Set();
+  const add=(provider,info={},source='fallback')=>{
     if(!provider||seenProviders.has(provider))return;
     seenProviders.add(provider);
-    const rdns=String(info.rdns||'').toLowerCase();
+    const family=walletFamily(provider,info);
     let name=String(info.name||'').trim();
-    if(!name){
-      if(provider.isCoinbaseWallet)name='Coinbase Wallet';
-      else if(provider.isPhantom)name='Phantom';
-      else if(provider.isRabby)name='Rabby';
-      else if(provider.isMetaMask)name='MetaMask';
-      else name='Browser EVM wallet';
-    }
-    const walletKey=rdns||name.toLowerCase();
-    if(seenWallets.has(walletKey))return;
-    seenWallets.add(walletKey);
-    const isMeta=rdns.includes('metamask')||(/^metamask$/i.test(name)&&!provider.isPhantom&&!provider.isCoinbaseWallet&&!provider.isRabby);
-    out.push({provider,info,name,rdns,preferred:isMeta});
+    if(!name)name=family==='metamask'?'MetaMask':family==='phantom'?'Phantom':family==='coinbase'?'Coinbase Wallet':family==='rabby'?'Rabby':family==='uniswap'?'Uniswap Wallet':'Browser EVM wallet';
+    const candidate={provider,info,name,rdns:String(info.rdns||'').toLowerCase(),family,preferred:family==='metamask',source};
+    const existing=byFamily.get(family);
+    // EIP-6963 announcements contain the cleanest name/icon/RDNS, so they win.
+    if(!existing||source==='eip6963')byFamily.set(family,candidate);
   };
-  announcedWalletProviders.forEach(x=>add(x.provider,x.info||{}));
-  (window.ethereum?.providers||[]).forEach(p=>add(p,{}));
-  if(window.ethereum)add(window.ethereum,{});
-  return out.sort((a,b)=>(Number(b.preferred)-Number(a.preferred))||a.name.localeCompare(b.name));
+  announcedWalletProviders.forEach(x=>add(x.provider,x.info||{},'eip6963'));
+  (window.ethereum?.providers||[]).forEach(p=>add(p,{},'providers'));
+  if(window.ethereum)add(window.ethereum,{},'window.ethereum');
+  return [...byFamily.values()].sort((a,b)=>(Number(b.preferred)-Number(a.preferred))||a.name.localeCompare(b.name));
 }
 function bindChosenProvider(provider){
   if(!provider)return; provider.on?.('accountsChanged',a=>{browserWallet=a?.[0]||null;updateWalletChip()}); provider.on?.('chainChanged',()=>{if(document.querySelector('#execution-section.active'))loadExecutionPool(true).catch(()=>{})});
@@ -220,9 +222,10 @@ function updateWalletChip(message=null,kind=null){const chip=$('#execution-walle
 async function chooseBrowserProvider(){
   const choices=walletProviderChoices();
   if(!choices.length)return null;
+  const walletIcon=x=>{const icon=String(x.info?.icon||'');if(icon.startsWith('data:image/'))return `<img class="wallet-provider-icon" src="${esc(icon)}" alt="">`;const letter=(x.name||'?').trim().slice(0,1).toUpperCase();return `<span class="wallet-provider-fallback">${esc(letter)}</span>`};
   return await new Promise(resolve=>{
-    modal('<div class="card-head"><div><h2>Choose browser wallet</h2><p class="meta">LP Manager will only use the wallet you explicitly select for human-confirmed signing.</p></div></div><div id="wallet-provider-list" class="lower">'+choices.map((x,i)=>'<button class="btn '+(x.preferred?'':'secondary')+' wallet-provider-choice" data-provider="'+i+'">'+esc(x.name)+(x.preferred?' · preferred':'')+'</button>').join(' ')+'</div>');
-    $$('.wallet-provider-choice').forEach(btn=>btn.onclick=()=>{const picked=choices[Number(btn.dataset.provider)];browserProvider=picked?.provider||null;bindChosenProvider(browserProvider);closeModal();resolve(browserProvider)});
+    modal(`<div class="wallet-picker-head"><h2>Connect a wallet</h2><p>Choose the wallet that should approve LP Manager transactions.</p></div><div id="wallet-provider-list" class="wallet-provider-list">${choices.map((x,i)=>`<button class="wallet-provider-choice" data-provider="${i}"><span class="wallet-provider-main">${walletIcon(x)}<span><b>${esc(x.name)}</b><small>${x.preferred?'Recommended':'Detected in this browser'}</small></span></span><span class="wallet-provider-state">${x.preferred?'Preferred':'Connect'} ›</span></button>`).join('')}</div><p class="wallet-picker-note">LP Manager never receives your seed phrase or private key. Your chosen wallet remains the final signing authority.</p>`);
+    $('.wallet-provider-choice').forEach(btn=>btn.onclick=()=>{const picked=choices[Number(btn.dataset.provider)];browserProvider=picked?.provider||null;bindChosenProvider(browserProvider);closeModal();resolve(browserProvider)});
     $('#modal-close').onclick=()=>{closeModal();resolve(null)};
   });
 }
