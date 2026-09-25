@@ -779,7 +779,7 @@ def _recommend_single_pool(
         )[:3]
         reasons=sorted({b for r in closest for b in ((r.get("selection_guardrail") or {}).get("blockers") or [])})
         raise ValueError(
-            "No candidate range passed V0.8.8 volatility/horizon guardrails"
+            "No candidate range passed V0.8.9 volatility/horizon guardrails"
             + (f": {', '.join(reasons[:4])}" if reasons else "")
         )
     ranked_pool=eligible
@@ -833,7 +833,8 @@ def _recommend_single_pool(
         "sleeve": sleeve_u, "capital_usd": round(capital, 2), "horizon_days": round(horizon, 3),
         "monthly_target_pct": round(float(monthly_target_pct), 3), "spot": spot,
         "price_lens": pool_price_lens(pool, current=spot), "pool": pool,
-        "regime": regime, "fee_calibration": calibration, "owned_pool_fee_evidence": observed_pool, "owned_pair_fee_prior": observed_pair, "evidence": evidence,
+        "regime": regime, "fee_calibration": calibration, "owned_pool_fee_evidence": observed_pool, "owned_pair_fee_prior": observed_pair,
+        "advisor_economics":dict(pool.get("quick_economics") or {}), "advisor_economics_context":dict(pool.get("quick_economics_context") or {}), "evidence": evidence,
         "price_series": [{"timestamp":c.get("timestamp"),"close":c.get("close")} for c in candles[-240:]],
         "confidence": confidence, "confidence_score": min(100, confidence_points),
         "recommended_range": {**best, "rank": 1},
