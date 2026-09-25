@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from lp_manager.db import Store
-from lp_manager.live_positions import _live_v3_fees_from_growth
+from lp_manager import live_positions as live_positions_module
+from lp_manager.live_positions import _live_v3_fees_from_growth, _position_lifecycle_events, finalise_closed_positions_from_store
 from lp_manager.models import Position
 from lp_manager.range_lab import analyse_range
 
@@ -98,3 +99,96 @@ def test_profit_lab_ui_restores_goal_and_relevant_history_language():
     assert "Recent range fit" in js
     assert "Historical fee cashflow" in js
     assert "Targets are reporting references, not instructions to increase risk." in js
+
+
+class _FailingLogEth:
+    def get_logs(self, _params):
+        raise RuntimeError("provider rate limited")
+
+
+class _FailingLogWeb3:
+    eth = _FailingLogEth()
+
+
+def test_closed_lifecycle_log_failures_are_not_treated_as_empty_history():
+    manager = "0x" + "1" * 40
+    with pytest.raises(RuntimeError, match="LIFECYCLE_LOG_SCAN_FAILED:INCREASE_LIQUIDITY:100-199"):
+        _position_lifecycle_events(_FailingLogWeb3(), manager, 123, 100, 199, chunk=100)
+
+
+class _ClosedFinaliserEth:
+    block_number = 999
+
+    def get_transaction_receipt(self, tx_hash):
+        assert tx_hash == "0xopening"
+        return {"blockNumber": 777}
+
+    def contract(self, **_kwargs):
+        return object()
+
+
+class _ClosedFinaliserWeb3:
+    eth = _ClosedFinaliserEth()
+
+
+class _ClosedFinaliserCfg:
+    key = "ROBINHOOD_CHAIN"
+
+    def rpc_url(self):
+        return "https://rpc.invalid"
+
+
+class _ClosedFinaliserStore:
+    def __init__(self):
+        self.snapshot = {
+            "pool_address": "0x" + "2" * 40,
+            "token0": {"address": "0x" + "3" * 40, "symbol": "WETH", "decimals": 18},
+            "token1": {"address": "0x" + "4" * 40, "symbol": "DELTA", "decimals": 18},
+            "entry_evidence": {"transaction_hash": "0xopening"},
+        }
+        self.saved = None
+
+    def list_positions(self, status):
+        assert status == "CLOSED"
+        return [{
+            "id": "live:ROBINHOOD_CHAIN:123",
+            "chain": "ROBINHOOD_CHAIN",
+            "source": "live_chain",
+            "lifecycle_stage": "CLOSED",
+            "token_id": "123",
+            "pool_address": self.snapshot["pool_address"],
+        }]
+
+    def get_position_snapshot(self, _position_id):
+        return dict(self.snapshot)
+
+    def save_position_snapshot(self, _position_id, snapshot):
+        self.saved = dict(snapshot)
+        self.snapshot = dict(snapshot)
+
+    def finalize_closed_position(self, *_args, **_kwargs):
+        raise AssertionError("test finaliser should stop before immutable final write")
+
+
+def test_closed_finaliser_resolves_opening_block_before_lifecycle_scan(monkeypatch):
+    store = _ClosedFinaliserStore()
+    seen = {}
+    monkeypatch.setattr(live_positions_module, "build_read_only_web3", lambda _url: _ClosedFinaliserWeb3())
+
+    def fake_closed_final(**kwargs):
+        seen["opening_block"] = kwargs["opening_block"]
+        return {"complete": False, "reason": "TEST_STOP"}
+
+    monkeypatch.setattr(live_positions_module, "_closed_position_final", fake_closed_final)
+    result = finalise_closed_positions_from_store(store, _ClosedFinaliserCfg(), "0x" + "5" * 40, limit=1)
+
+    assert result["attempted"] == 1
+    assert result["partial"] == 1
+    assert seen["opening_block"] == 777
+    assert store.saved["opening_block_number"] == 777
+    assert store.saved["entry_evidence"]["block_number"] == 777
+
+
+def test_normal_refresh_advances_only_one_closed_reconstruction_per_chain():
+    service_source = (Path(__file__).parents[1] / "lp_manager" / "live_service.py").read_text(encoding="utf-8")
+    assert "self.store,CHAINS[c],self.settings.wallet_address,self.market,limit=1" in service_source
