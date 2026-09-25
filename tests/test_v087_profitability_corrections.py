@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from lp_manager.fee_metrics import forecast_fee_metrics, observed_fee_metrics
+from lp_manager.fee_metrics import calendar_fee_metrics, forecast_fee_metrics, observed_fee_metrics
 from lp_manager.portfolio_accounting import position_accounting
 from lp_manager.price_units import display_lens, validate_display_lens
 from lp_manager.profit_calibration import fee_calibration_for_pool
@@ -12,6 +12,7 @@ from lp_manager.profit_engine import (
     _boundary_inventory_outcomes,
     _diverse_alternatives,
     _load_pool_and_history,
+    _fee_tier_pool_candidates,
     recommend_profit_range,
 )
 from lp_manager.strategy_lab import analyse_live_pool
@@ -635,4 +636,147 @@ def test_verified_entry_evidence_overrides_stale_recorded_capital():
     assert a["cost_basis_source"]=="ENTRY_EVIDENCE"
     assert a["cost_basis_usd"]==pytest.approx(1000.0)
     assert a["absolute_pnl_incl_fees_usd"]==pytest.approx(0.0)
+
+def test_calendar_fee_metrics_resets_at_local_day_week_and_month_boundaries():
+    from datetime import datetime, timedelta
+    local=datetime(2026,9,25,12,0,0).astimezone()
+    now=local.timestamp()
+    today=local.replace(hour=0,minute=0,second=0,microsecond=0)
+    monday=today-timedelta(days=today.weekday())
+    month=today.replace(day=1)
+    tracker={
+        "opened_at":(month-timedelta(days=1)).timestamp(),
+        "cumulative_earned_usd":20.0,
+        "observations":[
+            {"timestamp":month.timestamp()-60,"cumulative_earned_usd":1.0},
+            {"timestamp":month.timestamp()+60,"cumulative_earned_usd":2.0},
+            {"timestamp":monday.timestamp()-60,"cumulative_earned_usd":8.0},
+            {"timestamp":monday.timestamp()+60,"cumulative_earned_usd":9.0},
+            {"timestamp":today.timestamp()-60,"cumulative_earned_usd":15.0},
+            {"timestamp":today.timestamp()+60,"cumulative_earned_usd":16.0},
+            {"timestamp":now,"cumulative_earned_usd":20.0},
+        ],
+    }
+    m=calendar_fee_metrics(tracker,now)
+    assert m["today"]["actual_usd"] == pytest.approx(5.0)
+    assert m["week"]["actual_usd"] == pytest.approx(12.0)
+    assert m["month"]["actual_usd"] == pytest.approx(19.0)
+    assert m["semantics"]=="CALENDAR_PERIODS_LOCAL_TIME"
+
+
+def test_opening_basis_can_use_exact_pool_historical_token_usd_marks():
+    pytest.importorskip("web3")
+    from lp_manager.live_positions import _historical_pool_marks_at
+
+    class PoolHistory:
+        def ohlcv_days(self,chain,address,days,timeframe="hour",token="base"):
+            price=2500.0 if token=="base" else 0.025
+            return [{"timestamp":1_800_000_000,"close":price}]
+
+    market_row={
+        "base_token":{"address":"0x"+"1"*40,"symbol":"WETH"},
+        "quote_token":{"address":"0x"+"2"*40,"symbol":"DELTA"},
+    }
+    p0,p1,detail=_historical_pool_marks_at(
+        PoolHistory(),"ROBINHOOD_CHAIN","0xpool",market_row,
+        "0x"+"1"*40,"0x"+"2"*40,1_800_000_000,
+    )
+    assert p0==pytest.approx(2500.0)
+    assert p1==pytest.approx(0.025)
+    assert detail["source"]=="GECKOTERMINAL_SAME_POOL_TOKEN_USD_AT_OPEN"
+
+
+def test_usdg_profit_uses_owned_exact_pool_fee_evidence_when_public_volume_is_zero(monkeypatch):
+    class ZeroVolumeMarket(OrientationMarket):
+        def pool(self,chain,address):
+            row=super().pool(chain,address)
+            row["tvl_usd"]=2_000_000
+            row["volume_24h_usd"]=0.0
+            return row
+
+    monkeypatch.setattr("lp_manager.profit_engine.read_v3_pool_metadata",lambda chain,address:_usdgweth_onchain(address,1.0))
+    store=MemoryStore()
+    store.positions=[{
+        "id":"p4","status":"OPEN","chain":"ROBINHOOD_CHAIN","pool_address":"0xpool",
+        "pair":"WETH/USDG","strategy_sleeve":"CORE_INCOME",
+        "capital_value":200.0,"current_value":205.0,
+        "lower_price":2449.92,"upper_price":2924.86,"current_price":2674.0,
+    }]
+    store.snapshots["p4"]={"pool_address":"0xpool","market":{"pool_address":"0xpool"}}
+    store.settings["fees:tracker:p4"]={
+        "age_days":1.5,"fees_24h_usd":0.50,"cumulative_earned_usd":0.75,
+    }
+    out=recommend_profit_range(
+        ZeroVolumeMarket(),store,"ROBINHOOD_CHAIN","0xpool",
+        horizon_days=7,capital=1000,sleeve="CORE_INCOME",compare_fee_tiers=False,
+    )
+    f=out["recommended_range"]["forecast"]
+    assert f["expected_fees_usd"] > 0
+    assert f["forecast_fee_apr_pct"] > 0
+    assert f["fee_forecast_source"]=="EXACT_OWNED_POOL_OBSERVED_FALLBACK"
+
+
+def test_core_30_day_range_guardrail_rejects_absurdly_far_edge(monkeypatch):
+    monkeypatch.setattr("lp_manager.profit_engine.read_v3_pool_metadata",lambda chain,address:{"ok":False,"error":"test"})
+    out=recommend_profit_range(
+        SimpleMarket(),MemoryStore(),"ETHEREUM","0xpool",
+        horizon_days=30,capital=1000,sleeve="CORE_INCOME",compare_fee_tiers=False,
+    )
+    b=out["recommended_range"]
+    guard=b["selection_guardrail"]
+    assert guard["eligible"] is True
+    edge=guard["edge_balance"]
+    assert edge["farthest_edge_pct"] <= 30.0 + 1e-6
+    assert edge["nearest_edge_pct"] >= 2.5
+
+
+def test_fee_tier_candidates_use_factory_discovery_even_when_provider_pages_miss_tiers(monkeypatch):
+    token0="0x"+"1"*40; token1="0x"+"2"*40
+    pools={
+        "0x100":{"fee":1.0,"volume":30_000_000},
+        "0x500":{"fee":5.0,"volume":40_000_000},
+        "0x3000":{"fee":30.0,"volume":5_000_000},
+    }
+    class Market:
+        def token_pools(self,chain,token_address,page=1):
+            return []
+        def pool(self,chain,address):
+            x=pools[address]
+            return {
+                "chain":chain,"protocol":"UNISWAP_V3","pool_address":address,
+                "pair":"WETH/USDC",
+                "base_token":{"address":token0,"symbol":"WETH"},
+                "quote_token":{"address":token1,"symbol":"USDC"},
+                "tvl_usd":50_000_000,"volume_24h_usd":x["volume"],
+                "fee_tier_bps":x["fee"],
+            }
+    monkeypatch.setattr(
+        "lp_manager.profit_engine.discover_v3_pair_fee_tiers",
+        lambda chain,a,b:[
+            {"pool_address":"0x100","fee_tier_bps":1.0},
+            {"pool_address":"0x500","fee_tier_bps":5.0},
+            {"pool_address":"0x3000","fee_tier_bps":30.0},
+        ],
+    )
+    def meta(chain,address):
+        x=pools[address]
+        return {
+            "ok":True,"pool_address":address,"fee_tier_bps":x["fee"],
+            "fee_tier":int(x["fee"]*100),
+            "token0":{"address":token0,"symbol":"WETH","decimals":18},
+            "token1":{"address":token1,"symbol":"USDC","decimals":6},
+            "price_lens":{"current":2700.0,"unit":"USDC_PER_WETH","unit_label":"USDC per WETH"},
+        }
+    monkeypatch.setattr("lp_manager.profit_engine.read_v3_pool_metadata",meta)
+    seed={
+        "pool_address":"0x500",
+        "pool":{
+            "pool_address":"0x500","protocol":"UNISWAP_V3",
+            "base_token":{"address":token0,"symbol":"WETH"},
+            "quote_token":{"address":token1,"symbol":"USDC"},
+            "tvl_usd":50_000_000,"volume_24h_usd":40_000_000,"fee_tier_bps":5.0,
+        },
+    }
+    rows=_fee_tier_pool_candidates(Market(),"ETHEREUM",seed)
+    assert {round(float(x["fee_tier_bps"]),1) for x in rows}=={1.0,5.0,30.0}
 
