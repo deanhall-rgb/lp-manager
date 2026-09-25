@@ -55,7 +55,18 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
         if status=="OPEN":
             current_open_principal+=_f(acct.get("current_principal_usd"))
             current_open_wealth+=_f(acct.get("strategy_wealth_usd"))
-            realised_open_fee_income+=max(0.0,_f(p.get("realised_fees")))
+            event_collections=sum(
+                max(0.0,_f(e.get("amount_usd")))
+                for e in events
+                if str(e.get("position_id") or "")==pid
+                and str(e.get("event_type") or "").upper()=="COLLECT_FEES"
+                and str(e.get("status") or "").upper()=="CONFIRMED"
+            )
+            realised_open_fee_income+=max(
+                max(0.0,_f(p.get("realised_fees"))),
+                max(0.0,_f(tracker.get("collected_lower_bound_usd"))),
+                event_collections,
+            )
             if acct.get("basis_ready"):
                 opening_verified+=_f(acct.get("cost_basis_usd"))
                 verified_open_count+=1
@@ -87,11 +98,20 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
     event_gas=sum(_f(x.get("gas_usd")) for x in events if str(x.get("status") or "").upper()=="CONFIRMED")
     recorded_position_gas=sum(max(0.0,_f(p.get("gas_costs"))) for p in positions)
     transaction_costs=event_gas if event_gas>0 else recorded_position_gas
+    open_ids={str(p.get("id") or "") for p in positions if str(p.get("status") or "").upper()=="OPEN"}
+    open_event_gas=sum(
+        max(0.0,_f(x.get("gas_usd")))
+        for x in events
+        if str(x.get("status") or "").upper()=="CONFIRMED"
+        and str(x.get("position_id") or "") in open_ids
+    )
 
     # Realised G/L is intentionally conservative. Collected fees on still-open
-    # positions count immediately; closed principal P/L counts only when a closed
-    # record has explicit P/L evidence.
-    realised_gain_loss=realised_open_fee_income+closed_reported_pnl-transaction_costs
+    # positions are realised cash and their confirmed transaction costs are
+    # deducted. Closed-position P/L from an ONCHAIN_CLOSE_RECEIPT is already net
+    # of that position's cumulative recorded costs, so those costs are not
+    # subtracted a second time here.
+    realised_gain_loss=realised_open_fee_income-open_event_gas+closed_reported_pnl
 
     gross_open_pnl=current_open_wealth-opening_verified if verified_open_count and opening_verified>0 else None
     lp_vs_hodl=lp_for_hodl-hodl_total if hodl_count else None
