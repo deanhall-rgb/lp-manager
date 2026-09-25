@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import time
 
 from .chain_registry import chain_config
 from .rpc_client import build_read_only_web3
@@ -18,6 +19,7 @@ POOL_ABI=[
  {"inputs":[],"name":"tickSpacing","outputs":[{"name":"","type":"int24"}],"stateMutability":"view","type":"function"},
  {"inputs":[],"name":"liquidity","outputs":[{"name":"","type":"uint128"}],"stateMutability":"view","type":"function"},
  {"inputs":[],"name":"slot0","outputs":[{"name":"sqrtPriceX96","type":"uint160"},{"name":"tick","type":"int24"},{"name":"observationIndex","type":"uint16"},{"name":"observationCardinality","type":"uint16"},{"name":"observationCardinalityNext","type":"uint16"},{"name":"feeProtocol","type":"uint8"},{"name":"unlocked","type":"bool"}],"stateMutability":"view","type":"function"},
+ {"inputs":[{"name":"secondsAgos","type":"uint32[]"}],"name":"observe","outputs":[{"name":"tickCumulatives","type":"int56[]"},{"name":"secondsPerLiquidityCumulativeX128s","type":"uint160[]"}],"stateMutability":"view","type":"function"},
 ]
 TOKEN_ABI=[
  {"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"stateMutability":"view","type":"function"},
@@ -87,3 +89,79 @@ def read_v3_pool_metadata(chain: str, address: str) -> dict[str,Any]:
         return {"ok":True,"chain":cfg.key,"pool_address":W3.to_checksum_address(address),"token0":{"address":t0,"symbol":s0,"decimals":d0},"token1":{"address":t1,"symbol":s1,"decimals":d1},"fee_tier":fee,"fee_tier_bps":fee/100.0,"fee_rate":fee/1_000_000.0,"tick_spacing":spacing,"current_tick":tick,"sqrt_price_x96":str(slot0[0]),"active_liquidity":str(active_liquidity),"liquidity":str(active_liquidity),"price_lens":lens}
     except Exception as exc:
         return {"ok":False,"chain":cfg.key,"pool_address":address,"error":str(exc)[:240]}
+
+
+
+def read_v3_observation_history(
+    chain: str, address: str, days: int, *, timeframe: str = "hour", max_points: int = 241
+) -> list[dict[str, Any]]:
+    """Read a pool-native historical price path from Uniswap V3 observations.
+
+    This is the independent fallback used when public market-data APIs are
+    throttled. It does not provide volume, so it is suitable for range geometry
+    and volatility only. Fee economics still require separately evidenced volume
+    or owned-position fee evidence.
+
+    The pool may not retain the full requested lookback. We progressively shorten
+    the window rather than failing the whole Profit Lab request.
+    """
+    cfg=chain_config(chain); url=cfg.rpc_url()
+    if not url:
+        return []
+    try:
+        W3=_require_web3()
+        w3=build_read_only_web3(url)
+        pool=w3.eth.contract(address=W3.to_checksum_address(address),abi=POOL_ABI)
+        token0=pool.functions.token0().call()
+        token1=pool.functions.token1().call()
+        sym0,dec0=_token_meta(w3,token0)
+        sym1,dec1=_token_meta(w3,token1)
+    except Exception:
+        return []
+
+    step=3600 if str(timeframe).lower()=="hour" else 86400
+    desired=max(step*12,min(int(max(1,days)*86400),step*max(12,int(max_points)-1)))
+    now=int(time.time())
+    duration=desired
+
+    while duration>=step*12:
+        # Keep the RPC call bounded while preserving the actual timestamps so the
+        # range engine can infer samples/day correctly.
+        intervals=max(12,min(int(max_points)-1,int(duration//step)))
+        spacing=max(step,int(duration//intervals//step)*step)
+        seconds=list(range(int(duration),-1,-int(spacing)))
+        if not seconds or seconds[-1]!=0:
+            seconds.append(0)
+        seconds=sorted(set(max(0,min(2**32-1,int(x))) for x in seconds),reverse=True)
+        if len(seconds)<13:
+            duration//=2
+            continue
+        try:
+            tick_cumulatives,_=pool.functions.observe(seconds).call()
+        except Exception:
+            duration//=2
+            continue
+        out=[]
+        for i in range(len(seconds)-1):
+            older=int(seconds[i]); newer=int(seconds[i+1]); elapsed=older-newer
+            if elapsed<=0:
+                continue
+            try:
+                avg_tick=float(int(tick_cumulatives[i+1])-int(tick_cumulatives[i]))/float(elapsed)
+                raw=tick_token1_per_token0(avg_tick,dec0,dec1)
+                lens=display_lens(sym0,sym1,raw,raw,raw)
+                price=float(lens.get("current") or 0)
+            except Exception:
+                continue
+            if price<=0:
+                continue
+            ts=now-newer
+            out.append({
+                "timestamp":ts,"open":price,"high":price,"low":price,"close":price,
+                "volume":0.0,"source":"UNISWAP_V3_OBSERVE",
+            })
+        out.sort(key=lambda x:x["timestamp"])
+        if len(out)>=12:
+            return out
+        duration//=2
+    return []
