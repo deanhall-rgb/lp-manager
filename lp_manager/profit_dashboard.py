@@ -5,7 +5,7 @@ from typing import Any
 
 from .analytics import range_metrics
 from .portfolio_accounting import position_accounting
-from .fee_metrics import observed_fee_metrics
+from .fee_metrics import observed_fee_metrics, calendar_fee_metrics
 
 
 def _f(v: Any, default: float = 0.0) -> float:
@@ -21,6 +21,8 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
     positions=[p for p in store.list_positions() if str(p.get("monitoring_class") or "").upper()!="ARCHIVED_SUPERSEDED"]
     open_rows=[p for p in positions if str(p.get("status") or "").upper()=="OPEN"]
     tracked_fees=fees24=fees7=fees30=mature_fee24=0.0
+    calendar_today=calendar_week=calendar_month=0.0
+    calendar_quality=[]
     deployed=basis=known_basis=earning_capital=0.0
     absolute_pnl=unrealised_principal_pnl=realised_fee_floor=0.0
     pnl_basis_rows=0
@@ -45,6 +47,15 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
         fees24+=f24
         fees7+=f7
         fees30+=f30
+        cal=calendar_fee_metrics(tracker)
+        calendar_today+=_f((cal.get("today") or {}).get("actual_usd"))
+        calendar_week+=_f((cal.get("week") or {}).get("actual_usd"))
+        calendar_month+=_f((cal.get("month") or {}).get("actual_usd"))
+        calendar_quality.extend([
+            (cal.get("today") or {}).get("quality"),
+            (cal.get("week") or {}).get("quality"),
+            (cal.get("month") or {}).get("quality"),
+        ])
         if _f(tracker.get("age_days"))>=1.0:
             mature_fee24+=f24
 
@@ -101,6 +112,13 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
         "fees_24h":round(fees24,2),
         "fees_7d":round(fees7,2),
         "fees_30d":round(fees30,2),
+        "calendar_fees":{
+            "today_usd":round(calendar_today,2),
+            "week_usd":round(calendar_week,2),
+            "month_usd":round(calendar_month,2),
+            "resets":{"today":"LOCAL_MIDNIGHT","week":"MONDAY_00:00_LOCAL","month":"FIRST_DAY_00:00_LOCAL"},
+            "quality":"PARTIAL" if any(str(x or "").startswith("PARTIAL") for x in calendar_quality) else "COMPLETE",
+        },
         "fee_run_rate_month":round(fee_run_rate_month,2),
         "fee_run_rate_month_pct_on_deployed":round(fee_run_rate_month/deployed*100.0,2) if deployed>0 else 0.0,
         "fee_run_rate_basis":"MATURE_24H_ONLY",
