@@ -1149,7 +1149,12 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "today":"LOCAL_MIDNIGHT","week":"MONDAY_00:00_LOCAL","month":"FIRST_DAY_00:00_LOCAL"
         }
         result["data_quality"]=cal.get("quality") or "UNKNOWN"
-        result["all_time"]={"actual":float(cal.get("all_time_usd") or score.get("tracked_fees_since_open") or 0)}
+        truth=score.get("financial_truth") or {}
+        result["all_time"]={
+            "actual":float(cal.get("all_time_usd") or score.get("tracked_fees_since_open") or 0),
+            "quality":truth.get("all_time_fee_quality") or "UNKNOWN",
+            "breakdown":truth.get("all_time_fee_breakdown") or [],
+        }
         return result
 
     @app.get("/api/positions")
