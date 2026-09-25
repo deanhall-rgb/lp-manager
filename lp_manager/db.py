@@ -502,6 +502,18 @@ class Store:
                 if forecast_id:
                     cur=con.execute("UPDATE forecast_snapshots SET position_id=? WHERE id=?",(position_id,forecast_id))
                     linked_forecasts+=int(cur.rowcount or 0)
+            if linked_events:
+                event_gas=con.execute(
+                    """SELECT COALESCE(SUM(gas_usd),0) FROM financial_events
+                       WHERE position_id=? AND upper(status)='CONFIRMED'""",
+                    (position_id,),
+                ).fetchone()[0]
+                existing=con.execute("SELECT gas_costs FROM positions WHERE id=?",(position_id,)).fetchone()
+                if existing:
+                    con.execute(
+                        "UPDATE positions SET gas_costs=? WHERE id=?",
+                        (max(float(existing[0] or 0),float(event_gas or 0)),position_id),
+                    )
         return {"linked_events":linked_events,"linked_forecasts":linked_forecasts}
 
 
