@@ -23,6 +23,7 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
     tracked_fees=fees24=fees7=fees30=mature_fee24=0.0
     deployed=basis=known_basis=earning_capital=0.0
     absolute_pnl=unrealised_principal_pnl=realised_fee_floor=0.0
+    pnl_basis_rows=0
     hodl_total=lp_total_for_hodl=0.0
     hodl_rows=0
     rows=[]
@@ -35,8 +36,6 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
         cost=_f(p.get("capital_value"))
         deployed+=value
         basis+=cost
-        if str(p.get("cost_basis_quality") or "UNKNOWN").upper() not in {"UNKNOWN","FIRST_OBSERVED",""}:
-            known_basis+=cost
 
         current_fees=max(_f(tracker.get("cumulative_earned_usd")),_f(p.get("unclaimed_fees"))+_f(p.get("realised_fees")))
         f24=_f(tracker.get("fees_24h_usd"),_f(p.get("fees_today")))
@@ -55,7 +54,9 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
 
         accounting=position_accounting(p,snap,tracker)
         observed=observed_fee_metrics(tracker,cost or value)
-        if cost>0:
+        if accounting.get("basis_ready"):
+            known_basis+=cost
+            pnl_basis_rows+=1
             absolute_pnl+=_f(accounting.get("absolute_pnl_incl_fees_usd"))
             unrealised_principal_pnl+=value-cost
         realised_fee_floor+=max(0.0,_f(p.get("realised_fees")))-max(0.0,_f(p.get("gas_costs")))
@@ -80,8 +81,8 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
             "observed_fee_apr_pct":observed.get("since_open_annualised_fee_apr_pct"),
             "observed_fee_metrics":observed,
             "accounting":accounting,
-            "net_profit":round(_f(accounting.get("absolute_pnl_incl_fees_usd")),2),
-            "net_return_pct":round(_f(accounting.get("absolute_return_incl_fees_pct")),2),
+            "net_profit":round(_f(accounting.get("absolute_pnl_incl_fees_usd")),2) if accounting.get("basis_ready") else None,
+            "net_return_pct":round(_f(accounting.get("absolute_return_incl_fees_pct")),2) if accounting.get("basis_ready") else None,
             "lp_vs_hodl_usd":accounting.get("lp_vs_hodl_usd"),
             "lp_vs_hodl_pct":accounting.get("lp_vs_hodl_pct"),
         })
@@ -103,9 +104,9 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
         "fee_run_rate_month_pct_on_deployed":round(fee_run_rate_month/deployed*100.0,2) if deployed>0 else 0.0,
         "fee_run_rate_basis":"MATURE_24H_ONLY",
         "capital_currently_earning_pct":round(earning_capital/deployed*100.0,1) if deployed>0 else 0.0,
-        "position_pnl_incl_fees":round(absolute_pnl,2),
-        "recorded_net_profit":round(absolute_pnl,2),
-        "unrealised_principal_pnl":round(unrealised_principal_pnl,2),
+        "position_pnl_incl_fees":round(absolute_pnl,2) if pnl_basis_rows else None,
+        "recorded_net_profit":round(absolute_pnl,2) if pnl_basis_rows else None,
+        "unrealised_principal_pnl":round(unrealised_principal_pnl,2) if pnl_basis_rows else None,
         "realised_fee_pnl_floor":round(realised_fee_floor,2),
         "lp_vs_hodl_usd":round(lp_vs_hodl,2) if lp_vs_hodl is not None else None,
         "hodl_benchmark_value_usd":round(hodl_total,2) if hodl_rows else None,
@@ -115,6 +116,7 @@ def portfolio_profit_scorecard(store) -> dict[str, Any]:
             "fee_tracker_positions":sum(1 for p in open_rows if store.get_setting(f"fees:tracker:{p.get('id')}",{})),
             "mature_24h_fee_positions":sum(1 for p in open_rows if _f((store.get_setting(f"fees:tracker:{p.get('id')}",{}) or {}).get("age_days"))>=1.0),
             "hodl_benchmark_positions":hodl_rows,
+            "pnl_basis_positions":pnl_basis_rows,
         },
         "positions":rows,
         "best_fee_producer":rows[0] if rows else None,
