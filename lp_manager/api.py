@@ -1071,12 +1071,24 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     @app.post("/api/targets/calculate")
     def targets_calculate(intent: TargetIntent):
-        payload=intent.model_dump()
-        payload["capital"]=_display_capital_to_usd(payload.get("capital") or 0)
-        payload["actual_today"]=_display_capital_to_usd(payload.get("actual_today") or 0)
-        payload["actual_7d"]=_display_capital_to_usd(payload.get("actual_7d") or 0)
-        payload["actual_30d"]=_display_capital_to_usd(payload.get("actual_30d") or 0)
-        return performance_targets(**payload)
+        # Performance is sourced server-side so internal USD figures are never
+        # accidentally reinterpreted as GBP form inputs. Calendar periods reset
+        # independently of the rolling windows used by forecasting/calibration.
+        score=portfolio_profit_scorecard(store)
+        cal=score.get("calendar_fees") or {}
+        result=performance_targets(
+            capital=float(score.get("deployed_value") or 0),
+            target_monthly_pct=max(0.0,float(intent.target_monthly_pct)),
+            actual_today=float(cal.get("today_usd") or 0),
+            actual_7d=float(cal.get("week_usd") or 0),
+            actual_30d=float(cal.get("month_usd") or 0),
+        )
+        result["period_semantics"]="CALENDAR_LOCAL_TIME"
+        result["resets"]=cal.get("resets") or {
+            "today":"LOCAL_MIDNIGHT","week":"MONDAY_00:00_LOCAL","month":"FIRST_DAY_00:00_LOCAL"
+        }
+        result["data_quality"]=cal.get("quality") or "UNKNOWN"
+        return result
 
     @app.get("/api/positions")
     def positions():
