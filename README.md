@@ -1,3 +1,43 @@
+# LP Manager v0.8.8 Financial Truth
+
+V0.8.8 is the transition from profitability prototype to auditable live-manager beta. It keeps explicit browser-wallet approval as the signing boundary while hardening financial truth, range realism and execution reconciliation.
+
+## What v0.8.8 adds
+
+- **Financial Truth ledger:** frozen forecast snapshots, transaction/gas events, realised G/L, all-time fees and forecast-vs-actual hooks.
+- **Simple position P/L:** `current LP value + tracked fees - verified opening capital`. Transaction costs are shown separately; LP-vs-HODL stays a detail benchmark.
+- **Opening-basis recovery:** opening `IncreaseLiquidity` events can reconstruct the mint price/tick when archive RPC history is unavailable; major-asset historical USD fallback improves new-chain WETH reconstruction.
+- **More realistic ranges:** Core and Tactical candidates are constrained by realised volatility, holding period and range asymmetry; historical activity remains evidence rather than a hard enter/do-not-enter switch.
+- **Advisor sleeve policy:** major/stable and stable/stable inventory is classified as Core before pool-quality gating.
+- **Data-poor pool economics:** exact-pool live fee evidence is preferred; same-pair owned evidence may be used as a heavily haircut LOW-confidence fallback instead of silently returning zero fees.
+- **Profit Lab resilience:** validated historical series are cached; new-chain WETH history can fall back to global major-symbol history when address-specific data is sparse or wrongly oriented.
+- **Execution fixes:** Collect and Close now receive the authoritative chain, can progress to browser-wallet signing after simulation, and confirmed receipts/gas are recorded into the audit ledger.
+- **Wallet chooser cleanup:** providers are deduplicated by wallet family and presented in a cleaner single-row-per-wallet layout.
+- **Performance:** Today / This Week / This Month remain calendar periods, with **All time fees** added. Profit Scoreboard now includes **Realised gain / loss**.
+- **Dependency hygiene:** the unexplained `httpx2` entry is replaced by the actual `httpx` dependency.
+
+## Upgrade from v0.8.7
+
+Extract V0.8.8 into a new folder, then run:
+
+```powershell
+cd "C:\Users\deano\Documents\lp_manager_v0_8_8"
+Set-ExecutionPolicy -Scope Process Bypass
+.\upgrade_from_v087.ps1 -V087Path "C:\Users\deano\Documents\lp_manager_v0_8_7_correction2"
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python .\start_lp_manager.py
+```
+
+The upgrade copies the existing `.env` and `data` state forward without modifying v0.8.7. No seed phrase or private key is stored by LP Manager.
+
+## V0.8.8 release gates
+
+The automated suite pins the user-reported failures: major/stable sleeve classification, realistic 7-day Tactical edge geometry, non-zero data-poor fee economics from owned evidence, simple P/L, all-time/realised accounting, opening-event reconstruction, Collect/Close chain propagation, forecast snapshots and wallet-provider deduplication.
+
+---
+
 # LP Manager v0.8.7 Profitability Correction
 
 V0.8.7 is a financial-correctness and profitability release built on v0.8.6. It does **not** widen execution authority: private keys remain outside the server, server-side signing/broadcast remains disabled, and browser-wallet transactions still require explicit human confirmation.
