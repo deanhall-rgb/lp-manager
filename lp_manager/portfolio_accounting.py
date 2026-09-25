@@ -36,37 +36,61 @@ def position_accounting(
     fees_earned = max(tracked, unclaimed + realised)
     gas = max(0.0, _f(position.get("gas_costs")))
 
-    lp_plus_fees = current_principal + fees_earned - gas
-    absolute_pnl = lp_plus_fees - cost if cost > 0 else 0.0
-    absolute_return = absolute_pnl / cost * 100.0 if cost > 0 else 0.0
-
     amount0 = max(0.0, _f(entry.get("token0_amount")))
     amount1 = max(0.0, _f(entry.get("token1_amount")))
+    entry_price0=max(0.0,_f(entry.get("token0_price_usd")))
+    entry_price1=max(0.0,_f(entry.get("token1_price_usd")))
+    entry_complete=bool(entry.get("basis_complete")) or (
+        (amount0>0 or amount1>0)
+        and (amount0<=0 or entry_price0>0)
+        and (amount1<=0 or entry_price1>0)
+        and _f(entry.get("entry_value_usd"))>0
+    )
+    basis_quality=str(position.get("cost_basis_quality") or entry.get("quality") or "UNKNOWN").upper()
+    basis_ready=bool(
+        cost>0
+        and (
+            entry_complete
+            or (
+                not entry
+                and basis_quality in {"VERIFIED_OPENING_BASIS","RECONCILED_REALIZED","HISTORICAL_RECONSTRUCTED"}
+            )
+        )
+    )
+
+    lp_plus_fees = current_principal + fees_earned - gas
+    absolute_pnl = (lp_plus_fees - cost) if basis_ready else None
+    absolute_return = (absolute_pnl / cost * 100.0) if basis_ready and cost > 0 else None
+
     price0 = max(0.0, _f(t0.get("price_usd")))
     price1 = max(0.0, _f(t1.get("price_usd")))
-    hodl_value = amount0 * price0 + amount1 * price1 if (amount0 > 0 or amount1 > 0) and price0 > 0 and price1 > 0 else None
+    hodl_value = amount0 * price0 + amount1 * price1 if (amount0 > 0 or amount1 > 0) and (amount0<=0 or price0>0) and (amount1<=0 or price1>0) else None
     lp_vs_hodl = lp_plus_fees - hodl_value if hodl_value is not None else None
     lp_vs_hodl_pct = lp_vs_hodl / hodl_value * 100.0 if hodl_value and hodl_value > 0 else None
 
-    strong_basis = str(position.get("cost_basis_quality") or "").upper() not in {"", "UNKNOWN", "FIRST_OBSERVED"}
-    hodl_ready = hodl_value is not None and bool(entry.get("opened_at") or position.get("opened_at"))
-    quality = "STRONG" if strong_basis and hodl_ready else "PARTIAL" if cost > 0 else "INSUFFICIENT"
+    opened=_f(entry.get("opened_at") or snapshot.get("opened_at") or position.get("opened_at"))
+    opening_tx=entry.get("transaction_hash") or snapshot.get("opening_transaction_hash") or ""
+    hodl_ready = hodl_value is not None and bool(opened) and bool(amount0>0 or amount1>0)
+    quality = "STRONG" if basis_ready and hodl_ready else "PARTIAL" if (basis_ready or hodl_ready or opening_tx) else "INSUFFICIENT"
 
     return {
-        "opened_at": _f(entry.get("opened_at") or position.get("opened_at")),
-        "opening_transaction_hash": entry.get("transaction_hash") or snapshot.get("opening_transaction_hash") or "",
+        "opened_at": opened,
+        "opening_time_quality": "ONCHAIN_OPENING_TX" if opening_tx and opened else ("FIRST_OBSERVED" if opened else "UNKNOWN"),
+        "opening_transaction_hash": opening_tx,
         "cost_basis_usd": round(cost, 4),
         "cost_basis_quality": position.get("cost_basis_quality") or entry.get("quality") or "UNKNOWN",
+        "basis_ready": basis_ready,
         "current_principal_usd": round(current_principal, 4),
         "fees_earned_usd": round(fees_earned, 4),
         "gas_costs_usd": round(gas, 4),
         "lp_plus_fees_usd": round(lp_plus_fees, 4),
-        "absolute_pnl_incl_fees_usd": round(absolute_pnl, 4),
-        "absolute_return_incl_fees_pct": round(absolute_return, 4),
+        "absolute_pnl_incl_fees_usd": round(absolute_pnl, 4) if absolute_pnl is not None else None,
+        "absolute_return_incl_fees_pct": round(absolute_return, 4) if absolute_return is not None else None,
         "hodl_value_usd": round(hodl_value, 4) if hodl_value is not None else None,
         "lp_vs_hodl_usd": round(lp_vs_hodl, 4) if lp_vs_hodl is not None else None,
         "lp_vs_hodl_pct": round(lp_vs_hodl_pct, 4) if lp_vs_hodl_pct is not None else None,
         "entry_token0_amount": round(amount0, 12),
         "entry_token1_amount": round(amount1, 12),
+        "entry_basis_complete": entry_complete,
         "quality": quality,
     }
