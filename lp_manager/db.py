@@ -496,11 +496,16 @@ class Store:
         return out
 
     def reconcile_execution_opening(self, tx_hash: str, position_id: str) -> dict[str, Any]:
-        """Attach a confirmed browser-wallet open event/forecast to its discovered NFT."""
+        """Attach a confirmed browser-wallet open event/forecast to its discovered NFT.
+
+        Prerequisite wrap/approval receipts carrying the same forecast id are linked
+        at the same time so position gas reflects the complete execution workflow.
+        """
         tx=str(tx_hash or "").lower()
         if not tx or not position_id:
-            return {"linked_events":0,"linked_forecasts":0}
-        linked_events=linked_forecasts=0
+            return {"linked_events":0,"linked_forecasts":0,"linked_prerequisites":0}
+        linked_events=linked_forecasts=linked_prerequisites=0
+        forecast_ids=set()
         with self.connect() as con:
             rows=con.execute(
                 "SELECT id,payload_json FROM financial_events WHERE lower(tx_hash)=? AND event_type='OPEN_POSITION'",
@@ -515,8 +520,29 @@ class Store:
                     payload={}
                 forecast_id=str(payload.get("forecast_id") or "")
                 if forecast_id:
+                    forecast_ids.add(forecast_id)
                     cur=con.execute("UPDATE forecast_snapshots SET position_id=? WHERE id=?",(position_id,forecast_id))
                     linked_forecasts+=int(cur.rowcount or 0)
+
+            if forecast_ids:
+                pending=con.execute(
+                    """SELECT id,payload_json FROM financial_events
+                       WHERE position_id IS NULL
+                         AND event_type IN ('WRAP_NATIVE','TOKEN_APPROVAL')
+                         AND upper(status)='CONFIRMED'"""
+                ).fetchall()
+                for event_row in pending:
+                    try:
+                        payload=json.loads(event_row[1] or "{}")
+                    except Exception:
+                        payload={}
+                    if str(payload.get("forecast_id") or "") in forecast_ids:
+                        con.execute(
+                            "UPDATE financial_events SET position_id=? WHERE id=?",
+                            (position_id,str(event_row[0])),
+                        )
+                        linked_prerequisites+=1
+
             if linked_events:
                 event_gas=con.execute(
                     """SELECT COALESCE(SUM(gas_usd),0) FROM financial_events
@@ -529,7 +555,11 @@ class Store:
                         "UPDATE positions SET gas_costs=? WHERE id=?",
                         (max(float(existing[0] or 0),float(event_gas or 0)),position_id),
                     )
-        return {"linked_events":linked_events,"linked_forecasts":linked_forecasts}
+        return {
+            "linked_events":linked_events,
+            "linked_forecasts":linked_forecasts,
+            "linked_prerequisites":linked_prerequisites,
+        }
 
 
     def add_position_gas_cost(self, position_id: str, gas_usd: float) -> float:
