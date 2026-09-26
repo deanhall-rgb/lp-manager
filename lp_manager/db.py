@@ -383,7 +383,7 @@ class Store:
             row=dict(r); row["payload"]=json.loads(row.pop("payload_json") or "{}"); out.append(row)
         return out
 
-    def record_forecast_snapshot(self, result: dict[str, Any], *, model_version: str = "v0.8.11") -> dict[str, Any]:
+    def record_forecast_snapshot(self, result: dict[str, Any], *, model_version: str = "v0.9") -> dict[str, Any]:
         best=dict(result.get("recommended_range") or {})
         forecast=dict(best.get("forecast") or {})
         row={
@@ -404,7 +404,7 @@ class Store:
             "forecast_fee_apr_pct":float(forecast.get("forecast_fee_apr_pct") or 0),
             "low_net_usd":float(forecast.get("low_net_usd") or 0),
             "high_net_usd":float(forecast.get("high_net_usd") or 0),
-            "model_version":str(model_version or "v0.8.11"),
+            "model_version":str(model_version or "v0.9"),
             "payload_json":json.dumps(result,sort_keys=True),
         }
         with self.connect() as con:
