@@ -445,7 +445,7 @@ def test_forecast_snapshot_links_to_discovered_position_and_is_queryable(tmp_pat
     assert actual is not None
     assert actual["id"] == forecast["id"]
     assert actual["position_id"] == p.id
-    assert actual["model_version"] == "v0.8.11"
+    assert actual["model_version"] == "v0.9"
     assert actual["expected_fees_usd"] == pytest.approx(7.0)
 
 
@@ -454,9 +454,9 @@ def test_profit_forecast_path_uses_v0811_state_and_position_ui_exposes_actual_co
     api_source = (root / "lp_manager" / "api.py").read_text(encoding="utf-8")
     js = (root / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
 
-    assert 'profit:last:v0811:' in api_source
-    assert 'model_version="v0.8.11"' in api_source
-    assert 'profit:last_recommendation:v0811' in api_source
+    assert 'profit:last:v09:' in api_source
+    assert 'model_version="v0.9"' in api_source
+    assert 'profit:last_recommendation:v09' in api_source
     assert 'profit:last:v0810:' not in api_source
     assert 'model_version="v0.8.10"' not in api_source
 
