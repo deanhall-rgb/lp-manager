@@ -416,13 +416,13 @@ def test_acceptance_weth_usdg_full_profit_result_never_uses_one_dollar_execution
     assert out["recommended_range"]["forecast"]["expected_net_usd"] <= out["recommended_range"]["forecast"]["expected_fees_usd"] + 1e-9
 
 
-def test_acceptance_p4_p5_p6_have_authoritative_identity_opening_refs_and_accounting(tmp_path):
+def test_acceptance_p6_p7_p8_have_authoritative_identity_opening_refs_and_accounting(tmp_path):
     from lp_manager.db import Store
     from lp_manager.live_positions import ScanResult, reconcile_scan
     from lp_manager.live_service import _AUTHORITATIVE_OPENINGS
 
     refs=_AUTHORITATIVE_OPENINGS["ROBINHOOD_CHAIN"]
-    expected={1289953:"P4",1290067:"P5",1290077:"P6"}
+    expected={1289953:"P6",1290067:"P7",1290077:"P8"}
     assert set(refs)==set(expected)
 
     db_path=tmp_path/"v087.sqlite3"
@@ -532,16 +532,16 @@ def test_partial_opening_value_is_never_presented_as_absolute_pnl():
     assert a["hodl_value_usd"] == pytest.approx(235.0)
 
 
-def test_authoritative_p4_p5_p6_labels_replace_stale_p6_p7_p8_on_reconcile(tmp_path):
+def test_authoritative_p6_p7_p8_labels_replace_stale_p4_p5_p6_on_reconcile(tmp_path):
     from lp_manager.db import Store
     from lp_manager.live_positions import ScanResult, reconcile_scan
     from lp_manager.models import Position
 
     store=Store(tmp_path/"labels.sqlite3")
     stale={
-        "1289953":"P6 · WETH/USDG",
-        "1290067":"P7 · WETH/DELTA",
-        "1290077":"P8 · WETH/HOOKR",
+        "1289953":"P4 · WETH/USDG",
+        "1290067":"P5 · WETH/DELTA",
+        "1290077":"P6 · WETH/HOOKR",
     }
     pairs={"1289953":"WETH/USDG","1290067":"WETH/DELTA","1290077":"WETH/HOOKR"}
     for tid,name in stale.items():
@@ -562,9 +562,9 @@ def test_authoritative_p4_p5_p6_labels_replace_stale_p6_p7_p8_on_reconcile(tmp_p
             "snapshot":{"live":True,"opened_at":1234,"entry_evidence":{}},
         })
     reconcile_scan(store,ScanResult("ROBINHOOD_CHAIN",True,rows,latest_block=10))
-    assert store.find_position_by_token("ROBINHOOD_CHAIN","1289953")["display_name"].startswith("P4")
-    assert store.find_position_by_token("ROBINHOOD_CHAIN","1290067")["display_name"].startswith("P5")
-    assert store.find_position_by_token("ROBINHOOD_CHAIN","1290077")["display_name"].startswith("P6")
+    assert store.find_position_by_token("ROBINHOOD_CHAIN","1289953")["display_name"].startswith("P6")
+    assert store.find_position_by_token("ROBINHOOD_CHAIN","1290067")["display_name"].startswith("P7")
+    assert store.find_position_by_token("ROBINHOOD_CHAIN","1290077")["display_name"].startswith("P8")
 
 
 def test_reconcile_demotes_old_partial_onchain_basis_instead_of_showing_wild_pnl(tmp_path):
