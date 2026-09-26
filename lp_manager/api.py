@@ -56,6 +56,7 @@ from .portfolio_accounting import position_accounting
 from .fee_metrics import observed_fee_metrics
 from .position_identity import canonical_display_name, authoritative_position
 from .financial_truth import portfolio_financial_truth
+from .close_accounting import finalise_execution_close, repair_confirmed_execution_closes
 
 
 class ScoutIntent(BaseModel):
@@ -321,6 +322,12 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     executor = ExecutionService(settings, store)
     live = LiveDataService(settings, store)
+    # Repair confirmed LP Manager closes from their exact transaction receipt.
+    # This is intentionally receipt-only and never performs a historical block scan.
+    try:
+        repair_confirmed_execution_closes(store, live.market)
+    except Exception:
+        pass
     intelligence = IntelligenceService(settings, store)
     profit_request_lock = threading.Lock()
 
@@ -1525,18 +1532,16 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         if intent.position_id and str(intent.status).upper()=="CONFIRMED":
             cumulative_position_gas=store.add_position_gas_cost(intent.position_id,gas_usd)
 
-        if action=="CLOSE_POSITION" and position and snapshot and collected_usd>0 and str(intent.status).upper()=="CONFIRMED":
-            tracker=store.get_setting(f"fees:tracker:{intent.position_id}",{}) or {}
-            acct=position_accounting(position,snapshot,tracker)
-            opening=float(acct.get("cost_basis_usd") or 0)
-            prior_collected=max(float(position.get("realised_fees") or 0),float(tracker.get("collected_lower_bound_usd") or 0))
-            if acct.get("basis_ready") and opening>0:
-                realised=collected_usd+prior_collected-opening-cumulative_position_gas
-                store.record_closed_position_economics(
-                    intent.position_id,reported_net_pnl=realised,
-                    reported_net_pnl_pct=realised/opening*100.0,
-                    gas_costs=cumulative_position_gas,quality="ONCHAIN_CLOSE_RECEIPT",
-                )
+        close_finalisation=None
+        if action=="CLOSE_POSITION" and position and snapshot and str(intent.status).upper()=="CONFIRMED":
+            close_finalisation=finalise_execution_close(
+                store,
+                position_id=str(intent.position_id),
+                chain=intent.chain.upper(),
+                tx_hash=intent.tx_hash,
+                receipt=receipt_payload,
+                market=live.market,
+            )
 
         if intent.forecast_id and intent.position_id:
             store.link_forecast_to_position(intent.forecast_id,intent.position_id)
@@ -1545,6 +1550,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "collected_value_usd":round(collected_usd,4),
             "collected_tokens":collected_tokens,
             "position_gas_costs_usd":round(cumulative_position_gas,4),
+            "close_finalisation":close_finalisation,
         }
 
     @app.get("/api/decisions/grouped")
