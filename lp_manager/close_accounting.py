@@ -108,6 +108,30 @@ def _value_collected_tokens(tokens: dict[str,float], snapshot: dict[str,Any], ma
     return a0*p0+a1*p1
 
 
+def _gas_cost_usd(events: list[dict[str,Any]], snapshot: dict[str,Any], market: Any | None, chain: str) -> float:
+    cfg=chain_config(str(chain).upper())
+    native_price=0.0
+    wrapped=str(cfg.wrapped_native or "").lower()
+    for key in ("token0","token1"):
+        token=dict(snapshot.get(key) or {})
+        if str(token.get("address") or "").lower()==wrapped or str(token.get("symbol") or "").upper() in {"WETH","ETH"}:
+            native_price=max(native_price,max(0.0,_f(token.get("price_usd"))))
+    if native_price<=0 and market and wrapped:
+        try:
+            native_price=max(0.0,_f(market.token_prices(cfg.key,[wrapped]).get(wrapped)))
+        except Exception:
+            native_price=0.0
+
+    total=0.0
+    for event in events:
+        direct=max(0.0,_f(event.get("gas_usd")))
+        if direct>0:
+            total+=direct
+        else:
+            total+=max(0.0,_f(event.get("gas_native")))*native_price
+    return total
+
+
 def finalise_execution_close(
     store,
     *,
@@ -165,7 +189,7 @@ def finalise_execution_close(
         return {"ok":False,"reason":"CLOSE_PROCEEDS_NOT_VALUED","collected_tokens":collected}
 
     confirmed=[e for e in events if str(e.get("status") or "").upper()=="CONFIRMED"]
-    gas=sum(max(0.0,_f(e.get("gas_usd"))) for e in confirmed)
+    gas=_gas_cost_usd(confirmed,snapshot,market,chain)
 
     prior_collected=max(
         max(0.0,_f(position.get("realised_fees"))),
