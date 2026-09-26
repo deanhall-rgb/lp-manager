@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from web3 import Web3
 
-from lp_manager.close_accounting import decode_collect_tokens, finalise_execution_close
+from lp_manager.close_accounting import decode_collect_tokens, finalise_execution_close, repair_confirmed_execution_closes
 from lp_manager.db import Store
 from lp_manager.models import Position
 
@@ -132,7 +132,13 @@ def test_confirmed_execution_close_becomes_closed_final_without_history_scan(tmp
     assert final["accounting_source"] == "DIRECT_CONFIRMED_CLOSE_RECEIPT"
     assert final["close_proceeds_usd"] == 15.0
     assert final["gas_usd"] == 0.05
+    assert final["transaction_costs_usd"] == 0.05
     assert final["realised_pnl_usd"] == -0.05
+    assert final["event_count"] == 2
+    assert len(final["events"]) == 2
+    assert final["hodl_value_usd"] == 15.0
+    assert final["lp_vs_hodl_usd"] == 0.0
+    assert final["lp_vs_hodl_pct"] == 0.0
 
     row=store.get_position(position.id)
     assert row["status"] == "CLOSED"
@@ -173,3 +179,57 @@ def test_prerequisite_receipts_link_to_minted_position_by_forecast(tmp_path):
     }
     row=store.get_position(position.id)
     assert row["gas_costs"] == 0.06
+
+
+def test_startup_repair_enriches_existing_closed_final_without_reconstructing_history(tmp_path):
+    store=Store(tmp_path/"existing_final.sqlite3")
+    position=_position()
+    snap=_snapshot()
+    store.upsert_position(position)
+    store.save_position_snapshot(position.id,snap)
+    store.record_financial_event(
+        position_id=position.id,event_type="OPEN_POSITION",chain="ROBINHOOD_CHAIN",
+        tx_hash="0xopen",gas_usd=0.03,status="CONFIRMED",payload={},
+    )
+    store.record_financial_event(
+        position_id=position.id,event_type="CLOSE_POSITION",chain="ROBINHOOD_CHAIN",
+        tx_hash="0xclose",gas_usd=0.02,status="CONFIRMED",
+        payload={
+            "collected_tokens":{"CASHCAT":50.0,"WETH":0.004},
+            "valuation_prices_usd":{"CASHCAT":0.10,"WETH":2500.0},
+        },
+    )
+    result=finalise_execution_close(
+        store,position_id=position.id,chain="ROBINHOOD_CHAIN",
+        tx_hash="0xclose",receipt=None,market=None,
+    )
+    assert result["ok"] is True
+
+    saved=store.get_position_snapshot(position.id)
+    final=dict(saved["closed_final"])
+    for key in ("events","event_count","hodl_value_usd","lp_vs_hodl_usd","lp_vs_hodl_pct","transaction_costs_usd"):
+        final.pop(key,None)
+    saved["closed_final"]=final
+    store.save_position_snapshot(position.id,saved)
+
+    repair=repair_confirmed_execution_closes(store,market=None)
+    assert repair["attempted"] == 0
+
+    repaired=store.get_position_snapshot(position.id)["closed_final"]
+    assert repaired["complete"] is True
+    assert repaired["event_count"] == 2
+    assert repaired["transaction_costs_usd"] == 0.05
+    assert repaired["hodl_value_usd"] == 15.0
+    assert repaired["lp_vs_hodl_usd"] == 0.0
+    assert repaired["history_scan_required"] is False
+
+
+def test_v09_closed_ui_exposes_final_accounting_arithmetic():
+    from pathlib import Path
+    js=(Path(__file__).parents[1]/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
+    assert "Final accounting breakdown" in js
+    assert "Returned at close" in js
+    assert "Transaction costs" in js
+    assert "Net P/L = returned assets" in js
+    assert "Automatic historical block reconstruction is disabled" in js
+    assert "closedBenchmark" in js
