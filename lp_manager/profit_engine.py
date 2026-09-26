@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import statistics
+import time
 from typing import Any
 
 from .asset_lens import pool_price_lens
@@ -308,9 +309,22 @@ def _history_matches_spot(candles: list[dict[str, Any]], live_spot: float) -> bo
         return False
     med=statistics.median(recent)
     ratio=med/live_spot if live_spot>0 else 1.0
-    # This is a unit/orientation sanity check, not a market prediction. A recent
-    # series that is 10x/1000x away from the live execution price is the wrong lens.
-    return 0.45 <= ratio <= 2.20
+    # Current absolute-range analysis requires history in the SAME execution-price
+    # units as the live pool. The old 0.45x-2.20x guard accidentally allowed WETH
+    # USD (~2700) to masquerade as PONS/WETH (~4200). A recent 24h median that is
+    # more than ~25% away from live spot is not safe for current-range economics.
+    return 0.75 <= ratio <= 1.33
+
+
+def _history_cache_is_fresh(candles: list[dict[str, Any]], timeframe: str, *, now: float | None = None) -> bool:
+    if not candles:
+        return False
+    latest=max((_f(c.get("timestamp")) for c in candles),default=0.0)
+    if latest<=0:
+        return False
+    current=float(now if now is not None else time.time())
+    max_age=8*3600 if str(timeframe).lower()=="hour" else 3*86400
+    return 0 <= current-latest <= max_age
 
 
 def _load_pool_and_history(
@@ -411,18 +425,25 @@ def _load_pool_and_history(
         except Exception as exc:
             warning=warning or str(exc)
 
-    cache_key=f"profit:history:v089:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
-    legacy_cache_key=f"profit:history:v088:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
+    # V0.8.11 deliberately starts a new cache namespace. Older caches may contain
+    # token-USD history that predates the execution-ratio/orientation fixes and
+    # must never be silently promoted into current range economics.
+    cache_key=f"profit:history:v0811:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
     cached_rows=[]
     cached_provider=""
     if store is not None:
-        cached=store.get_setting(cache_key,{}) or store.get_setting(legacy_cache_key,{}) or {}
+        cached=store.get_setting(cache_key,{}) or {}
         cached_rows=list(cached.get("candles") or [])
         cached_provider=str(cached.get("provider") or "PERSISTED_HISTORY_CACHE")
-        if not candles and len(cached_rows)>=minimum and _history_matches_spot(cached_rows,live_spot):
+        cache_valid=(
+            len(cached_rows)>=minimum
+            and _history_matches_spot(cached_rows,live_spot)
+            and _history_cache_is_fresh(cached_rows,timeframe)
+        )
+        if not candles and cache_valid:
             candles=cached_rows
             provider=cached_provider
-            warning=(warning+"; " if warning else "")+"reused validated persisted history"
+            warning=(warning+"; " if warning else "")+"reused fresh validated v0.8.11 history"
 
     # Pool-native V3 observations are independent of public market-data APIs and
     # therefore the preferred resilience path during provider throttling. They
@@ -441,7 +462,7 @@ def _load_pool_and_history(
         except Exception as exc:
             warning=warning or str(exc)
 
-    if not candles:
+    if not candles and quote_symbol in stable_symbols:
         try:
             try:
                 candles = market.ohlcv_days(chain, address, history_days, timeframe=timeframe, token=gecko_token)
@@ -455,6 +476,11 @@ def _load_pool_and_history(
         except Exception as exc:
             candles = []
             warning = str(exc)
+    elif not candles and quote_symbol and quote_symbol not in stable_symbols:
+        warning=(warning+"; " if warning else "")+(
+            "token-USD OHLC rejected for non-stable execution pair; "
+            "pair-ratio or pool-native history required"
+        )
 
     if len(candles) < minimum and hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
         try:
@@ -470,10 +496,16 @@ def _load_pool_and_history(
         candles=[]
 
     minimum_floor=24 if timeframe=="hour" else 12
-    if len(candles) < minimum_floor and cached_rows and len(cached_rows)>=minimum_floor and _history_matches_spot(cached_rows,live_spot):
+    if (
+        len(candles) < minimum_floor
+        and cached_rows
+        and len(cached_rows)>=minimum_floor
+        and _history_matches_spot(cached_rows,live_spot)
+        and _history_cache_is_fresh(cached_rows,timeframe)
+    ):
         candles=cached_rows
         provider=cached_provider or "PERSISTED_HISTORY_CACHE"
-        warning=(warning+"; " if warning else "")+"using shorter persisted validated history"
+        warning=(warning+"; " if warning else "")+"using shorter fresh v0.8.11 persisted history"
     if len(candles) < minimum_floor and onchain_history and len(onchain_history)>=12 and _history_matches_spot(onchain_history,live_spot):
         candles=onchain_history
         provider="UNISWAP_V3_OBSERVE_SHORT"
