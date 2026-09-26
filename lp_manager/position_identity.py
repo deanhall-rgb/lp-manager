@@ -7,7 +7,7 @@ from typing import Any
 AUTHORITATIVE_LIVE_POSITIONS: dict[str, dict[str, dict[str, str]]] = {
     "ROBINHOOD_CHAIN": {
         "1289953": {
-            "label": "P8",
+            "label": "P6",
             "opening_transaction_hash": "0x08435860b326074b65d0b3c95634a5531cef061f7017702cb123e37253b3f2a4",
         },
         "1290067": {
@@ -15,7 +15,7 @@ AUTHORITATIVE_LIVE_POSITIONS: dict[str, dict[str, dict[str, str]]] = {
             "opening_transaction_hash": "0xe9de48e6b7ef1f2a238febf8d8fd7bb99462a0ebd35b1f93bf4c1f885f93e92c",
         },
         "1290077": {
-            "label": "P6",
+            "label": "P8",
             "opening_transaction_hash": "0x565f672e404ec8f9d2d1d6fbcd064c495a51200611dd6d96072b3a1162cd0a21",
         },
     }
