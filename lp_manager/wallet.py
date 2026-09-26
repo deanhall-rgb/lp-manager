@@ -165,6 +165,21 @@ def build_wallet_snapshot(settings, store, market=None, *, include_health: bool 
     if not Web3.is_address(wallet):
         return {"ok":False,"wallet":wallet,"error":"Configure a valid WALLET_ADDRESS","holdings":[],"chains":[]}
     wallet=Web3.to_checksum_address(wallet)
+    previous_snapshot=store.get_wallet_snapshot() or {}
+    previous_price_by_key={}
+    for old in list(previous_snapshot.get("holdings") or [])+list(previous_snapshot.get("hidden_holdings") or []):
+        key=(
+            f"{str(old.get('chain') or '').upper()}:{str(old.get('address') or '').lower()}"
+            if old.get("address")
+            else f"{str(old.get('chain') or '').upper()}:NATIVE:{str(old.get('symbol') or '').upper()}"
+        )
+        try:
+            price=float(old.get("price_usd") or 0)
+        except Exception:
+            price=0.0
+        if price>0:
+            previous_price_by_key[key]=price
+
     holdings:list[dict[str,Any]]=[]; hidden:list[dict[str,Any]]=[]; chains:list[dict[str,Any]]=[]
     min_visible=max(0.0,_safe_float(os.getenv("LP_MANAGER_WALLET_MIN_VISIBLE_USD","1"),1.0))
 
@@ -196,11 +211,26 @@ def build_wallet_snapshot(settings, store, market=None, *, include_health: bool 
             prices=_batch_prices(market,cfg.key,price_addresses)
             native_price=_safe_float(prices.get(str(cfg.wrapped_native).lower())) if cfg.wrapped_native else 0.0
             if native>0:
-                holdings.append({"chain":cfg.key,"type":"NATIVE","symbol":cfg.native_symbol,"address":None,"balance":native,"price_usd":native_price,"value_usd":native*native_price,"data_quality":"LIVE_BALANCE_AND_PRICE" if native_price else "LIVE_BALANCE_NO_PRICE","discovery_source":"NATIVE"})
+                stale=False
+                if native_price<=0:
+                    native_price=float(previous_price_by_key.get(f"{cfg.key}:NATIVE:{str(cfg.native_symbol).upper()}") or 0)
+                    stale=native_price>0
+                holdings.append({
+                    "chain":cfg.key,"type":"NATIVE","symbol":cfg.native_symbol,"address":None,
+                    "balance":native,"price_usd":native_price,"value_usd":native*native_price,
+                    "data_quality":"LAST_GOOD_PRICE_FALLBACK" if stale else ("LIVE_BALANCE_AND_PRICE" if native_price else "LIVE_BALANCE_NO_PRICE"),
+                    "price_stale":stale,"discovery_source":"NATIVE",
+                })
             for row in chain_rows:
-                price=_safe_float(prices.get(str(row.get("address") or "").lower()))
+                address=str(row.get("address") or "").lower()
+                price=_safe_float(prices.get(address))
+                stale=False
+                if price<=0:
+                    price=float(previous_price_by_key.get(f"{cfg.key}:{address}") or 0)
+                    stale=price>0
                 row["price_usd"]=price; row["value_usd"]=_safe_float(row.get("balance"))*price
-                row["data_quality"]="LIVE_BALANCE_AND_PRICE" if price else "LIVE_BALANCE_NO_PRICE"
+                row["data_quality"]="LAST_GOOD_PRICE_FALLBACK" if stale else ("LIVE_BALANCE_AND_PRICE" if price else "LIVE_BALANCE_NO_PRICE")
+                row["price_stale"]=stale
                 reason=_spam_reason(row,min_visible_value=min_visible)
                 if reason:
                     hidden.append({**row,"hidden_reason":reason})
