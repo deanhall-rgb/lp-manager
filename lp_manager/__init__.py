@@ -1,3 +1,3 @@
-"""LP Manager v0.8.11 - wallet binding, live fee accrual and closed-accounting stabilisation."""
+"""LP Manager v0.9 - stable live LP management, forecast tracking and direct close accounting."""
 
-__version__ = "0.8.11"
+__version__ = "0.9"
