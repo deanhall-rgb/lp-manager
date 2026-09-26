@@ -24,7 +24,11 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
       * LP-vs-HODL,
       * forecasts frozen at recommendation time.
     """
-    positions=store.list_positions()
+    positions=[
+        p for p in store.list_positions()
+        if str(p.get("monitoring_class") or "").upper()!="ARCHIVED_SUPERSEDED"
+        and str(p.get("source") or "")!="legacy_campaign_ledger"
+    ]
     events=store.list_financial_events(2000) if hasattr(store,"list_financial_events") else []
     forecasts=store.list_forecast_snapshots(500) if hasattr(store,"list_forecast_snapshots") else []
 
@@ -191,5 +195,5 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
         "closed_realised_coverage":{"verified_closed_positions":closed_reported_count,"closed_positions":sum(1 for p in positions if str(p.get("status") or "").upper()=="CLOSED")},
         "forecast_audit":{"snapshots":len(forecasts),"linked_to_positions":len(linked),"comparisons":comparisons[:20]},
         "position_rows":rows,
-        "evidence_note":"All-time fees are auditable per position. Closed positions use frozen on-chain lifecycle fees when available; provisional closed tracker values are explicitly labelled until reconstruction completes. Realised G/L only includes collected fees on open positions, confirmed transaction costs, and closed-position P/L with explicit evidence.",
+        "evidence_note":"All-time fees include only canonical LP Manager positions shown in the product: frozen closed evidence plus current live positions. Archived/superseded and legacy campaign-ledger rows are excluded. Realised G/L only includes collected fees on open positions, confirmed transaction costs, and closed-position P/L with explicit evidence.",
     }
