@@ -16,7 +16,7 @@ from .models import Position
 from .rpc_client import build_read_only_web3
 from .price_units import display_lens
 from .fee_metrics import observed_fee_metrics
-from .position_identity import authoritative_label, authoritative_opening_tx
+from .position_identity import authoritative_label, authoritative_opening_tx, highest_authoritative_position_number
 from .v3_math import Q96, tick_to_sqrt_price_x96
 
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().removeprefix("0x")
@@ -374,7 +374,7 @@ def _live_display_name(store, token_id: str, pair: str, chain: str = "ROBINHOOD_
             m=re.match(r"P(\d+)$",str(value or ""),re.I)
             if m:
                 used.append(int(m.group(1)))
-        next_no=max([3,*used])+1
+        next_no=max([highest_authoritative_position_number(chain),*used])+1
         mapping[tid]=f"P{next_no}"
         store.set_setting(key,mapping)
     return f"{mapping[tid]} · {pair}"
