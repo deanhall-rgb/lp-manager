@@ -250,6 +250,13 @@ class ExecutionQuoteIntent(BaseModel):
     known_side: int = 0
     known_amount: float = 0.0
 
+class ExecutionCapitalQuoteIntent(BaseModel):
+    chain: str
+    pool_address: str
+    lower_price: float
+    upper_price: float
+    capital_usd: float
+
 class ExecutionReceiptIntent(BaseModel):
     chain: str
     action: str
@@ -1369,6 +1376,53 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 lower_price=intent.lower_price, upper_price=intent.upper_price,
                 known_side=int(intent.known_side), known_amount=max(0.0,float(intent.known_amount)),
             )
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(502,str(exc)) from exc
+
+    @app.post("/api/execution/open/capital-quote")
+    def execution_open_capital_quote(intent: ExecutionCapitalQuoteIntent):
+        """Convert a Profit Lab capital budget into the required V3 token amounts."""
+        from .live_v3_builder import quote_open_position_amounts
+        try:
+            capital=max(0.0,float(intent.capital_usd))
+            if capital<=0:
+                raise ValueError("Capital must be positive")
+            quoted=quote_open_position_amounts(
+                chain=intent.chain.upper(), pool_address=intent.pool_address,
+                lower_price=intent.lower_price, upper_price=intent.upper_price,
+                known_side=0, known_amount=1.0,
+            )
+            meta=quoted.get("pool") or {}
+            q=quoted.get("quote") or {}
+            unit0=max(0.0,float(q.get("amount0") or 0))
+            unit1=max(0.0,float(q.get("amount1") or 0))
+            if unit0<=0 and unit1<=0:
+                raise ValueError("Could not derive the range token ratio")
+            t0,t1=meta.get("token0") or {},meta.get("token1") or {}
+            if not live.market:
+                raise ValueError("Market pricing is unavailable")
+            marks=live.market.token_prices(intent.chain.upper(),[
+                str(t0.get("address") or ""),str(t1.get("address") or ""),
+            ])
+            p0=float(marks.get(str(t0.get("address") or "").lower()) or 0)
+            p1=float(marks.get(str(t1.get("address") or "").lower()) or 0)
+            unit_value=unit0*p0+unit1*p1
+            if unit_value<=0:
+                raise ValueError(
+                    f"Current USD marks are unavailable for {t0.get('symbol') or 'token0'} / "
+                    f"{t1.get('symbol') or 'token1'}; enter an asset amount manually."
+                )
+            scale=capital/unit_value
+            return {
+                "ok":True,"capital_usd":capital,
+                "amount0":unit0*scale,"amount1":unit1*scale,
+                "token0":t0,"token1":t1,
+                "price0_usd":p0,"price1_usd":p1,
+                "estimated_value_usd":unit_value*scale,
+                "source":"PROFIT_LAB_CAPITAL_AUTO_SIZE",
+            }
         except ValueError as exc:
             raise HTTPException(400,str(exc)) from exc
         except Exception as exc:
