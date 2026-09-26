@@ -83,6 +83,7 @@ def test_execution_desk_is_throttled_and_profit_capital_is_carried_forward():
     assert "},30000)" in js
     assert "},5000)" not in js
     assert "tickMoved&&Date.now()-execLastRequoteAt>=30000" in js
+    assert "Recheck & build final position" in js
 
     assert '@app.post("/api/execution/open/capital-quote")' in api
     assert "PROFIT_LAB_CAPITAL_AUTO_SIZE" in api
