@@ -1067,7 +1067,7 @@ def recommend_profit_range(
             "expected_net_usd":forecast.get("expected_net_usd"),
             "forecast_fee_apr_pct":forecast.get("forecast_fee_apr_pct"),
             "net_horizon_return_pct":forecast.get("net_horizon_return_pct"),
-            "active_time_pct":_decision_horizon_evidence(best.get("analysis") or {},_f(row.get("horizon_days"),7.0)).get("active_pct"),
+            "active_time_pct":_decision_horizon_evidence(best.get("analysis") or {},horizon_days).get("active_pct"),
             "profit_score":best.get("profit_score"),
             "confidence":row.get("confidence"),
             "selected":row is selected,
