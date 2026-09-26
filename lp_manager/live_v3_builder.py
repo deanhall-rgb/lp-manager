@@ -102,6 +102,18 @@ def _ticks_from_display_range(meta: dict[str,Any], lower: float, upper: float) -
     return display_range_to_ticks(meta, lower, upper)
 
 
+def _native_wrap_shortfall(desired_wrapped: float, current_wrapped: float) -> float:
+    return max(0.0,float(desired_wrapped)-float(current_wrapped))
+
+
+def scale_quote_to_capital(*, amount0: float, amount1: float, price0_usd: float, price1_usd: float, capital_usd: float) -> tuple[float,float]:
+    unit_value=float(amount0)*float(price0_usd)+float(amount1)*float(price1_usd)
+    if unit_value<=0 or float(capital_usd)<=0:
+        raise ValueError("Current token prices cannot size this capital budget")
+    scale=float(capital_usd)/unit_value
+    return float(amount0)*scale,float(amount1)*scale
+
+
 def quote_open_position_amounts(*, chain: str, pool_address: str, lower_price: float, upper_price: float, known_side: int, known_amount: float) -> dict[str,Any]:
     meta=read_v3_pool_metadata(chain,pool_address)
     if not meta.get("ok"):
@@ -149,7 +161,7 @@ def build_open_position(*, chain: str, pool_address: str, wallet: str, lower_pri
         wrapped_balance_raw=int(weth.functions.balanceOf(owner).call())
         wrapped_decimals=int(t0["decimals"]) if str(t0["address"]).lower()==wrapped else int(t1["decimals"])
         wrapped_balance=wrapped_balance_raw/(10**wrapped_decimals)
-        shortfall=max(0.0,desired_wrapped-wrapped_balance)
+        shortfall=_native_wrap_shortfall(desired_wrapped,wrapped_balance)
         if shortfall>1e-12:
             data=_encode(weth,"deposit",[])
             wrap_call={
