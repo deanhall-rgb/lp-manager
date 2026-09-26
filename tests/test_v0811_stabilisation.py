@@ -10,7 +10,7 @@ from lp_manager.live_positions import _live_v3_fees_from_growth, _position_lifec
 from lp_manager.models import Position
 from lp_manager.range_lab import analyse_range
 from lp_manager.position_identity import authoritative_opening_tx
-from lp_manager.profit_engine import _decision_horizon_evidence
+from lp_manager.profit_engine import _decision_horizon_evidence, _history_matches_spot, _history_cache_is_fresh
 
 
 class _Call:
@@ -317,3 +317,46 @@ def test_current_chain_scanner_cannot_launch_historical_closed_finaliser():
     scan_body = source.split("def scan_chain_positions", 1)[1].split("def _next_live_display_name", 1)[0]
     assert "_closed_position_final(" not in scan_body
     assert '"history_mode":"MANUAL_ONLY"' in scan_body
+
+
+def test_profit_lab_rejects_wrong_unit_history_that_is_only_numerically_near_spot():
+    wrong_unit = [
+        {"timestamp": 1_800_000_000 + i * 3600, "close": 2700.0}
+        for i in range(24)
+    ]
+    correct_unit = [
+        {"timestamp": 1_800_000_000 + i * 3600, "close": 4210.0}
+        for i in range(24)
+    ]
+    assert _history_matches_spot(wrong_unit, 4263.23) is False
+    assert _history_matches_spot(correct_unit, 4263.23) is True
+
+
+def test_profit_lab_cache_requires_recent_history():
+    now = 1_900_000_000.0
+    fresh = [{"timestamp": now - 3600, "close": 100.0}]
+    stale = [{"timestamp": now - 24 * 3600, "close": 100.0}]
+    assert _history_cache_is_fresh(fresh, "hour", now=now) is True
+    assert _history_cache_is_fresh(stale, "hour", now=now) is False
+
+
+def test_profit_lab_v0811_does_not_reuse_pre_orientation_fix_history_cache():
+    source = (Path(__file__).parents[1] / "lp_manager" / "profit_engine.py").read_text(encoding="utf-8")
+    assert 'profit:history:v0811:' in source
+    assert 'profit:history:v089:' not in source
+    assert 'profit:history:v088:' not in source
+    assert 'quote_symbol in stable_symbols' in source
+    assert 'token-USD OHLC rejected for non-stable execution pair' in source
+
+
+def test_profit_lab_alternative_range_rows_have_dedicated_readable_layout():
+    root = Path(__file__).parents[1] / "lp_manager" / "static"
+    js = (root / "app.js").read_text(encoding="utf-8")
+    css = (root / "styles.css").read_text(encoding="utf-8")
+    assert 'profitAlternativeLabel' in js
+    assert 'range-option profit-alt-row' in js
+    assert 'profit-alt-kind' in js
+    assert 'profit-alt-range' in js
+    assert 'profit-alt-stat' in js
+    assert '.profit-alt-row{' in css
+    assert 'grid-template-columns:minmax(120px,150px)' in css
