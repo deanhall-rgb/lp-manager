@@ -52,3 +52,31 @@
 /* v0.8.11 stabilisation */
 .management-rules{margin:14px 0 8px;padding-left:20px;color:var(--text)}
 .management-rules li{margin:7px 0;line-height:1.45}
+
+
+/* v0.8.11 Profit Lab alternative-range cleanup */
+.profit-alt-list{gap:10px}
+.profit-alt-row{
+  grid-template-columns:minmax(120px,150px) minmax(260px,1.6fr) minmax(105px,120px) minmax(90px,100px) minmax(72px,82px) 88px;
+  gap:14px;
+  align-items:center;
+  padding:14px 16px;
+}
+.profit-alt-kind{min-width:0}
+.profit-alt-kind b{display:block;font-size:13px}
+.profit-alt-kind small{display:block;margin-top:3px;color:var(--muted);font-size:10px}
+.profit-alt-range{min-width:0;font-weight:700;line-height:1.35;overflow-wrap:anywhere}
+.profit-alt-stat{min-width:0}
+.profit-alt-stat small{display:block;color:var(--muted);font-size:10px;margin-bottom:3px}
+.profit-alt-stat b{display:block;font-size:13px}
+.profit-alt-stat span{display:block;color:var(--muted);font-size:10px;margin-top:2px}
+.profit-alt-action{justify-self:end}
+@media(max-width:1180px){
+  .profit-alt-row{grid-template-columns:minmax(120px,150px) minmax(220px,1fr) repeat(3,minmax(85px,1fr))}
+  .profit-alt-action{grid-column:1/-1;justify-self:start}
+}
+@media(max-width:760px){
+  .profit-alt-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .profit-alt-range{grid-column:1/-1}
+  .profit-alt-action{grid-column:1/-1;justify-self:stretch}
+}
