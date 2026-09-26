@@ -132,6 +132,93 @@ def _gas_cost_usd(events: list[dict[str,Any]], snapshot: dict[str,Any], market: 
     return total
 
 
+def _event_summaries(events: list[dict[str,Any]]) -> list[dict[str,Any]]:
+    out=[]
+    for event in events:
+        if str(event.get("status") or "").upper()!="CONFIRMED":
+            continue
+        out.append({
+            "event_type":str(event.get("event_type") or ""),
+            "tx_hash":str(event.get("tx_hash") or ""),
+            "occurred_at":_f(event.get("occurred_at")),
+            "gas_usd":round(max(0.0,_f(event.get("gas_usd"))),6),
+            "gas_native":round(max(0.0,_f(event.get("gas_native"))),12),
+        })
+    return out
+
+
+def _closed_hodl_metrics(
+    snapshot: dict[str,Any],
+    close_event: dict[str,Any],
+    strategy_wealth_usd: float,
+) -> dict[str,Any]:
+    entry=dict(snapshot.get("entry_evidence") or {})
+    t0=dict(snapshot.get("token0") or {})
+    t1=dict(snapshot.get("token1") or {})
+    payload=dict(close_event.get("payload") or {})
+    recorded=dict(payload.get("valuation_prices_usd") or {})
+
+    s0=str(t0.get("symbol") or "token0")
+    s1=str(t1.get("symbol") or "token1")
+    a0=max(0.0,_f(entry.get("token0_amount")))
+    a1=max(0.0,_f(entry.get("token1_amount")))
+    p0=max(0.0,_f(recorded.get(s0) or recorded.get("token0") or t0.get("price_usd")))
+    p1=max(0.0,_f(recorded.get(s1) or recorded.get("token1") or t1.get("price_usd")))
+    ready=(a0>0 or a1>0) and (a0<=0 or p0>0) and (a1<=0 or p1>0)
+    if not ready:
+        return {
+            "hodl_value_usd":None,
+            "lp_vs_hodl_usd":None,
+            "lp_vs_hodl_pct":None,
+            "hodl_quality":"UNAVAILABLE",
+        }
+
+    hodl=a0*p0+a1*p1
+    diff=float(strategy_wealth_usd)-hodl
+    return {
+        "hodl_value_usd":round(hodl,6),
+        "lp_vs_hodl_usd":round(diff,6),
+        "lp_vs_hodl_pct":round(diff/hodl*100.0,6) if hodl>0 else None,
+        "hodl_quality":"CLOSE_RECEIPT_MARKS" if recorded else "LAST_LIVE_CLOSE_MARKS",
+        "hodl_prices_usd":{s0:round(p0,10),s1:round(p1,10)},
+    }
+
+
+def enrich_closed_final_metadata(store, position_id: str) -> dict[str,Any]:
+    """Add display/audit metadata to an already-final closed position without rescanning history."""
+    position=store.get_position(position_id)
+    snapshot=store.get_position_snapshot(position_id) or {}
+    final=dict(snapshot.get("closed_final") or {})
+    if not position or not final.get("complete"):
+        return {"ok":False,"reason":"FINAL_ACCOUNTING_NOT_AVAILABLE"}
+
+    events=store.list_financial_events(500,position_id)
+    summaries=_event_summaries(events)
+    close_event=next((
+        e for e in events
+        if str(e.get("event_type") or "").upper()=="CLOSE_POSITION"
+        and str(e.get("status") or "").upper()=="CONFIRMED"
+    ),{})
+    strategy_wealth=max(0.0,_f(final.get("total_distributions_usd") or final.get("close_proceeds_usd")))
+    hodl=_closed_hodl_metrics(snapshot,close_event,strategy_wealth)
+
+    changed=False
+    additions={
+        "events":summaries,
+        "event_count":len(summaries),
+        "transaction_costs_usd":round(max(0.0,_f(final.get("gas_usd"))),6),
+        **hodl,
+    }
+    for key,value in additions.items():
+        if final.get(key)!=value:
+            final[key]=value
+            changed=True
+    if changed:
+        snapshot["closed_final"]=final
+        store.save_position_snapshot(position_id,snapshot)
+    return {"ok":True,"changed":changed,"closed_final":final}
+
+
 def finalise_execution_close(
     store,
     *,
@@ -196,6 +283,7 @@ def finalise_execution_close(
 
     confirmed=[e for e in events if str(e.get("status") or "").upper()=="CONFIRMED"]
     gas=_gas_cost_usd(confirmed,snapshot,market,chain)
+    event_summaries=_event_summaries(confirmed)
 
     prior_collected=max(
         max(0.0,_f(position.get("realised_fees"))),
@@ -234,9 +322,13 @@ def finalise_execution_close(
         "total_distributions_usd":round(total_distributions,6),
         "total_fees_usd":round(total_fees,6),
         "gas_usd":round(gas,6),
+        "transaction_costs_usd":round(gas,6),
         "realised_pnl_usd":round(realised,6),
         "realised_return_pct":round(realised_pct,6),
         "collected_tokens":collected,
+        "events":event_summaries,
+        "event_count":len(event_summaries),
+        **_closed_hodl_metrics(snapshot,close_event,total_distributions),
         "liquidity_settled":True,
         "principal_settled":True,
         "valuation_complete":True,
@@ -262,9 +354,13 @@ def repair_confirmed_execution_closes(store, market: Any | None = None) -> dict[
     attempted=finalised=0
     errors=[]
     for position in store.list_positions("CLOSED"):
-        if str(position.get("lifecycle_stage") or "").upper()=="CLOSED_FINAL":
-            continue
         pid=str(position.get("id") or "")
+        if str(position.get("lifecycle_stage") or "").upper()=="CLOSED_FINAL":
+            try:
+                enrich_closed_final_metadata(store,pid)
+            except Exception:
+                pass
+            continue
         events=store.list_financial_events(100,pid)
         event=next((
             e for e in events
