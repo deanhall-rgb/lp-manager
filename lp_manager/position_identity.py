@@ -45,6 +45,16 @@ def authoritative_label(chain: str, token_id: str | int) -> str | None:
     return str(row.get("label")) if row and row.get("label") else None
 
 
+def highest_authoritative_position_number(chain: str) -> int:
+    highest=0
+    for row in (AUTHORITATIVE_LIVE_POSITIONS.get(str(chain or "").upper()) or {}).values():
+        label=str(row.get("label") or "")
+        if label.upper().startswith("P"):
+            try: highest=max(highest,int(label[1:]))
+            except Exception: pass
+    return highest
+
+
 def authoritative_opening_tx(chain: str, token_id: str | int) -> str | None:
     row=authoritative_position(chain,token_id)
     if row and row.get("opening_transaction_hash"):
