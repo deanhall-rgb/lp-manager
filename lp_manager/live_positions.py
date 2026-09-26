@@ -1432,6 +1432,44 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
         current_value = float(row.get("current_value") or 0)
         snap=dict(row.get("snapshot") or {})
         previous_snap=store.get_position_snapshot(position_id) or {}
+
+        # Current token balances/fees are live-chain facts, but USD marks are an
+        # external dependency. A temporary pricing outage must not overwrite a
+        # previously valid live valuation with zero.
+        stale_price_tokens=[]
+        for token_key in ("token0","token1"):
+            cur=dict(snap.get(token_key) or {})
+            prev=dict(previous_snap.get(token_key) or {})
+            try: cur_price=float(cur.get("price_usd") or 0)
+            except Exception: cur_price=0.0
+            try: prev_price=float(prev.get("price_usd") or 0)
+            except Exception: prev_price=0.0
+            same_token=(
+                str(cur.get("address") or "").lower()
+                and str(cur.get("address") or "").lower()==str(prev.get("address") or "").lower()
+            )
+            if cur_price<=0 and same_token and prev_price>0:
+                cur["price_usd"]=prev_price
+                cur["price_stale"]=True
+                snap[token_key]=cur
+                stale_price_tokens.append(str(cur.get("symbol") or token_key))
+
+        if stale_price_tokens:
+            t0=dict(snap.get("token0") or {}); t1=dict(snap.get("token1") or {})
+            p0=float(t0.get("price_usd") or 0); p1=float(t1.get("price_usd") or 0)
+            current_value=float(t0.get("amount") or 0)*p0+float(t1.get("amount") or 0)*p1
+            unclaimed_fees=float(t0.get("unclaimed") or 0)*p0+float(t1.get("unclaimed") or 0)*p1
+            row["current_value"]=current_value
+            row["unclaimed_fees"]=unclaimed_fees
+            snap["current_value_usd"]=current_value
+            snap["unclaimed_fees_usd"]=unclaimed_fees
+            snap["data_quality"]="LIVE_CHAIN_LAST_GOOD_PRICE_FALLBACK"
+            snap["price_fallback"]={
+                "used":True,
+                "tokens":stale_price_tokens,
+                "reason":"CURRENT_USD_MARK_UNAVAILABLE",
+                "previous_price_read_at":float(previous_snap.get("read_at") or 0),
+            }
         entry=dict(snap.get("entry_evidence") or {})
         previous_entry=dict(previous_snap.get("entry_evidence") or {})
 
