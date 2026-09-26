@@ -57,7 +57,7 @@ def test_transient_row_error_does_not_false_close_known_position(tmp_path: Path)
     assert store.get_position("live:ROBINHOOD_CHAIN:1300003")["status"]=="OPEN"
 
 
-def test_new_live_positions_receive_operator_sequence_after_historical_lp1_to_lp3(tmp_path: Path):
+def test_new_live_positions_continue_after_reserved_p1_to_p8(tmp_path: Path):
     store=Store(tmp_path/"db.sqlite3")
     for n in (1,2,3):
         p=_pos(f"hist{n}",str(1200000+n),display_name=f"DELTA LP{n}")
@@ -70,5 +70,5 @@ def test_new_live_positions_receive_operator_sequence_after_historical_lp1_to_lp
     }],latest_block=999)
     reconcile_scan(store,result)
     row=store.find_position_by_token("ROBINHOOD_CHAIN","1300004")
-    assert row["display_name"].startswith("P4")
+    assert row["display_name"].startswith("P9")
     assert row["opened_at"]==1234
