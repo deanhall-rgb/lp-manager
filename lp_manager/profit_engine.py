@@ -462,7 +462,7 @@ def _load_pool_and_history(
         except Exception as exc:
             warning=warning or str(exc)
 
-    if not candles and quote_symbol in stable_symbols:
+    if not candles and (not quote_symbol or quote_symbol in stable_symbols):
         try:
             try:
                 candles = market.ohlcv_days(chain, address, history_days, timeframe=timeframe, token=gecko_token)
