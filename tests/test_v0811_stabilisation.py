@@ -406,3 +406,63 @@ def test_profit_lab_exposes_regime_selection_audit_in_ui():
     assert "regime target skew" in js
     assert "selected skew" in js
     assert "near-best profit band" in js
+
+
+def test_forecast_snapshot_links_to_discovered_position_and_is_queryable(tmp_path):
+    store = Store(tmp_path / "forecast_link.sqlite3")
+    p = Position(
+        id="live:ROBINHOOD_CHAIN:999", protocol="UNISWAP_V3", chain="ROBINHOOD_CHAIN", pair="WETH/TEST",
+        status="OPEN", lower_price=90, upper_price=110, current_price=100,
+        capital_value=100, current_value=100, unclaimed_fees=0, fees_today=0, fees_7d=0,
+        fees_30d=0, realised_fees=0, estimated_il=0, gas_costs=0, apr_current=0,
+        apr_7d=0, opened_at=1_700_000_000, token_id="999", source="live_chain",
+        lifecycle_stage="ACTIVE", strategy_sleeve="TACTICAL_CAMPAIGN",
+    )
+    store.upsert_position(p)
+    forecast = store.record_forecast_snapshot({
+        "chain":"ROBINHOOD_CHAIN","pool_address":"0x"+"1"*40,"pair":"WETH/TEST",
+        "sleeve":"TACTICAL_CAMPAIGN","horizon_days":7,"capital_usd":100,
+        "spot":100,
+        "recommended_range":{
+            "lower":90,"upper":110,
+            "forecast":{
+                "expected_fees_usd":7,"expected_net_usd":6.5,
+                "forecast_fee_apr_pct":365,"low_net_usd":3.5,"high_net_usd":9.0,
+            },
+        },
+    })
+    store.record_financial_event(
+        position_id=None,event_type="OPEN_POSITION",chain="ROBINHOOD_CHAIN",
+        tx_hash="0xabc",gas_usd=0.2,status="CONFIRMED",
+        payload={"forecast_id":forecast["id"]},
+    )
+
+    linked = store.reconcile_execution_opening("0xabc", p.id)
+    assert linked["linked_events"] == 1
+    assert linked["linked_forecasts"] == 1
+
+    actual = store.latest_forecast_for_position(p.id)
+    assert actual is not None
+    assert actual["id"] == forecast["id"]
+    assert actual["position_id"] == p.id
+    assert actual["model_version"] == "v0.8.11"
+    assert actual["expected_fees_usd"] == pytest.approx(7.0)
+
+
+def test_profit_forecast_path_uses_v0811_state_and_position_ui_exposes_actual_comparison():
+    root = Path(__file__).parents[1]
+    api_source = (root / "lp_manager" / "api.py").read_text(encoding="utf-8")
+    js = (root / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'profit:last:v0811:' in api_source
+    assert 'model_version="v0.8.11"' in api_source
+    assert 'profit:last_recommendation:v0811' in api_source
+    assert 'profit:last:v0810:' not in api_source
+    assert 'model_version="v0.8.10"' not in api_source
+
+    assert "execForecastId" in js
+    assert "r.forecast_snapshot_id||null" in js
+    assert "forecastId:kind==='mint'?execForecastId:null" in js
+    assert "Forecast vs actual" in js
+    assert "Expected fee pace now" in js
+    assert "Actual tracked fees" in js
