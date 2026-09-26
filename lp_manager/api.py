@@ -46,6 +46,7 @@ from .market_regime import analyse_regime
 from .portfolio_advisor import rank_opportunities
 from .models import Decision
 from .historical_import import import_delta_pool_history
+from .closed_history import import_closed_position_finals
 from .pool_chain import read_v3_pool_metadata
 from .profit_engine import recommend_profit_range
 from .profit_dashboard import portfolio_profit_scorecard
@@ -299,6 +300,18 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             import_delta_pool_history(store, _json.loads(bundled_delta.read_text(encoding="utf-8")))
         except Exception:
             pass
+
+    # The operator-reviewed closed-position evidence pack is authoritative for the
+    # five historical campaigns. Importing this compact frozen ledger on startup
+    # makes the result deterministic and avoids any historical RPC reconstruction.
+    bundled_closed = Path(__file__).resolve().parent / "reference_data" / "closed_position_finals_v0811.json"
+    if bundled_closed.exists():
+        try:
+            import json as _json
+            import_closed_position_finals(store, _json.loads(bundled_closed.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+
     executor = ExecutionService(settings, store)
     live = LiveDataService(settings, store)
     intelligence = IntelligenceService(settings, store)
