@@ -8,7 +8,7 @@ def test_v06_product_endpoints(tmp_path, monkeypatch):
     app=create_app(tmp_path)
     client=TestClient(app)
     health=client.get("/api/health").json()
-    assert health["version"] == "0.8.11"
+    assert health["version"] == "0.9"
     auto=client.get("/api/automation").json()
     assert auto["policy"]["autonomous_signing"] is False
     brief=client.post("/api/ai/portfolio-brief").json()
