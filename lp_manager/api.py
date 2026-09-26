@@ -448,7 +448,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.8.11", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.9", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -460,7 +460,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.8.11",
+            "version": "0.9",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -527,7 +527,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         sleeve=str(intent.sleeve or "AUTO").upper()
         target=max(0.0,float(intent.monthly_target_pct))
         cache_key=(
-            f"profit:last:v0811:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
+            f"profit:last:v09:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
             f"{round(capital_usd,2)}:{round(target,2)}"
         )
         pool_fallback=None
@@ -570,15 +570,15 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 )
                 result["generated_at"]=time.time()
                 result["data_status"]="LIVE_OR_VALIDATED_HISTORY"
-                audit=store.record_forecast_snapshot(result,model_version="v0.8.11")
+                audit=store.record_forecast_snapshot(result,model_version="v0.9")
                 result["forecast_snapshot_id"]=audit["id"]
-                store.set_setting("profit:last_recommendation:v0811", result)
+                store.set_setting("profit:last_recommendation:v09", result)
                 store.set_setting(cache_key,result)
                 return result
             except Exception as exc:
                 cached=store.get_setting(cache_key,None)
                 if not isinstance(cached,dict):
-                    last=store.get_setting("profit:last_recommendation:v0811",None)
+                    last=store.get_setting("profit:last_recommendation:v09",None)
                     if isinstance(last,dict) and str(last.get("chain") or "").upper()==chain and str(last.get("pool_address") or "").lower()==address:
                         cached=last
                 if isinstance(cached,dict):
@@ -1118,7 +1118,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def support_bundle():
         path = build_support_bundle(
             store, output_dir=settings.data_dir / "support",
-            extra={"version":"0.8.11", "execution":executor.capabilities(), "scout_universe":scout_universe()},
+            extra={"version":"0.9", "execution":executor.capabilities(), "scout_universe":scout_universe()},
         )
         return {"ok": True, "filename": path.name, "download": f"/api/support/bundle/{path.name}"}
 
@@ -1479,6 +1479,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
         collected_usd=0.0
         collected_tokens={}
+        valuation_prices_usd={}
         position=store.get_position(intent.position_id) if intent.position_id else None
         snapshot=store.get_position_snapshot(intent.position_id) if intent.position_id else None
         receipt_payload=dict(intent.receipt or {})
@@ -1512,12 +1513,11 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 a0=totals[0]/(10**dec0); a1=totals[1]/(10**dec1)
                 p0=float(t0.get("price_usd") or 0); p1=float(t1.get("price_usd") or 0)
                 collected_usd=a0*p0+a1*p1
-                collected_tokens={
-                    str(t0.get("symbol") or "token0"):a0,
-                    str(t1.get("symbol") or "token1"):a1,
-                }
+                s0=str(t0.get("symbol") or "token0"); s1=str(t1.get("symbol") or "token1")
+                collected_tokens={s0:a0,s1:a1}
+                valuation_prices_usd={s0:p0,s1:p1}
             except Exception:
-                collected_usd=0.0; collected_tokens={}
+                collected_usd=0.0; collected_tokens={}; valuation_prices_usd={}
 
         event=store.record_financial_event(
             position_id=intent.position_id,event_type=action,
@@ -1526,6 +1526,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             payload={
                 "gas_used":gas_used,"effective_gas_price":gas_price,
                 "forecast_id":intent.forecast_id,"collected_tokens":collected_tokens,
+                "valuation_prices_usd":valuation_prices_usd,
             },
         )
         cumulative_position_gas=0.0
