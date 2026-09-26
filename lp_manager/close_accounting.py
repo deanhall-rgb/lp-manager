@@ -173,14 +173,20 @@ def finalise_execution_close(
         return {"ok":False,"reason":"OPENING_BASIS_NOT_READY"}
 
     close_tx=str(tx_hash or close_event.get("tx_hash") or "")
-    close_receipt=_receipt_for_close(chain,close_tx,receipt)
-    token_id=int(position.get("token_id") or snapshot.get("token_id") or 0)
-    collected=decode_collect_tokens(close_receipt,snapshot,token_id) if close_receipt else {}
-
     payload=dict(close_event.get("payload") or {})
-    recorded_tokens=dict(payload.get("collected_tokens") or {})
-    if not any(_f(v)>0 for v in collected.values()) and recorded_tokens:
-        collected={str(k):_f(v) for k,v in recorded_tokens.items()}
+    recorded_tokens={
+        str(k):_f(v)
+        for k,v in dict(payload.get("collected_tokens") or {}).items()
+    }
+    collected=recorded_tokens if any(_f(v)>0 for v in recorded_tokens.values()) else {}
+
+    # Prefer the exact token quantities already audited when the browser receipt
+    # was recorded. Only fetch this one transaction receipt when those amounts are
+    # unavailable; never scan lifecycle history.
+    if not collected:
+        close_receipt=_receipt_for_close(chain,close_tx,receipt)
+        token_id=int(position.get("token_id") or snapshot.get("token_id") or 0)
+        collected=decode_collect_tokens(close_receipt,snapshot,token_id) if close_receipt else {}
 
     close_proceeds=max(0.0,_f(close_event.get("amount_usd")))
     if close_proceeds<=0 and collected:
