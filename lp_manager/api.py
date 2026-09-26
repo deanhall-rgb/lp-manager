@@ -1384,7 +1384,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     @app.post("/api/execution/open/capital-quote")
     def execution_open_capital_quote(intent: ExecutionCapitalQuoteIntent):
         """Convert a Profit Lab capital budget into the required V3 token amounts."""
-        from .live_v3_builder import quote_open_position_amounts
+        from .live_v3_builder import quote_open_position_amounts, scale_quote_to_capital
         try:
             capital=max(0.0,float(intent.capital_usd))
             if capital<=0:
@@ -1408,19 +1408,20 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             ])
             p0=float(marks.get(str(t0.get("address") or "").lower()) or 0)
             p1=float(marks.get(str(t1.get("address") or "").lower()) or 0)
-            unit_value=unit0*p0+unit1*p1
-            if unit_value<=0:
+            if (unit0>0 and p0<=0) or (unit1>0 and p1<=0):
                 raise ValueError(
                     f"Current USD marks are unavailable for {t0.get('symbol') or 'token0'} / "
                     f"{t1.get('symbol') or 'token1'}; enter an asset amount manually."
                 )
-            scale=capital/unit_value
+            amount0,amount1=scale_quote_to_capital(
+                amount0=unit0,amount1=unit1,price0_usd=p0,price1_usd=p1,capital_usd=capital,
+            )
             return {
                 "ok":True,"capital_usd":capital,
-                "amount0":unit0*scale,"amount1":unit1*scale,
+                "amount0":amount0,"amount1":amount1,
                 "token0":t0,"token1":t1,
                 "price0_usd":p0,"price1_usd":p1,
-                "estimated_value_usd":unit_value*scale,
+                "estimated_value_usd":amount0*p0+amount1*p1,
                 "source":"PROFIT_LAB_CAPITAL_AUTO_SIZE",
             }
         except ValueError as exc:
