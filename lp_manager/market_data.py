@@ -280,10 +280,12 @@ class GeckoTerminalClient:
         return out[-target:]
 
     def token_prices(self, chain_key: str, addresses: list[str]) -> dict[str, float]:
-        """Fetch up to 30 token prices in one public-api request.
+        """Fetch current token prices, merging providers instead of accepting partial data.
 
-        Wallet discovery used to make one GeckoTerminal call per token, which could
-        consume the whole public rate budget and make Scout return 502s.
+        Alchemy is preferred, but a partial Alchemy response must not suppress Gecko
+        pricing for the addresses Alchemy omitted. This is especially important for
+        new/small Robinhood Chain tokens where WETH may price successfully while the
+        paired token does not.
         """
         cfg = chain_config(chain_key)
         unique=[]
@@ -291,20 +293,34 @@ class GeckoTerminalClient:
             a=str(address or "").lower()
             if a and a not in unique:
                 unique.append(a)
-        alchemy=self._alchemy_token_prices(chain_key, unique)
-        if alchemy:
-            return alchemy
+
         out: dict[str,float] = {}
-        for start in range(0, len(unique), 30):
-            batch=unique[start:start+30]
+        for address,value in (self._alchemy_token_prices(chain_key, unique) or {}).items():
+            try:
+                price=float(value or 0)
+            except Exception:
+                price=0.0
+            if price>0:
+                out[str(address).lower()]=price
+
+        missing=[a for a in unique if float(out.get(a) or 0)<=0]
+        for start in range(0, len(missing), 30):
+            batch=missing[start:start+30]
             if not batch:
                 continue
-            payload=self._get(f"/simple/networks/{cfg.gecko_network}/token_price/{','.join(batch)}")
+            try:
+                payload=self._get(f"/simple/networks/{cfg.gecko_network}/token_price/{','.join(batch)}")
+            except Exception:
+                continue
             attrs=((payload.get("data") or {}).get("attributes") or {})
             prices=attrs.get("token_prices") or {}
             for address,value in prices.items():
-                try: out[str(address).lower()] = float(value or 0)
-                except Exception: out[str(address).lower()] = 0.0
+                try:
+                    price=float(value or 0)
+                except Exception:
+                    price=0.0
+                if price>0:
+                    out[str(address).lower()]=price
         return out
 
     def token(self, chain_key: str, address: str) -> dict:
