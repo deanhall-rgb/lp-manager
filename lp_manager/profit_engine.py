@@ -269,6 +269,45 @@ def _boundary_inventory_outcomes(
     }
 
 
+def _select_regime_aware_best(rows: list[dict[str, Any]], regime: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep profit primary while letting regime evidence choose near-equal geometry.
+
+    The highest expected-net candidate establishes the economic ceiling. Candidates
+    within a small confidence-scaled tolerance are economically equivalent enough
+    that range geometry should be decided by the richer profit/risk/regime score.
+    """
+    if not rows:
+        raise ValueError("No eligible candidates")
+    max_net=max(_f((r.get("forecast") or {}).get("expected_net_usd"),-1e18) for r in rows)
+    confidence=max(0.0,min(100.0,_f(regime.get("confidence"),50.0)))
+    tolerance_pct=3.0+5.0*(confidence/100.0)
+    tolerance_usd=max(0.25,max(0.0,max_net)*tolerance_pct/100.0)
+    near_best=[
+        r for r in rows
+        if _f((r.get("forecast") or {}).get("expected_net_usd"),-1e18) >= max_net-tolerance_usd
+    ]
+    near_best.sort(
+        key=lambda r:(
+            _f(r.get("profit_score")),
+            _f(r.get("regime_alignment_score")),
+            _f((r.get("forecast") or {}).get("expected_net_usd"),-1e18),
+        ),
+        reverse=True,
+    )
+    best=near_best[0]
+    return best,{
+        "method":"MAX_EXPECTED_NET_THEN_REGIME_AWARE_NEAR_BEST_SELECTION",
+        "max_expected_net_usd":round(max_net,2),
+        "profit_tolerance_pct":round(tolerance_pct,2),
+        "profit_tolerance_usd":round(tolerance_usd,2),
+        "near_best_candidates":len(near_best),
+        "regime_confidence_pct":round(confidence,1),
+        "target_skew_pct":round(_f(regime.get("range_skew_pct")),2),
+        "selected_skew_pct":round(_f(best.get("skew_pct")),2),
+        "selected_regime_alignment":round(_f(best.get("regime_alignment_score")),1),
+    }
+
+
 def _diverse_alternatives(rows: list[dict[str, Any]], best: dict[str, Any], limit: int = 5) -> list[dict[str, Any]]:
     """Return materially different geometries instead of five near-duplicates."""
     if not rows:
@@ -784,12 +823,12 @@ def _recommend_single_pool(
         # Profit is deliberately dominant. Survival is evidence, not the goal:
         # desirable boundary inventory can make a lower-survival Core range rational.
         score = (
-            0.58 * profit_norm
-            + 0.12 * train_norm
+            0.50 * profit_norm
+            + 0.10 * train_norm
             + 0.10 * active
             + 0.03 * strict
-            + 0.07 * alignment
-            + 0.10 * inventory_utility
+            + 0.15 * alignment
+            + 0.12 * inventory_utility
             - intervention_penalty
         )
         row["profit_score"] = round(max(0.0, min(100.0, score)), 1)
@@ -860,15 +899,8 @@ def _recommend_single_pool(
             "No candidate range passed V0.8.9 volatility/horizon guardrails"
             + (f": {', '.join(reasons[:4])}" if reasons else "")
         )
-    ranked_pool=eligible
-    ranked_pool.sort(
-        key=lambda r:(
-            _f((r.get("forecast") or {}).get("expected_net_usd"),-1e18),
-            _f(r.get("profit_score")),
-        ),
-        reverse=True,
-    )
-    best = ranked_pool[0]
+    ranked_pool=list(eligible)
+    best,selection_policy=_select_regime_aware_best(ranked_pool,regime)
     rows.sort(
         key=lambda r:(
             1 if (r.get("selection_guardrail") or {}).get("eligible") else 0,
@@ -916,6 +948,7 @@ def _recommend_single_pool(
         "price_series": [{"timestamp":c.get("timestamp"),"close":c.get("close")} for c in candles[-240:]],
         "confidence": confidence, "confidence_score": min(100, confidence_points),
         "recommended_range": {**best, "rank": 1},
+        "selection_policy":selection_policy,
         "alternatives": [{**r, "rank": i + 1} for i, r in enumerate(_diverse_alternatives(rows, best, 5))],
         "range_candidates": [{**r, "rank": i + 1} for i, r in enumerate(rows[:12])],
         "directional_alternatives": directional,
@@ -926,7 +959,7 @@ def _recommend_single_pool(
             "clears_target": best["forecast"]["expected_net_usd"] >= target_horizon if target_horizon > 0 else None,
         },
         "why": [
-            "Expected net fee cashflow over the requested holding period is the primary ranking input.",
+            "Expected net fee cashflow sets the economic ceiling; regime/risk evidence chooses among economically near-equal ranges.",
             "Older history contributes to range selection; recent holdout windows are kept separate as validation evidence rather than used to choose the winner.",
             "Current market regime changes range skew/alignment rather than being treated as a binary enter/do-not-enter switch.",
             "Observed fees from owned LPs calibrate the model when sufficiently mature live evidence exists.",
