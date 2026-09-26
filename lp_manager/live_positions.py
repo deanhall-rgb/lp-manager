@@ -1409,6 +1409,29 @@ def finalise_closed_positions_from_store(
     return {"attempted":attempted,"finalised":finalised,"partial":partial,"errors":errors}
 
 
+def _apply_last_good_position_prices(snap: dict[str, Any], previous_snap: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Fill only missing USD marks from the same NFT's previous valid snapshot."""
+    out=dict(snap or {})
+    stale=[]
+    for token_key in ("token0","token1"):
+        cur=dict(out.get(token_key) or {})
+        prev=dict((previous_snap or {}).get(token_key) or {})
+        try: cur_price=float(cur.get("price_usd") or 0)
+        except Exception: cur_price=0.0
+        try: prev_price=float(prev.get("price_usd") or 0)
+        except Exception: prev_price=0.0
+        same=(
+            str(cur.get("address") or "").lower()
+            and str(cur.get("address") or "").lower()==str(prev.get("address") or "").lower()
+        )
+        if cur_price<=0 and same and prev_price>0:
+            cur["price_usd"]=prev_price
+            cur["price_stale"]=True
+            out[token_key]=cur
+            stale.append(str(cur.get("symbol") or token_key))
+    return out,stale
+
+
 def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
     imported = errors = 0
     seen: set[str] = set()
@@ -1436,23 +1459,7 @@ def reconcile_scan(store, result: ScanResult) -> dict[str, Any]:
         # Current token balances/fees are live-chain facts, but USD marks are an
         # external dependency. A temporary pricing outage must not overwrite a
         # previously valid live valuation with zero.
-        stale_price_tokens=[]
-        for token_key in ("token0","token1"):
-            cur=dict(snap.get(token_key) or {})
-            prev=dict(previous_snap.get(token_key) or {})
-            try: cur_price=float(cur.get("price_usd") or 0)
-            except Exception: cur_price=0.0
-            try: prev_price=float(prev.get("price_usd") or 0)
-            except Exception: prev_price=0.0
-            same_token=(
-                str(cur.get("address") or "").lower()
-                and str(cur.get("address") or "").lower()==str(prev.get("address") or "").lower()
-            )
-            if cur_price<=0 and same_token and prev_price>0:
-                cur["price_usd"]=prev_price
-                cur["price_stale"]=True
-                snap[token_key]=cur
-                stale_price_tokens.append(str(cur.get("symbol") or token_key))
+        snap,stale_price_tokens=_apply_last_good_position_prices(snap,previous_snap)
 
         if stale_price_tokens:
             t0=dict(snap.get("token0") or {}); t1=dict(snap.get("token1") or {})
