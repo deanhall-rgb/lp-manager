@@ -1,3 +1,32 @@
+# LP Manager v0.9 — Stable Baseline
+
+V0.9 is the first release we are treating as the stable operating baseline for live testing. It preserves the explicit browser-wallet signing boundary while combining Profit Lab forecasting, automatic capital sizing, live LP discovery/accounting, fee tracking and direct close finalisation in one tested lifecycle.
+
+## V0.9 baseline
+
+- **End-to-end live lifecycle proven:** Profit Lab → Execution Desk → browser-wallet mint → automatic NFT discovery → live tracking → close → FINAL ACCOUNTING.
+- **Forecast vs actual:** positions opened from Profit Lab retain their frozen forecast so live fee production can be measured against the original model.
+- **Direct close accounting:** LP Manager-managed closes use the recorded lifecycle and confirmed close receipt; automatic historical block reconstruction is disabled for the normal close path.
+- **Transparent final accounting:** closed positions show opening capital, returned assets, collected fees, transaction costs, realised P/L and LP-vs-HODL separately.
+- **Provider resilience:** partial price-provider responses are merged and temporary price outages retain explicitly marked last-good valuation data rather than zeroing positions.
+- **Execution stability:** Profit Lab capital auto-sizes token amounts; WETH wrapping covers only the shortfall; Execution Desk polling is throttled and prerequisite state can be explicitly rechecked.
+- **Historical campaigns stay frozen:** P1–P5 remain the reviewed closed evidence set; new positions continue sequential numbering from the live lifecycle.
+
+## Move from v0.8.11
+
+Extract the clean V0.9 ZIP into a new folder, then copy only your existing runtime state:
+
+```powershell
+Copy-Item "C:\Users\deano\Documents\lp_manager_v0.8.11_direct_close_accounting_fix_retry\.env" ".\.env" -Force
+Copy-Item "C:\Users\deano\Documents\lp_manager_v0.8.11_direct_close_accounting_fix_retry\data" ".\data" -Recurse -Force
+```
+
+Then create/activate the virtual environment, install `requirements.txt`, and run `start_lp_manager.py`. No private key or seed phrase is stored by LP Manager.
+
+The intended next phase is evidence gathering rather than feature expansion: run multiple pairs/range styles, compare forecast vs actual fee production and realised after-cost returns, and use that evidence to calibrate later model versions.
+
+---
+
 # LP Manager v0.8.8 Financial Truth
 
 V0.8.8 is the transition from profitability prototype to auditable live-manager beta. It keeps explicit browser-wallet approval as the signing boundary while hardening financial truth, range realism and execution reconciliation.
