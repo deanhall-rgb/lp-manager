@@ -37,6 +37,29 @@ def _percentile(values: list[float], q: float) -> float:
     return rows[lo] * (1.0 - frac) + rows[hi] * frac
 
 
+def _decision_horizon_evidence(analysis: dict[str, Any], horizon_days: float) -> dict[str, float]:
+    """Current-regime evidence used by Profit Lab economics and selection.
+
+    The absolute candidate range exists now, so current forecast economics should
+    use the most recent requested horizon. Older absolute price levels remain useful
+    for walk-forward validation but must not dilute today's range activity estimate.
+    """
+    active=_f(
+        analysis.get("recent_horizon_active_pct"),
+        _f(analysis.get("average_horizon_activity_pct")),
+    )
+    excursions=_f(
+        analysis.get("recent_horizon_excursions"),
+        _f(analysis.get("excursions")),
+    )
+    horizon=max(1.0,_f(horizon_days,1.0))
+    return {
+        "active_pct":max(0.0,min(100.0,active)),
+        "excursions":max(0.0,excursions),
+        "interventions_per_month":max(0.0,excursions)*(30.4375/horizon),
+    }
+
+
 def _horizon_persistence(month_factor: float, horizon_days: float) -> float:
     """Translate a monthly extrapolation haircut into a shorter-horizon haircut.
 
@@ -530,9 +553,10 @@ def _recommend_single_pool(
 
     for candidate in candidates:
         analysis = analyse_range(candles, candidate.lower, candidate.upper, horizon_days=horizon)
-        interventions_month = _f(analysis.get("excursions")) * (30.4375 / max(1.0, hist_days))
+        decision_horizon=_decision_horizon_evidence(analysis,horizon)
+        interventions_month=_f(decision_horizon.get("interventions_per_month"))
         econ = estimate_lp_economics(
-            pool, capital=capital, active_time_pct=_f(analysis.get("average_horizon_activity_pct")),
+            pool, capital=capital, active_time_pct=_f(decision_horizon.get("active_pct")),
             width_pct=candidate.width_pct, regime=regime,
             expected_interventions_per_month=interventions_month, lifecycle_cost_per_intervention=1.5,
             lower_price=candidate.lower, upper_price=candidate.upper,
@@ -555,7 +579,7 @@ def _recommend_single_pool(
             # Geometry transfer is deliberately bounded. Same-pair evidence from a
             # different pool has already received a 55% transfer haircut.
             empirical_width_scale=max(0.70,min(1.35,math.sqrt(max(1.0,observed_width)/max(1.0,candidate.width_pct))))
-            active_scale=max(0.35,min(1.0,_f(analysis.get("average_horizon_activity_pct"))/100.0))
+            active_scale=max(0.35,min(1.0,_f(decision_horizon.get("active_pct"))/100.0))
             empirical_day=_f(empirical_evidence.get("fee_day_per_usd"))*capital*empirical_width_scale*active_scale
             empirical_source="EXACT_OWNED_POOL" if observed_pool.get("available") else "SAME_PAIR_OWNED_PRIOR"
 
@@ -580,7 +604,7 @@ def _recommend_single_pool(
             quick_width=max(1.0,_f(advisor_ctx.get("width_pct"),48.0 if sleeve_u=="CORE_INCOME" else 22.0))
             quick_active=max(1.0,_f(advisor_ctx.get("active_time_pct"),84.0 if sleeve_u=="CORE_INCOME" else 60.0))
             geometry=max(0.65,min(1.35,math.sqrt(quick_width/max(1.0,candidate.width_pct))))
-            activity=max(0.45,min(1.15,_f(analysis.get("average_horizon_activity_pct"))/quick_active))
+            activity=max(0.45,min(1.15,_f(decision_horizon.get("active_pct"))/quick_active))
             # Same pool, same fee tier and same Advisor evidence, but the range
             # geometry differs. Keep the transfer deliberately conservative.
             advisor_day=quick_daily*(capital/quick_cap)*geometry*activity*0.80
@@ -718,11 +742,12 @@ def _recommend_single_pool(
         profit_norm = _normalise(profit_values, _f(row["forecast"].get("expected_net_pct")))
         train_pct = _f((row.get("walk_forward",{}).get("train") or {}).get("net_median_usd")) / capital * 100.0
         train_norm = _normalise(train_values, train_pct) if row.get("walk_forward",{}).get("fee_economics_available") else profit_norm
-        active = _f(row["analysis"].get("average_horizon_activity_pct"))
+        decision_horizon=_decision_horizon_evidence(row["analysis"],horizon)
+        active = _f(decision_horizon.get("active_pct"))
         strict = _f(row["analysis"].get("strict_horizon_survival_pct"))
         alignment = _f(row.get("regime_alignment_score"))
         inventory_utility = _f((row.get("inventory_outcomes") or {}).get("average_utility_score"), 50.0)
-        interventions = _f(row["analysis"].get("excursions"))
+        interventions = _f(decision_horizon.get("excursions"))
         intervention_penalty = min(16.0, interventions * (2.5 if sleeve_u == "CORE_INCOME" else 1.5))
         # Profit is deliberately dominant. Survival is evidence, not the goal:
         # desirable boundary inventory can make a lower-survival Core range rational.
@@ -751,8 +776,9 @@ def _recommend_single_pool(
     # volatility and requested horizon, not merely historically survivable.
     edge_limits=_volatility_edge_limits(sleeve_u,horizon,regime)
     for row in rows:
-        active=_f((row.get("analysis") or {}).get("average_horizon_activity_pct"))
-        interventions=_f((row.get("analysis") or {}).get("excursions"))
+        decision_horizon=_decision_horizon_evidence(row.get("analysis") or {},horizon)
+        active=_f(decision_horizon.get("active_pct"))
+        interventions=_f(decision_horizon.get("excursions"))
         inv=row.get("inventory_outcomes") or {}
         below=_f(inv.get("distance_below_current_pct"),0.0)
         above=_f(inv.get("distance_above_current_pct"),0.0)
@@ -762,10 +788,10 @@ def _recommend_single_pool(
         blockers=[]
         if sleeve_u=="CORE_INCOME":
             if interventions > 8:
-                blockers.append("CORE_TOO_MANY_HISTORICAL_EXCURSIONS")
+                blockers.append("CORE_TOO_MANY_RECENT_HORIZON_EXCURSIONS")
         else:
             if interventions > 12:
-                blockers.append("TACTICAL_TOO_MANY_HISTORICAL_EXCURSIONS")
+                blockers.append("TACTICAL_TOO_MANY_RECENT_HORIZON_EXCURSIONS")
         if nearest < _f(edge_limits.get("min_nearest_edge_pct")):
             blockers.append("NEAREST_EDGE_TOO_TIGHT_FOR_REALIZED_VOLATILITY")
         if farthest > _f(edge_limits.get("max_farthest_edge_pct")):
@@ -1041,7 +1067,7 @@ def recommend_profit_range(
             "expected_net_usd":forecast.get("expected_net_usd"),
             "forecast_fee_apr_pct":forecast.get("forecast_fee_apr_pct"),
             "net_horizon_return_pct":forecast.get("net_horizon_return_pct"),
-            "active_time_pct":(best.get("analysis") or {}).get("average_horizon_activity_pct"),
+            "active_time_pct":_decision_horizon_evidence(best.get("analysis") or {},_f(row.get("horizon_days"),7.0)).get("active_pct"),
             "profit_score":best.get("profit_score"),
             "confidence":row.get("confidence"),
             "selected":row is selected,
