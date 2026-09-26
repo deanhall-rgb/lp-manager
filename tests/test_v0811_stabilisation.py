@@ -10,6 +10,7 @@ from lp_manager.live_positions import _live_v3_fees_from_growth, _position_lifec
 from lp_manager.models import Position
 from lp_manager.range_lab import analyse_range
 from lp_manager.position_identity import authoritative_opening_tx
+from lp_manager.profit_engine import _decision_horizon_evidence
 
 
 class _Call:
@@ -65,8 +66,25 @@ def test_recent_range_fit_is_not_polluted_by_old_absolute_price_levels():
         rows.append({"timestamp": (start + i) * 3600, "open": 200, "high": 202, "low": 198, "close": 200, "volume": 1})
     out = analyse_range(rows, 190, 210, horizon_days=7, candles_per_day=24)
     assert out["active_time_pct"] < 25
+    assert out["average_horizon_activity_pct"] < 25
     assert out["recent_horizon_active_pct"] > 95
     assert out["recent_horizon_excursions"] == 0
+
+    # Profit Lab must now use the recent requested horizon for CURRENT economics,
+    # while older history remains available separately for walk-forward validation.
+    decision = _decision_horizon_evidence(out, 7)
+    assert decision["active_pct"] > 95
+    assert decision["excursions"] == 0
+    assert decision["interventions_per_month"] == pytest.approx(0.0)
+
+
+def test_profit_lab_current_economics_has_no_direct_whole_history_activity_dependency():
+    source = (Path(__file__).parents[1] / "lp_manager" / "profit_engine.py").read_text(encoding="utf-8")
+    # One occurrence remains deliberately inside the compatibility fallback helper.
+    assert source.count('analysis.get("average_horizon_activity_pct")') == 1
+    assert 'active_time_pct=_f(decision_horizon.get("active_pct"))' in source
+    assert 'active_scale=max(0.35,min(1.0,_f(decision_horizon.get("active_pct"))/100.0))' in source
+    assert 'activity=max(0.45,min(1.15,_f(decision_horizon.get("active_pct"))/quick_active))' in source
 
 
 def test_finalize_closed_position_freezes_accounting(tmp_path):
