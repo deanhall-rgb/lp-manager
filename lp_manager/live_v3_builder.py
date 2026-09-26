@@ -132,8 +132,31 @@ def build_open_position(*, chain: str, pool_address: str, wallet: str, lower_pri
     if wrap_native_amount>0:
         wrapped=str(cfg.wrapped_native or "").lower(); token_addresses={str(t0["address"]).lower(),str(t1["address"]).lower()}
         if not wrapped or wrapped not in token_addresses: raise ValueError("Pool does not use the chain wrapped-native token")
-        weth=w3.eth.contract(address=Web3.to_checksum_address(cfg.wrapped_native),abi=WETH_ABI); data=_encode(weth,"deposit",[])
-        wrap_call={"chainId":cfg.chain_id,"to":cfg.wrapped_native,"from":owner,"data":data,"value":hex(w3.to_wei(float(wrap_native_amount),"ether")),"purpose":"WRAP_NATIVE"}
+
+        # "Use ETH automatically" means cover only the WETH shortfall. The old
+        # implementation rebuilt the full wrap prerequisite after a successful wrap,
+        # trapping Execution Desk forever in AWAITING_PREREQUISITES.
+        desired_wrapped=0.0
+        if str(t0["address"]).lower()==wrapped:
+            desired_wrapped=float(amount0)
+        elif str(t1["address"]).lower()==wrapped:
+            desired_wrapped=float(amount1)
+
+        weth=w3.eth.contract(
+            address=Web3.to_checksum_address(cfg.wrapped_native),
+            abi=WETH_ABI+[{"inputs":[{"name":"account","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"}],
+        )
+        wrapped_balance_raw=int(weth.functions.balanceOf(owner).call())
+        wrapped_decimals=int(t0["decimals"]) if str(t0["address"]).lower()==wrapped else int(t1["decimals"])
+        wrapped_balance=wrapped_balance_raw/(10**wrapped_decimals)
+        shortfall=max(0.0,desired_wrapped-wrapped_balance)
+        if shortfall>1e-12:
+            data=_encode(weth,"deposit",[])
+            wrap_call={
+                "chainId":cfg.chain_id,"to":cfg.wrapped_native,"from":owner,"data":data,
+                "value":hex(w3.to_wei(float(shortfall),"ether")),"purpose":"WRAP_NATIVE",
+                "required_wrapped":desired_wrapped,"current_wrapped":wrapped_balance,"shortfall":shortfall,
+            }
     manager_c=w3.eth.contract(address=manager,abi=MINT_ABI)
     params=(Web3.to_checksum_address(t0["address"]),Web3.to_checksum_address(t1["address"]),fee,tick_lower,tick_upper,a0,a1,min0,min1,owner,deadline)
     mint_data=_encode(manager_c,"mint",[params]); mint_call={"chainId":cfg.chain_id,"to":manager,"from":owner,"data":mint_data,"value":"0x0","purpose":"MINT_POSITION"}
