@@ -10,7 +10,7 @@ from lp_manager.live_positions import _live_v3_fees_from_growth, _position_lifec
 from lp_manager.models import Position
 from lp_manager.range_lab import analyse_range
 from lp_manager.position_identity import authoritative_opening_tx
-from lp_manager.profit_engine import _decision_horizon_evidence, _history_matches_spot, _history_cache_is_fresh
+from lp_manager.profit_engine import _decision_horizon_evidence, _history_matches_spot, _history_cache_is_fresh, _select_regime_aware_best
 
 
 class _Call:
@@ -360,3 +360,49 @@ def test_profit_lab_alternative_range_rows_have_dedicated_readable_layout():
     assert 'profit-alt-stat' in js
     assert '.profit-alt-row{' in css
     assert 'grid-template-columns:minmax(120px,150px)' in css
+
+
+def test_profit_lab_regime_alignment_decides_between_near_equal_profit_ranges():
+    rows = [
+        {
+            "skew_pct": -3.0,
+            "profit_score": 72.0,
+            "regime_alignment_score": 35.0,
+            "forecast": {"expected_net_usd": 10.00},
+        },
+        {
+            "skew_pct": 3.0,
+            "profit_score": 90.0,
+            "regime_alignment_score": 96.0,
+            "forecast": {"expected_net_usd": 9.70},
+        },
+        {
+            "skew_pct": 4.5,
+            "profit_score": 99.0,
+            "regime_alignment_score": 99.0,
+            "forecast": {"expected_net_usd": 8.50},
+        },
+    ]
+    best, policy = _select_regime_aware_best(
+        rows,
+        {"confidence": 80.0, "range_skew_pct": 3.2},
+    )
+    # 9.70 is inside the confidence-scaled near-best band and is therefore
+    # preferred to the opposite-direction 10.00 candidate.
+    assert best["skew_pct"] == pytest.approx(3.0)
+    assert policy["max_expected_net_usd"] == pytest.approx(10.0)
+    assert policy["selected_skew_pct"] == pytest.approx(3.0)
+    assert policy["near_best_candidates"] == 2
+
+    # A materially weaker economics case remains outside the band even if its
+    # directional alignment score is excellent.
+    assert best is not rows[2]
+
+
+def test_profit_lab_exposes_regime_selection_audit_in_ui():
+    js = (Path(__file__).parents[1] / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "profitRegimeSelectionHtml" in js
+    assert "Range direction audit:" in js
+    assert "regime target skew" in js
+    assert "selected skew" in js
+    assert "near-best profit band" in js
