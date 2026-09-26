@@ -462,7 +462,7 @@ def test_profit_forecast_path_uses_v0811_state_and_position_ui_exposes_actual_co
 
     assert "execForecastId" in js
     assert "r.forecast_snapshot_id||null" in js
-    assert "forecastId:kind==='mint'?execForecastId:null" in js
+    assert "forecastId:execForecastId||null" in js
     assert "Forecast vs actual" in js
     assert "Expected fee pace now" in js
     assert "Actual tracked fees" in js
