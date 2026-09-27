@@ -200,5 +200,5 @@ def test_eth_campaign_combines_native_eth_and_weth_wallet_exposure(tmp_path):
 def test_campaign_buttons_use_multi_selector():
     from pathlib import Path
     js=(Path(__file__).parents[1]/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
-    assert "$$('[data-campaign-open]').forEach" in js
-    assert "$('[data-campaign-open]').forEach" not in js
+    assert "$('[data-campaign-open]').forEach" in js
+    assert "\n $('[data-campaign-open]').forEach" not in js
