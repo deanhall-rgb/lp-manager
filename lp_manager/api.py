@@ -58,6 +58,7 @@ from .position_identity import canonical_display_name, authoritative_position
 from .financial_truth import portfolio_financial_truth
 from .close_accounting import finalise_execution_close, repair_confirmed_execution_closes
 from .campaign_accounting import build_campaigns, campaign_by_id, sync_campaign_registry
+from .campaign_decision import build_campaign_decision
 
 
 class ScoutIntent(BaseModel):
@@ -210,6 +211,13 @@ class ProfitRangeIntent(BaseModel):
     sleeve: str = "AUTO"
     monthly_target_pct: float = 10.0
     history_days: int | None = None
+
+
+class CampaignDecisionIntent(BaseModel):
+    campaign_id: str
+    position_id: str | None = None
+    horizon_days: float | None = None
+    monthly_target_pct: float = 10.0
 
 
 class ProfitSearchIntent(BaseModel):
@@ -521,6 +529,57 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         if not row:
             raise HTTPException(404,"Campaign not found")
         return row
+
+    @app.post("/api/campaign-decision")
+    def campaign_decision(intent: CampaignDecisionIntent):
+        base=build_campaign_decision(
+            store,intent.campaign_id,position_id=intent.position_id,
+            horizon_days=intent.horizon_days,monthly_target_pct=intent.monthly_target_pct,
+        )
+        profit_result=None
+        profit_error=""
+        pid=str(base.get("generated_for_position_id") or "")
+        if pid and live.market and base.get("pool_address"):
+            raw=store.get_position(pid) or {}
+            snap=store.get_position_snapshot(pid) or {}
+            pool_fallback=snap.get("market") if isinstance(snap.get("market"),dict) else None
+            try:
+                profit_result=recommend_profit_range(
+                    live.market,store,str(base.get("chain") or raw.get("chain") or "").upper(),
+                    str(base.get("pool_address") or raw.get("pool_address") or ""),
+                    horizon_days=float(base.get("horizon_days") or 3.0),
+                    capital=max(1.0,float(base.get("rebalance_capital_usd") or 1.0)),
+                    sleeve=str(base.get("sleeve") or raw.get("strategy_sleeve") or "TACTICAL_CAMPAIGN"),
+                    monthly_target_pct=max(0.0,float(intent.monthly_target_pct)),
+                    pool_fallback=pool_fallback,
+                    compare_fee_tiers=False,
+                )
+            except Exception as exc:
+                profit_error=str(exc)[:280]
+        result=build_campaign_decision(
+            store,intent.campaign_id,profit_result=profit_result,
+            position_id=intent.position_id,horizon_days=intent.horizon_days,
+            monthly_target_pct=intent.monthly_target_pct,profit_error=profit_error,
+        )
+        ctx=money_context(settings,store)
+        rate=float(ctx.get("usd_to_display_rate") or 1.0)
+        prefill=dict(result.get("profit_lab_prefill") or {})
+        capital_usd=float(prefill.get("capital_usd") or 0)
+        prefill["capital_display"]=round(capital_usd*rate,2) if ctx.get("converted") and rate>0 else round(capital_usd,2)
+        prefill["display_currency"]=ctx.get("display_currency") or "USD"
+        result["profit_lab_prefill"]=prefill
+        result["money"]=ctx
+        result["profit_error"]=profit_error or None
+        store.set_setting(f"campaign:last_decision:{intent.campaign_id}",{
+            "generated_at":time.time(),
+            "campaign_id":intent.campaign_id,
+            "position_id":result.get("generated_for_position_id"),
+            "recommended_action":result.get("recommended_action"),
+            "headline":result.get("headline"),
+            "horizon_days":result.get("horizon_days"),
+            "rebalance_capital_usd":result.get("rebalance_capital_usd"),
+        })
+        return result
 
     @app.get("/api/profit/scorecard")
     def profit_scorecard():
