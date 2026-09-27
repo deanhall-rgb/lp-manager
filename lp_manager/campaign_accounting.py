@@ -279,7 +279,11 @@ def build_campaigns(store) -> list[dict[str,Any]]:
         unresolved=sum(1 for x in legs if x.get("net_pnl_usd") is None)
 
         pids={x["id"] for x in legs}
-        campaign_events=[e for e in events if str(e.get("position_id") or "") in pids]
+        campaign_events=[
+            e for e in events
+            if str(e.get("campaign_id") or "")==cid
+            or str(e.get("position_id") or "") in pids
+        ]
         timeline=[]
         event_position={str(x["id"]):x for x in legs}
         event_types_by_position={}
