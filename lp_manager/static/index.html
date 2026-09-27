@@ -9,12 +9,13 @@
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.9.2 · campaign decisions</div></div></div>
+    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.9.3 · sentiment & thesis</div></div></div>
     <nav>
       <button class="nav active" data-section="overview"><span>⌂</span> Overview</button>
       <button class="nav" data-section="wallet"><span>◈</span> Wallet</button>
       <button class="nav" data-section="positions"><span>▦</span> Positions</button>
       <button class="nav" data-section="campaigns"><span>◎</span> Campaigns</button>
+      <button class="nav" data-section="sentiment"><span>◐</span> Sentiment</button>
       <button class="nav" data-section="opportunities"><span>⌕</span> Opportunities</button>
       <button class="nav" data-section="profit"><span>£</span> Profit Lab</button>
       <button class="nav" data-section="execution"><span>⇄</span> Execution Desk</button>
@@ -62,6 +63,21 @@
       <div class="section-hero"><div><h2>Campaigns</h2><p>Asset-level accounting across every LP leg. Position outcomes stay intact while the campaign shows the combined economic story.</p></div></div>
       <div class="notice"><b>Accounting boundary:</b> campaign P/L aggregates evidenced LP outcomes. Current wallet inventory is shown alongside it, but is excluded from P/L until its acquisition cost/provenance is known.</div>
       <div id="campaign-grid" class="positions-grid lower"></div>
+    </section>
+
+    <section id="sentiment-section" class="section">
+      <div class="section-hero"><div><h2>Sentiment & thesis</h2><p>Research directional conviction separately from fee economics, then decide whether the campaign asset is acceptable to hold when liquidity exits range.</p></div></div>
+      <div class="notice"><b>Advisory only:</b> sentiment can influence campaign management and range skew, but it never invents fee income or signs a transaction. Campaign research is refreshed only when you ask for it.</div>
+      <div class="panel lower"><div class="panel-head"><div><h2>Campaign theses</h2><p>Bullish/bearish stance, holding comfort and freshness for assets already in your book.</p></div></div><div id="sentiment-campaigns" class="positions-grid"></div></div>
+      <div class="panel lower"><div class="panel-head"><div><h2>Research any pool/token</h2><p>Use chain + exact pool address to avoid ticker-symbol ambiguity. Asset symbol is optional when one non-ETH/non-stable asset is obvious.</p></div></div>
+        <div class="form-grid">
+          <div class="field"><label>Chain</label><select id="sentiment-chain"><option>ROBINHOOD_CHAIN</option><option>ETHEREUM</option><option>BASE</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option></select></div>
+          <div class="field grow"><label>Pool address</label><input id="sentiment-pool" placeholder="0x… Uniswap V3 pool"></div>
+          <div class="field"><label>Asset symbol (optional)</label><input id="sentiment-asset" placeholder="e.g. DELTA"></div>
+          <div class="field action-field"><button id="sentiment-run-btn" class="btn">Research sentiment</button></div>
+        </div>
+        <div id="sentiment-result" class="lower"><div class="empty-state">No ad-hoc token research run yet.</div></div>
+      </div>
     </section>
 
     <section id="opportunities-section" class="section">
