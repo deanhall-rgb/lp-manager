@@ -140,8 +140,8 @@ function campaignCard(c){
 function renderCampaigns(){
  const box=$('#campaign-grid');if(!box)return;const rows=state.campaigns||[];
  box.innerHTML=rows.length?rows.map(campaignCard).join(''):'<div class="empty-state">No campaigns yet. Campaigns are created automatically from canonical LP positions.</div>';
- $('[data-campaign-open]').forEach(b=>b.onclick=()=>showCampaign(b.dataset.campaignOpen));
- $('[data-campaign-thesis]').forEach(b=>b.onclick=()=>researchCampaignThesis(b.dataset.campaignThesis,true));
+ $$('[data-campaign-open]').forEach(b=>b.onclick=()=>showCampaign(b.dataset.campaignOpen));
+ $$('[data-campaign-thesis]').forEach(b=>b.onclick=()=>researchCampaignThesis(b.dataset.campaignThesis,true));
 }
 function campaignDecisionOption(o){
  const recommended=Boolean(o.recommended),tone=recommended?'good':String(o.status||'').includes('UNAVAILABLE')?'bad':String(o.status||'').includes('REQUIRES')?'watch':'';
