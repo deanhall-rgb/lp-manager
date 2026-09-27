@@ -1063,6 +1063,30 @@ def _fee_tier_pool_candidates(market, chain: str, seed: dict[str, Any]) -> list[
     return [x[1] for _,x in sorted(by_tier.items(), key=lambda item:item[0])]
 
 
+
+def _compatible_fee_tier_spot(seed: dict[str, Any], candidate: dict[str, Any], *, max_ratio: float = 1.5) -> tuple[bool, str]:
+    """Reject stale/mis-scaled alternate fee-tier pools before they can win.
+
+    Same-token Uniswap V3 pools on the same chain should trade at broadly the same
+    human execution ratio. A materially different spot is usually stale/illiquid
+    price state or a bad token-decimal/provider lens, not a genuine opportunity.
+    """
+    seed_lens=dict(seed.get("price_lens") or {})
+    cand_lens=dict(candidate.get("price_lens") or {})
+    seed_unit=str(seed_lens.get("unit") or "").upper()
+    cand_unit=str(cand_lens.get("unit") or "").upper()
+    if seed_unit and cand_unit and seed_unit != cand_unit:
+        return False, f"unit mismatch {cand_unit or 'UNKNOWN'} vs {seed_unit or 'UNKNOWN'}"
+    a=_f(seed.get("spot") or seed_lens.get("current"))
+    b=_f(candidate.get("spot") or cand_lens.get("current"))
+    if a<=0 or b<=0:
+        return False, "missing comparable execution spot"
+    ratio=max(a,b)/max(min(a,b),1e-300)
+    if not math.isfinite(ratio) or ratio>max(1.01,float(max_ratio)):
+        return False, f"execution spot divergence {ratio:.3g}x"
+    return True, ""
+
+
 def recommend_profit_range(
     market, store, chain: str, address: str, *, horizon_days: float = 7.0,
     capital: float = 1000.0, sleeve: str = "AUTO", monthly_target_pct: float = 10.0,
@@ -1100,12 +1124,17 @@ def recommend_profit_range(
         if not addr or addr==requested_addr:
             continue
         try:
-            analyses.append(_recommend_single_pool(
+            candidate_analysis=_recommend_single_pool(
                 market,store,str(requested.get("chain") or chain).upper(),addr,
                 horizon_days=horizon_days,capital=capital,sleeve=sleeve,
                 monthly_target_pct=monthly_target_pct,history_days=history_days,
                 pool_fallback=pool,
-            ))
+            )
+            compatible,reason=_compatible_fee_tier_spot(requested,candidate_analysis)
+            if not compatible:
+                errors.append(f"{addr[:12]}: rejected alternate fee tier - {reason}")
+                continue
+            analyses.append(candidate_analysis)
         except Exception as exc:
             errors.append(f"{addr[:12]}: {str(exc)[:150]}")
 
