@@ -6,6 +6,7 @@ from typing import Any
 from .campaign_accounting import campaign_by_id
 from .portfolio_accounting import position_accounting
 from .strategy import edge_risk
+from .campaign_sentiment import thesis_decision_flags
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -57,6 +58,8 @@ def build_campaign_decision(
     campaign=campaign_by_id(store,campaign_id)
     if not campaign:
         raise ValueError("Campaign not found")
+    thesis=store.get_setting(f"campaign:thesis:{campaign_id}",None)
+    thesis_flags=thesis_decision_flags(thesis)
 
     raw_positions={str(p.get("id") or ""):p for p in store.list_positions()}
     open_ids=[str(p.get("id") or "") for p in campaign.get("positions",[]) if str(p.get("status") or "").upper()=="OPEN"]
@@ -88,12 +91,22 @@ def build_campaign_decision(
                 if action=="HODL_WAIT"
                 else f"{campaign.get('label')}: no open LP leg or attributed campaign inventory requires action."
             ),
-            "rationale":"No open LP can be re-ranged. A new deployment can be analysed separately in Profit Lab.",
+            "rationale":(
+                "No open LP can be re-ranged. The latest thesis is available below for the hold/exit decision."
+                if thesis_flags.get("fresh")
+                else "No open LP can be re-ranged. Research the campaign thesis before treating HODL or EXIT as a directional conclusion."
+            ),
             "campaign":campaign,
+            "thesis":thesis,
+            "thesis_flags":thesis_flags,
             "options":[{
                 "action":"HODL_WAIT","label":"HODL / WAIT","status":"CURRENT_STATE" if action=="HODL_WAIT" else "AVAILABLE",
                 "expected_fees_usd":0.0,"directional_return_usd":None,
-                "summary":"Keep the campaign asset undeployed. Directional return is deliberately not forecast until the v0.9.3 thesis/sentiment layer.",
+                "summary":(
+                    f"Keep the campaign asset undeployed. Current thesis: {thesis_flags.get('stance')} / holding comfort {thesis_flags.get('hold_comfort')}."
+                    if thesis_flags.get("fresh")
+                    else "Keep the campaign asset undeployed only as a neutral current state; directional thesis has not been freshly researched."
+                ),
             },{
                 "action":"NEW_LP","label":"Open new LP","status":"AVAILABLE",
                 "expected_fees_usd":None,"directional_return_usd":None,
@@ -101,9 +114,13 @@ def build_campaign_decision(
             },{
                 "action":"EXIT","label":"Exit campaign","status":"REQUIRES_THESIS",
                 "expected_fees_usd":0.0,"directional_return_usd":None,
-                "summary":"Swap out of the campaign asset. v0.9.2 does not recommend this from fee economics alone.",
+                "summary":(
+                    "Current fresh thesis flags the asset as uncomfortable to hold; review an exit rather than treating wallet inventory as harmless."
+                    if thesis_flags.get("strong_exit_caution")
+                    else "Swap out of the campaign asset only when thesis/holding-comfort evidence justifies giving up future exposure."
+                ),
             }],
-            "limitations":["No open LP leg exists.","Directional asset return is not modelled in v0.9.2."],
+            "limitations":["No open LP leg exists.","Thesis is advisory evidence, not a guaranteed directional return forecast."],
         }
 
     snap=store.get_position_snapshot(active_id) or {}
@@ -130,8 +147,9 @@ def build_campaign_decision(
     nearest=_f(nearest,999.0) if nearest is not None else None
     confidence=str((profit_result or {}).get("confidence") or "UNAVAILABLE").upper()
 
-    # Fee-economics decision only. v0.9.3 will add directional conviction and
-    # comfort-holding evidence; v0.9.2 must not invent those inputs.
+    # Fee economics remain the primary deployment guardrail. A fresh v0.9.3
+    # thesis can veto holding/redeployment when the asset is explicitly judged
+    # uncomfortable to hold, or support waiting when a positive thesis remains.
     if in_range:
         rerange_beats_keep=bool(
             rerange_available
@@ -162,6 +180,23 @@ def build_campaign_decision(
             recommended="HODL_WAIT"
             headline=f"{campaign.get('label')}: wait rather than force a fee-negative rebalance."
             rationale="The current LP is out of range, but the available re-range evidence does not yet justify paying intervention friction. Leaving the one-sided NFT untouched can preserve automatic re-entry without another transaction."
+
+    # Sentiment/thesis can change the management choice, but never manufactures
+    # fee economics. Strong holding discomfort is the only thesis state allowed
+    # to override a positive re-range recommendation.
+    if thesis_flags.get("strong_exit_caution"):
+        recommended="EXIT"
+        headline=f"{campaign.get('label')}: fresh thesis says this is not an asset we are comfortable being left holding."
+        rationale=(
+            f"Fee economics are secondary while holding comfort is {thesis_flags.get('hold_comfort')} "
+            f"at {thesis_flags.get('confidence')}% thesis confidence. Review closing the LP and campaign exposure rather than automatically re-ranging."
+        )
+    elif not in_range and thesis_flags.get("positive_hold_thesis"):
+        if recommended=="RE_RANGE":
+            rationale += " Fresh bullish/holding-comfort evidence supports remaining in the campaign while the new range is evaluated."
+        else:
+            headline=f"{campaign.get('label')}: bullish/acceptable holding thesis supports waiting rather than forcing a weak rebalance."
+            rationale="The fresh thesis supports retaining the asset, while the available re-range economics do not yet justify another close/open cycle."
 
     options=[
         {
@@ -199,16 +234,23 @@ def build_campaign_decision(
             "expected_net_usd":None,
             "directional_return_usd":None,
             "execution_cost_usd":0.0,
-            "summary":"Do not force a redeployment. When already out of range, leaving the one-sided NFT in place can behave like holding while preserving automatic re-entry. Directional return is not modelled until v0.9.3.",
+            "summary":(
+                "Do not force a redeployment. When already out of range, leaving the one-sided NFT in place can behave like holding while preserving automatic re-entry. "
+                + (f"Fresh thesis is {thesis_flags.get('stance')} with {thesis_flags.get('hold_comfort')} holding comfort." if thesis_flags.get("fresh") else "Research thesis before treating this as a directional conviction.")
+            ),
         },
         {
-            "action":"EXIT","label":"Exit campaign","recommended":False,
-            "status":"REQUIRES_THESIS",
+            "action":"EXIT","label":"Exit campaign","recommended":recommended=="EXIT",
+            "status":("THESIS_CAUTION" if thesis_flags.get("strong_exit_caution") else "AVAILABLE" if thesis_flags.get("fresh") else "REQUIRES_THESIS"),
             "expected_fees_usd":0.0,
             "expected_net_usd":None,
             "directional_return_usd":None,
             "execution_cost_usd":None,
-            "summary":"Close the LP and swap out of the campaign asset. v0.9.2 deliberately does not recommend a directional exit from fee economics alone; v0.9.3 will provide the thesis/sentiment input.",
+            "summary":(
+                "Close the LP and swap out of the campaign asset. This is recommended only when fresh thesis evidence says the resulting token inventory is not acceptable to hold."
+                if thesis_flags.get("strong_exit_caution")
+                else "Close the LP and swap out of the campaign asset only when fresh thesis evidence outweighs the fee/holding case."
+            ),
         },
     ]
 
@@ -242,6 +284,8 @@ def build_campaign_decision(
         },
         "recommended_action":recommended,
         "decision_confidence":confidence if rerange_available else "LIMITED",
+        "thesis":thesis,
+        "thesis_flags":thesis_flags,
         "headline":headline,
         "rationale":rationale,
         "options":options,
@@ -265,8 +309,8 @@ def build_campaign_decision(
             "wallet_inventory":wallet,
         },
         "limitations":[
-            "v0.9.2 compares fee/redeployment economics; it does not yet score bullish/bearish conviction.",
-            "HODL directional return and EXIT directional benefit are intentionally left unmodelled until v0.9.3.",
+            "v0.9.3 combines fee/redeployment economics with fresh campaign thesis evidence; sentiment never invents fee income.",
+            "Directional return remains uncertain: bullish/bearish thesis changes management preference and range skew, not guaranteed P/L.",
             "Wallet campaign inventory is shown but is not automatically added to rebalance capital.",
             "Re-range remains an explicit close-then-open workflow requiring browser-wallet approval.",
         ],
