@@ -73,7 +73,7 @@ def test_campaign_identity_groups_asset_across_quote_pairs():
 
     assert delta["id"] == "campaign:ROBINHOOD_CHAIN:DELTA"
     assert pons_eth["id"] == pons_usdg["id"] == "campaign:ROBINHOOD_CHAIN:PONS"
-    assert weth_income["id"] == "campaign:ROBINHOOD_CHAIN:WETH_INCOME"
+    assert weth_income["id"] == "campaign:ROBINHOOD_CHAIN:ETH"\n    assert weth_income["label"] == "ETH"\n    assert weth_income["asset_symbol"] == "ETH"
 
 
 def test_campaign_aggregates_child_results_without_counting_unattributed_wallet_inventory(tmp_path):
@@ -164,3 +164,39 @@ def test_campaign_timeline_uses_confirmed_events_and_inferred_evidence(tmp_path)
     campaign=next(x for x in build_campaigns(store) if x["asset_symbol"]=="CASHCAT")
     assert campaign["provenance"]["financial_events"] == 1
     assert any(x["type"]=="OPEN_POSITION" and x["tx_hash"]=="0xmint" for x in campaign["timeline"])
+
+
+def test_eth_campaign_combines_native_eth_and_weth_wallet_exposure(tmp_path):
+    store=Store(tmp_path/"eth_campaign.sqlite3")
+    p=_position("live:ROBINHOOD_CHAIN:6","WETH/USDG","OPEN",1000,current_value=150.0)
+    store.upsert_position(p)
+    store.save_position_snapshot(p.id,{
+        "token0":{"symbol":"WETH","address":"0xweth","amount":0.04,"price_usd":2500.0},
+        "token1":{"symbol":"USDG","address":"0xusdg","amount":50.0,"price_usd":1.0},
+        "entry_evidence":{
+            "basis_complete":True,"entry_value_usd":150.0,
+            "token0_amount":0.04,"token1_amount":50.0,
+            "token0_price_usd":2500.0,"token1_price_usd":1.0,
+            "opened_at":1000,"transaction_hash":"0xopen","quality":"ONCHAIN_MINT_RECONSTRUCTED",
+        },
+    })
+    store.save_wallet_snapshot({
+        "holdings":[
+            {"chain":"ROBINHOOD_CHAIN","symbol":"ETH","address":"","balance":0.2,"price_usd":2500.0,"value_usd":500.0},
+            {"chain":"ROBINHOOD_CHAIN","symbol":"WETH","address":"0xweth","balance":0.01,"price_usd":2500.0,"value_usd":25.0},
+        ],
+        "hidden_holdings":[],
+    })
+
+    campaign=next(x for x in build_campaigns(store) if x["asset_symbol"]=="ETH")
+    assert campaign["label"] == "ETH"
+    assert campaign["wallet_inventory"]["balance"] == 0.21
+    assert campaign["wallet_inventory"]["value_usd"] == 525.0
+    assert {x["symbol"] for x in campaign["wallet_inventory"]["holdings"]} == {"ETH","WETH"}
+
+
+def test_campaign_buttons_use_multi_selector():
+    from pathlib import Path
+    js=(Path(__file__).parents[1]/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
+    assert "$$('[data-campaign-open]').forEach" in js
+    assert "$('[data-campaign-open]').forEach" not in js
