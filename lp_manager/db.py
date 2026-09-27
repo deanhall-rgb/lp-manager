@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS forecast_snapshots (
 CREATE TABLE IF NOT EXISTS financial_events (
     id TEXT PRIMARY KEY,
     position_id TEXT,
+    campaign_id TEXT,
     created_at REAL NOT NULL,
     occurred_at REAL NOT NULL,
     event_type TEXT NOT NULL,
@@ -194,6 +195,7 @@ class Store:
             con.executescript(SCHEMA)
             self._migrate_positions(con)
             self._migrate_decisions(con)
+            self._migrate_financial_events(con)
 
     @staticmethod
     def _migrate_positions(con: sqlite3.Connection) -> None:
@@ -232,6 +234,12 @@ class Store:
         for name, ddl in additions.items():
             if name not in existing:
                 con.execute(f"ALTER TABLE decisions ADD COLUMN {name} {ddl}")
+
+    @staticmethod
+    def _migrate_financial_events(con: sqlite3.Connection) -> None:
+        existing={row[1] for row in con.execute("PRAGMA table_info(financial_events)").fetchall()}
+        if "campaign_id" not in existing:
+            con.execute("ALTER TABLE financial_events ADD COLUMN campaign_id TEXT")
 
     def upsert_position(self, position: Position) -> None:
         data = position.to_dict()
@@ -293,6 +301,10 @@ class Store:
             con.execute(
                 "UPDATE positions SET campaign_id=?,campaign_label=? WHERE id=?",
                 (campaign_id,campaign_label,position_id),
+            )
+            con.execute(
+                "UPDATE financial_events SET campaign_id=? WHERE position_id=? AND (campaign_id IS NULL OR campaign_id='')",
+                (campaign_id,position_id),
             )
 
     def close_position_record(self, position_id: str) -> bool:
@@ -508,9 +520,14 @@ class Store:
         self, *, position_id: str | None, event_type: str, chain: str, tx_hash: str = "",
         occurred_at: float | None = None, amount_usd: float = 0.0, gas_native: float = 0.0,
         gas_usd: float = 0.0, status: str = "CONFIRMED", payload: dict[str, Any] | None = None,
+        campaign_id: str | None = None,
     ) -> dict[str, Any]:
+        if not campaign_id and position_id:
+            with self.connect() as con:
+                linked=con.execute("SELECT campaign_id FROM positions WHERE id=?",(position_id,)).fetchone()
+            campaign_id=str(linked[0]) if linked and linked[0] else None
         row={
-            "id":uuid.uuid4().hex,"position_id":position_id,"created_at":time.time(),
+            "id":uuid.uuid4().hex,"position_id":position_id,"campaign_id":campaign_id,"created_at":time.time(),
             "occurred_at":float(occurred_at or time.time()),"event_type":str(event_type or ""),
             "chain":str(chain or ""),"tx_hash":str(tx_hash or ""),"amount_usd":float(amount_usd or 0),
             "gas_native":float(gas_native or 0),"gas_usd":float(gas_usd or 0),
@@ -519,11 +536,11 @@ class Store:
         with self.connect() as con:
             con.execute(
                 """INSERT INTO financial_events(
-                    id,position_id,created_at,occurred_at,event_type,chain,tx_hash,amount_usd,
+                    id,position_id,campaign_id,created_at,occurred_at,event_type,chain,tx_hash,amount_usd,
                     gas_native,gas_usd,status,payload_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 tuple(row[k] for k in (
-                    "id","position_id","created_at","occurred_at","event_type","chain","tx_hash",
+                    "id","position_id","campaign_id","created_at","occurred_at","event_type","chain","tx_hash",
                     "amount_usd","gas_native","gas_usd","status","payload_json"
                 )),
             )
