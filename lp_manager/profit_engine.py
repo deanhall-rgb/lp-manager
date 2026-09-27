@@ -14,6 +14,7 @@ from .fee_metrics import forecast_fee_metrics, pool_fee_revenue_rate
 from .price_units import assert_sane_display_lens
 from .range_lab import analyse_range, candle_activity_fraction, generate_range_candidates, infer_candles_per_day
 from .strategy_lab import _pool_from_onchain
+from .campaign_sentiment import execution_skew_pct, thesis_is_fresh
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -570,6 +571,7 @@ def _recommend_single_pool(
     market, store, chain: str, address: str, *, horizon_days: float = 7.0,
     capital: float = 1000.0, sleeve: str = "AUTO", monthly_target_pct: float = 10.0,
     history_days: int | None = None, pool_fallback: dict[str, Any] | None = None,
+    thesis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Money-first LP range recommendation with explicit evidence and validation.
 
@@ -612,6 +614,29 @@ def _recommend_single_pool(
         symbols = {str((pool.get("base_token") or {}).get("symbol") or "").upper(), str((pool.get("quote_token") or {}).get("symbol") or "").upper()}
         stables = {"USDC","USDT","USDG","DAI","USDS","USDBC","FRAX","GHO"}; majors = {"WETH","ETH","WBTC","BTC"}
         sleeve_u = "CORE_INCOME" if symbols & stables and symbols & majors else "TACTICAL_CAMPAIGN"
+
+    technical_skew=_f(regime.get("range_skew_pct"))
+    lens_unit=str((onchain.get("price_lens") or {}).get("unit") or pool.get("price_unit") or "")
+    sentiment_skew=execution_skew_pct(
+        thesis,unit=lens_unit,asset_symbol=str((thesis or {}).get("asset_symbol") or ""),sleeve=sleeve_u,
+    ) if thesis_is_fresh(thesis) else 0.0
+    if sentiment_skew:
+        regime={**regime}
+        regime["technical_range_skew_pct"]=round(technical_skew,2)
+        regime["thesis_range_skew_pct"]=round(sentiment_skew,2)
+        regime["range_skew_pct"]=round(max(-30.0,min(30.0,technical_skew+sentiment_skew)),2)
+        regime["thesis_stance"]=str((thesis or {}).get("stance") or "UNKNOWN")
+        regime["thesis_confidence"]=_f((thesis or {}).get("confidence"))
+    thesis_overlay={
+        "applied":bool(sentiment_skew),
+        "technical_skew_pct":round(technical_skew,2),
+        "sentiment_skew_pct":round(sentiment_skew,2),
+        "combined_skew_pct":round(_f(regime.get("range_skew_pct")),2),
+        "stance":str((thesis or {}).get("stance") or "UNKNOWN"),
+        "confidence":_f((thesis or {}).get("confidence")),
+        "hold_comfort":str((thesis or {}).get("hold_comfort") or "UNKNOWN"),
+        "fresh":thesis_is_fresh(thesis),
+    }
 
     calibration = fee_calibration_for_pool(store, {**pool, "chain": str(chain).upper()}, sleeve=sleeve_u)
     observed_pool = observed_pool_fee_rate(store, {**pool, "chain": str(chain).upper()})
@@ -943,7 +968,7 @@ def _recommend_single_pool(
         "sleeve": sleeve_u, "capital_usd": round(capital, 2), "horizon_days": round(horizon, 3),
         "monthly_target_pct": round(float(monthly_target_pct), 3), "spot": spot,
         "price_lens": pool_price_lens(pool, current=spot), "pool": pool,
-        "regime": regime, "fee_calibration": calibration, "owned_pool_fee_evidence": observed_pool, "owned_pair_fee_prior": observed_pair,
+        "regime": regime, "thesis_overlay": thesis_overlay, "fee_calibration": calibration, "owned_pool_fee_evidence": observed_pool, "owned_pair_fee_prior": observed_pair,
         "advisor_economics":dict(pool.get("quick_economics") or {}), "advisor_economics_context":dict(pool.get("quick_economics_context") or {}), "evidence": evidence,
         "price_series": [{"timestamp":c.get("timestamp"),"close":c.get("close")} for c in candles[-240:]],
         "confidence": confidence, "confidence_score": min(100, confidence_points),
@@ -1091,14 +1116,14 @@ def recommend_profit_range(
     market, store, chain: str, address: str, *, horizon_days: float = 7.0,
     capital: float = 1000.0, sleeve: str = "AUTO", monthly_target_pct: float = 10.0,
     history_days: int | None = None, pool_fallback: dict[str, Any] | None = None,
-    compare_fee_tiers: bool = True,
+    compare_fee_tiers: bool = True, thesis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Unified V0.8.7 range + profit + fee-tier optimiser."""
     requested=_recommend_single_pool(
         market,store,chain,address,
         horizon_days=horizon_days,capital=capital,sleeve=sleeve,
         monthly_target_pct=monthly_target_pct,history_days=history_days,
-        pool_fallback=pool_fallback,
+        pool_fallback=pool_fallback,thesis=thesis,
     )
     if not compare_fee_tiers:
         requested["pool_comparison"]=[]
@@ -1128,7 +1153,7 @@ def recommend_profit_range(
                 market,store,str(requested.get("chain") or chain).upper(),addr,
                 horizon_days=horizon_days,capital=capital,sleeve=sleeve,
                 monthly_target_pct=monthly_target_pct,history_days=history_days,
-                pool_fallback=pool,
+                pool_fallback=pool,thesis=thesis,
             )
             compatible,reason=_compatible_fee_tier_spot(requested,candidate_analysis)
             if not compatible:
