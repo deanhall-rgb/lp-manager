@@ -47,7 +47,7 @@ from .portfolio_advisor import rank_opportunities
 from .models import Decision
 from .historical_import import import_delta_pool_history
 from .closed_history import import_closed_position_finals
-from .pool_chain import read_v3_pool_metadata
+from .pool_chain import read_v3_pool_metadata, read_v3_observation_history
 from .profit_engine import recommend_profit_range
 from .profit_dashboard import portfolio_profit_scorecard
 from .profit_calibration import fee_calibration_for_pool, calibration_samples
@@ -59,6 +59,7 @@ from .financial_truth import portfolio_financial_truth
 from .close_accounting import finalise_execution_close, repair_confirmed_execution_closes
 from .campaign_accounting import build_campaigns, campaign_by_id, sync_campaign_registry
 from .campaign_decision import build_campaign_decision
+from .campaign_sentiment import technical_fallback, normalise_thesis, execution_skew_pct, thesis_is_fresh
 
 
 class ScoutIntent(BaseModel):
@@ -220,6 +221,17 @@ class CampaignDecisionIntent(BaseModel):
     monthly_target_pct: float = 10.0
 
 
+class CampaignThesisIntent(BaseModel):
+    campaign_id: str
+    force_refresh: bool = False
+
+
+class TokenThesisIntent(BaseModel):
+    chain: str
+    pool_address: str
+    asset_symbol: str | None = None
+
+
 class ProfitSearchIntent(BaseModel):
     available_capital: float = 1000.0
     horizon_days: float = 7.0
@@ -375,6 +387,62 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 row["authoritative_identity"]=authority
         return row
 
+    def _campaigns_with_thesis() -> list[dict[str,Any]]:
+        rows=build_campaigns(store)
+        for row in rows:
+            thesis=store.get_setting(f"campaign:thesis:{row.get('id')}",None)
+            if thesis:
+                row["thesis"]=thesis
+                row["thesis_fresh"]=thesis_is_fresh(thesis)
+        return rows
+
+    def _sentiment_context(campaign: dict[str,Any]) -> tuple[dict[str,Any],dict[str,Any]]:
+        cid=str(campaign.get("id") or "")
+        raw=[p for p in _visible_positions() if str(p.get("campaign_id") or "")==cid]
+        raw.sort(key=lambda p:(str(p.get("status") or "").upper()=="OPEN",float(p.get("current_value") or 0),float(p.get("opened_at") or 0)),reverse=True)
+        source=raw[0] if raw else {}
+        chain=str(campaign.get("chain") or source.get("chain") or "").upper()
+        pool=str(source.get("pool_address") or "")
+        meta=read_v3_pool_metadata(chain,pool) if chain and pool else {"ok":False}
+        lens=dict(meta.get("price_lens") or {})
+        candles=[]
+        provider="NONE"
+        if meta.get("ok"):
+            try:
+                candles=read_v3_observation_history(chain,pool,30,timeframe="hour",max_points=241)
+                if candles:
+                    provider="UNISWAP_V3_OBSERVE"
+            except Exception:
+                candles=[]
+        if len(candles)<8 and live.market and chain and pool:
+            try:
+                candles=live.market.ohlcv_days(chain,pool,30,timeframe="hour")
+                if candles:
+                    provider="MARKET_PROVIDER_OHLC"
+            except TypeError:
+                try:
+                    candles=live.market.ohlcv_days(chain,pool,30)
+                    if candles:
+                        provider="MARKET_PROVIDER_OHLC"
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        regime=analyse_regime(candles) if candles else analyse_regime([])
+        technical=technical_fallback(str(campaign.get("asset_symbol") or ""),regime,lens)
+        technical["history_provider"]=provider
+        technical["samples"]=len(candles)
+        pool_context={
+            "pool_address":pool,
+            "pair":source.get("pair"),
+            "fee_tier":source.get("fee_tier"),
+            "price_lens":lens,
+            "regime":regime,
+            "source_position_id":source.get("id"),
+            "source_position_name":source.get("display_name"),
+        }
+        return technical,pool_context
+
     def _display_capital_to_usd(value: float) -> float:
         """UI money inputs are in the configured display currency (GBP by default)."""
         return max(0.0, display_amount_to_usd(float(value or 0), settings, store))
@@ -494,7 +562,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             [{"position": p, "risk": edge_risk(p)} for p in open_positions],
             key=lambda row: row["risk"]["score"], reverse=True,
         )
-        campaigns=build_campaigns(store)
+        campaigns=_campaigns_with_thesis()
         return {
             "summary": portfolio_summary(positions),
             "money": money_context(settings, store),
@@ -521,7 +589,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     @app.get("/api/campaigns")
     def campaigns_view():
-        return {"campaigns":build_campaigns(store)}
+        return {"campaigns":_campaigns_with_thesis()}
 
     @app.get("/api/campaigns/{campaign_id:path}")
     def campaign_view(campaign_id: str):
@@ -529,6 +597,82 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         if not row:
             raise HTTPException(404,"Campaign not found")
         return row
+
+    @app.get("/api/campaign-thesis/{campaign_id:path}")
+    def campaign_thesis_get(campaign_id: str):
+        campaign=campaign_by_id(store,campaign_id)
+        if not campaign:
+            raise HTTPException(404,"Campaign not found")
+        thesis=store.get_setting(f"campaign:thesis:{campaign_id}",None)
+        return {"campaign":campaign,"thesis":thesis,"fresh":thesis_is_fresh(thesis)}
+
+    @app.post("/api/campaign-thesis")
+    def campaign_thesis_research(intent: CampaignThesisIntent):
+        campaign=campaign_by_id(store,intent.campaign_id)
+        if not campaign:
+            raise HTTPException(404,"Campaign not found")
+        existing=store.get_setting(f"campaign:thesis:{intent.campaign_id}",None)
+        if existing and thesis_is_fresh(existing) and not intent.force_refresh:
+            return existing
+        technical,pool_context=_sentiment_context(campaign)
+        researched=intelligence.campaign_thesis(campaign,technical,pool_context=pool_context,force_web=True)
+        thesis=normalise_thesis(
+            researched,campaign_id=intent.campaign_id,
+            asset_symbol=str(campaign.get("asset_symbol") or ""),
+            asset_address=str(campaign.get("asset_address") or ""),
+            chain=str(campaign.get("chain") or ""),
+            technical=technical,
+        )
+        thesis["execution_skew_pct"]=execution_skew_pct(
+            thesis,unit=str((pool_context.get("price_lens") or {}).get("unit") or ""),
+            asset_symbol=str(campaign.get("asset_symbol") or ""),
+            sleeve=str(next((p.get("strategy_sleeve") for p in _visible_positions() if str(p.get("campaign_id") or "")==intent.campaign_id and str(p.get("status") or "").upper()=="OPEN"),"TACTICAL_CAMPAIGN")),
+        )
+        thesis["pool_context"]=pool_context
+        store.set_setting(f"campaign:thesis:{intent.campaign_id}",thesis)
+        return thesis
+
+    @app.post("/api/token-thesis")
+    def token_thesis_research(intent: TokenThesisIntent):
+        chain=str(intent.chain or "").upper()
+        pool=str(intent.pool_address or "")
+        meta=read_v3_pool_metadata(chain,pool)
+        if not meta.get("ok"):
+            raise HTTPException(502,str(meta.get("error") or "Pool metadata unavailable"))
+        t0=dict(meta.get("token0") or {});t1=dict(meta.get("token1") or {})
+        wanted=str(intent.asset_symbol or "").upper()
+        stable={"USDC","USDT","USDG","DAI","USDS","USDBC","FRAX","GHO","LUSD"}
+        eth={"ETH","WETH"}
+        tokens=[t0,t1]
+        asset=next((t for t in tokens if wanted and str(t.get("symbol") or "").upper()==wanted),None)
+        if asset is None:
+            asset=next((t for t in tokens if str(t.get("symbol") or "").upper() not in stable|eth),None) or t0
+        symbol=str(asset.get("symbol") or wanted or "TOKEN").upper()
+        synthetic={
+            "id":f"research:{chain}:{str(asset.get('address') or '').lower()}",
+            "label":symbol,"asset_symbol":symbol,"asset_address":str(asset.get("address") or ""),
+            "chain":chain,"status":"RESEARCH_ONLY","wallet_inventory":{},
+        }
+        candles=read_v3_observation_history(chain,pool,30,timeframe="hour",max_points=241)
+        provider="UNISWAP_V3_OBSERVE" if candles else "NONE"
+        if len(candles)<8 and live.market:
+            try:
+                candles=live.market.ohlcv_days(chain,pool,30,timeframe="hour")
+                provider="MARKET_PROVIDER_OHLC" if candles else provider
+            except Exception:
+                pass
+        regime=analyse_regime(candles) if candles else analyse_regime([])
+        technical=technical_fallback(symbol,regime,dict(meta.get("price_lens") or {}))
+        technical["history_provider"]=provider;technical["samples"]=len(candles)
+        pool_context={"pool_address":pool,"price_lens":meta.get("price_lens") or {},"regime":regime,"token0":t0,"token1":t1}
+        researched=intelligence.campaign_thesis(synthetic,technical,pool_context=pool_context,force_web=True)
+        thesis=normalise_thesis(
+            researched,campaign_id=synthetic["id"],asset_symbol=symbol,
+            asset_address=synthetic["asset_address"],chain=chain,technical=technical,
+        )
+        thesis["pool_context"]=pool_context
+        store.set_setting(f"sentiment:last:{chain}:{pool.lower()}:{symbol}",thesis)
+        return thesis
 
     @app.post("/api/campaign-decision")
     def campaign_decision(intent: CampaignDecisionIntent):
