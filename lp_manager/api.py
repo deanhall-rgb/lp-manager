@@ -1132,7 +1132,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def support_bundle():
         path = build_support_bundle(
             store, output_dir=settings.data_dir / "support",
-            extra={"version":"0.9", "execution":executor.capabilities(), "scout_universe":scout_universe()},
+            extra={"version":"0.9.1", "execution":executor.capabilities(), "scout_universe":scout_universe()},
         )
         return {"ok": True, "filename": path.name, "download": f"/api/support/bundle/{path.name}"}
 
