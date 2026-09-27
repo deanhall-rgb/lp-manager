@@ -9,11 +9,12 @@
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.9 · stable baseline</div></div></div>
+    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.9.1 · campaign accounting</div></div></div>
     <nav>
       <button class="nav active" data-section="overview"><span>⌂</span> Overview</button>
       <button class="nav" data-section="wallet"><span>◈</span> Wallet</button>
       <button class="nav" data-section="positions"><span>▦</span> Positions</button>
+      <button class="nav" data-section="campaigns"><span>◎</span> Campaigns</button>
       <button class="nav" data-section="opportunities"><span>⌕</span> Opportunities</button>
       <button class="nav" data-section="profit"><span>£</span> Profit Lab</button>
       <button class="nav" data-section="execution"><span>⇄</span> Execution Desk</button>
@@ -55,6 +56,12 @@
       <div class="section-hero"><div><h2>Positions & campaigns</h2><p>Every LP follows the same lifecycle record: thesis → range → monitoring → decisions → outcome.</p><div id="position-discovery-status" class="meta lower-tight">Owned V3 NFTs are auto-discovered from wallet ownership + transfer logs and verified on-chain.</div></div><div class="top-actions"><input id="delta-history-file" type="file" accept="application/json,.json" class="hidden"><button id="position-rescan-btn" class="btn secondary">Rescan wallet LPs</button><button id="position-tx-import-btn" class="btn secondary">Import opening tx</button><button id="delta-history-btn" class="btn secondary">Import DELTA research history</button><button id="legacy-import-btn" class="btn secondary">Sync old bot ledger</button><button id="new-position-btn-2" class="btn">Prepare position</button></div></div>
       <div class="filter-row"><button class="pill active" data-position-filter="OPEN">Open</button><button class="pill" data-position-filter="ALL">All</button><button class="pill" data-position-filter="CLOSED">Closed</button></div>
       <div id="positions-grid" class="positions-grid"></div>
+    </section>
+
+    <section id="campaigns-section" class="section">
+      <div class="section-hero"><div><h2>Campaigns</h2><p>Asset-level accounting across every LP leg. Position outcomes stay intact while the campaign shows the combined economic story.</p></div></div>
+      <div class="notice"><b>Accounting boundary:</b> campaign P/L aggregates evidenced LP outcomes. Current wallet inventory is shown alongside it, but is excluded from P/L until its acquisition cost/provenance is known.</div>
+      <div id="campaign-grid" class="positions-grid lower"></div>
     </section>
 
     <section id="opportunities-section" class="section">
