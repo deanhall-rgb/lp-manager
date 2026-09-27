@@ -750,7 +750,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             thesis=None
         thesis_version=int(float((thesis or {}).get("generated_at") or 0))
         cache_key=(
-            f"profit:last:v093:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
+            f"profit:last:v09:v093:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
             f"{round(capital_usd,2)}:{round(target,2)}:{intent.campaign_id or 'NO_CAMPAIGN'}:{thesis_version}"
         )
         pool_fallback=None
@@ -794,15 +794,15 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 )
                 result["generated_at"]=time.time()
                 result["data_status"]="LIVE_OR_VALIDATED_HISTORY"
-                audit=store.record_forecast_snapshot(result,model_version="v0.9.3")
+                audit=store.record_forecast_snapshot(result,model_version="v0.9")
                 result["forecast_snapshot_id"]=audit["id"]
-                store.set_setting("profit:last_recommendation:v093", result)
+                store.set_setting("profit:last_recommendation:v093", result)\n                store.set_setting("profit:last_recommendation:v09", result)
                 store.set_setting(cache_key,result)
                 return result
             except Exception as exc:
                 cached=store.get_setting(cache_key,None)
                 if not isinstance(cached,dict):
-                    last=store.get_setting("profit:last_recommendation:v093",None)
+                    last=store.get_setting("profit:last_recommendation:v093",None) or store.get_setting("profit:last_recommendation:v09",None)
                     if isinstance(last,dict) and str(last.get("chain") or "").upper()==chain and str(last.get("pool_address") or "").lower()==address:
                         cached=last
                 if isinstance(cached,dict):
