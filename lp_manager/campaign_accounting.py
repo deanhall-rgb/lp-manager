@@ -82,21 +82,20 @@ def campaign_identity(position: dict[str,Any], snapshot: dict[str,Any] | None = 
             "chain":chain,
             "asset_symbol":symbol,
             "asset_address":focus.get("address") or "",
-            "label":f"{symbol} Campaign",
+            "label":symbol,
             "identity_quality":"ASSET_ADDRESS_AND_SYMBOL" if focus.get("address") else "SYMBOL_DERIVED",
             "kind":"ASSET",
         }
 
     symbols=[t["symbol"] for t in tokens if t.get("symbol")]
-    if not non_base and "WETH" in symbols:
-        focus=next((t for t in tokens if t.get("symbol")=="WETH"),{"address":""})
+    if not non_base and any(x in symbols for x in ("ETH","WETH")):
         return {
-            "id":f"campaign:{chain}:WETH_INCOME",
+            "id":f"campaign:{chain}:ETH",
             "chain":chain,
-            "asset_symbol":"WETH",
-            "asset_address":focus.get("address") or "",
-            "label":"WETH Income Campaign",
-            "identity_quality":"ASSET_ADDRESS_AND_SYMBOL" if focus.get("address") else "SYMBOL_DERIVED",
+            "asset_symbol":"ETH",
+            "asset_address":"",
+            "label":"ETH",
+            "identity_quality":"ETH_WETH_EQUIVALENCE",
             "kind":"INCOME",
         }
 
@@ -106,7 +105,7 @@ def campaign_identity(position: dict[str,Any], snapshot: dict[str,Any] | None = 
         "chain":chain,
         "asset_symbol":pair,
         "asset_address":"",
-        "label":f"{pair.replace('-','/')} Campaign",
+        "label":pair.replace("-","/"),
         "identity_quality":"PAIR_DERIVED",
         "kind":"PAIR",
     }
@@ -180,21 +179,24 @@ def _wallet_inventory(wallet: dict[str,Any], identity: dict[str,Any]) -> dict[st
         }
 
     rows=[]
+    eth_equivalent=identity.get("kind")=="INCOME" and symbol=="ETH"
     for row in list(wallet.get("holdings") or [])+list(wallet.get("hidden_holdings") or []):
         if str(row.get("chain") or "").upper()!=chain:
             continue
         row_symbol=str(row.get("symbol") or "").upper()
         row_address=str(row.get("address") or "").lower()
-        if address:
+        if eth_equivalent:
+            if row_symbol not in {"ETH","WETH"}:
+                continue
+        elif address:
             if row_address!=address:
-                # Native ETH is economically equivalent to WETH for wallet exposure,
-                # but is not silently assigned to the WETH campaign because its
-                # provenance may belong to several campaigns.
                 continue
         elif row_symbol!=symbol:
             continue
         rows.append(dict(row))
 
+    # ETH and WETH are one economic asset for campaign reporting. Preserve the raw
+    # holdings below for provenance, but aggregate balances/value at 1:1 ETH units.
     balance=sum(max(0.0,_f(x.get("balance"))) for x in rows)
     value=sum(max(0.0,_f(x.get("value_usd"))) for x in rows)
     price=(value/balance) if balance>0 and value>0 else max([_f(x.get("price_usd")) for x in rows] or [0.0])
@@ -264,7 +266,7 @@ def build_campaigns(store) -> list[dict[str,Any]]:
             "asset_address":campaign.get("asset_address"),
             "label":campaign.get("label"),
             "identity_quality":campaign.get("identity_quality"),
-            "kind":"PAIR" if ":PAIR:" in cid else ("INCOME" if cid.endswith(":WETH_INCOME") else "ASSET"),
+            "kind":"PAIR" if ":PAIR:" in cid else ("INCOME" if cid.endswith(":ETH") else "ASSET"),
         }
         wallet_inv=_wallet_inventory(wallet,identity)
         open_legs=[x for x in legs if x["status"]=="OPEN"]
