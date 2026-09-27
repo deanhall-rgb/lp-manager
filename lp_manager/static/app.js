@@ -114,24 +114,25 @@ function renderSentiment(){
 
 function campaignPnl(v){const n=Number(v||0);return `${n>=0?'+':''}${money(n)}`}
 function campaignCard(c){
- const inv=c.wallet_inventory||{},quality=String(c.accounting_quality||'UNKNOWN'),tone=quality==='POSITION_LEDGER_COMPLETE'?'good':'watch';
+ const inv=c.wallet_inventory||{},quality=String(c.accounting_quality||'UNKNOWN'),tone=quality==='POSITION_LEDGER_COMPLETE'?'good':'watch',t=c.thesis||null;
  const inventory=Number(inv.balance||0)>0?`${num(inv.balance,6)} ${esc(c.asset_symbol)} · ${money(inv.value_usd||0)}`:'None visible';
  return `<article class="position-card">
    <div class="card-head"><div><div class="card-title">${esc(c.label||c.asset_symbol)}</div><div class="meta">${esc(c.chain)} · ${c.position_count||0} position leg${Number(c.position_count||0)===1?'':'s'} · ${c.open_positions||0} open / ${c.closed_positions||0} closed</div></div>${badge(c.status,c.status==='ACTIVE'?'good':c.status==='HOLDING'?'watch':'')}</div>
-   <div class="tag-row">${badge(quality,tone)}${badge(c.identity_quality||'DERIVED')}</div>
+   <div class="tag-row">${badge(quality,tone)}${badge(c.identity_quality||'DERIVED')}${t?badge(t.stance||'UNKNOWN',thesisTone(t)):badge('THESIS NOT RESEARCHED','watch')}${t?badge('HOLD '+String(t.hold_comfort||'UNKNOWN'),String(t.hold_comfort)==='COMFORTABLE'?'good':String(t.hold_comfort)==='UNCOMFORTABLE'?'bad':'watch'):''}</div>
    <div class="card-stats">
      <div class="card-stat"><b>${campaignPnl(c.known_campaign_pnl_usd)}</b><span>Known campaign P/L</span></div>
      <div class="card-stat"><b>${money(c.lifetime_fees_usd||0)}</b><span>Lifetime LP fees</span></div>
      <div class="card-stat"><b>${money(c.current_lp_value_usd||0)}</b><span>Current LP value</span></div>
      <div class="card-stat"><b>${inventory}</b><span>Wallet inventory</span></div>
    </div>
-   <div class="actions"><button class="btn secondary small" data-campaign-open="${esc(c.id)}">Open campaign</button></div>
+   <div class="actions"><button class="btn secondary small" data-campaign-open="${esc(c.id)}">Open campaign</button><button class="btn secondary small" data-campaign-thesis="${esc(c.id)}">${t?'Refresh thesis':'Research thesis'}</button></div>
  </article>`;
 }
 function renderCampaigns(){
  const box=$('#campaign-grid');if(!box)return;const rows=state.campaigns||[];
  box.innerHTML=rows.length?rows.map(campaignCard).join(''):'<div class="empty-state">No campaigns yet. Campaigns are created automatically from canonical LP positions.</div>';
- $$('[data-campaign-open]').forEach(b=>b.onclick=()=>showCampaign(b.dataset.campaignOpen));
+ $('[data-campaign-open]').forEach(b=>b.onclick=()=>showCampaign(b.dataset.campaignOpen));
+ $('[data-campaign-thesis]').forEach(b=>b.onclick=()=>researchCampaignThesis(b.dataset.campaignThesis,true));
 }
 function campaignDecisionOption(o){
  const recommended=Boolean(o.recommended),tone=recommended?'good':String(o.status||'').includes('UNAVAILABLE')?'bad':String(o.status||'').includes('REQUIRES')?'watch':'';
