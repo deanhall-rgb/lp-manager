@@ -164,6 +164,17 @@ CREATE TABLE IF NOT EXISTS financial_events (
     status TEXT NOT NULL DEFAULT 'CONFIRMED',
     payload_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS campaigns (
+    id TEXT PRIMARY KEY,
+    chain TEXT NOT NULL,
+    asset_symbol TEXT NOT NULL,
+    asset_address TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    identity_quality TEXT NOT NULL DEFAULT 'SYMBOL_DERIVED'
+);
 """
 
 
@@ -243,6 +254,46 @@ class Store:
         with self.connect() as con:
             row = con.execute("SELECT * FROM positions WHERE id=?", (position_id,)).fetchone()
         return dict(row) if row else None
+
+    def upsert_campaign(
+        self, *, campaign_id: str, chain: str, asset_symbol: str,
+        asset_address: str = "", label: str = "", status: str = "ACTIVE",
+        identity_quality: str = "SYMBOL_DERIVED",
+    ) -> None:
+        now=time.time()
+        with self.connect() as con:
+            existing=con.execute("SELECT created_at FROM campaigns WHERE id=?",(campaign_id,)).fetchone()
+            created=float(existing[0]) if existing else now
+            con.execute(
+                """INSERT INTO campaigns(id,chain,asset_symbol,asset_address,label,status,created_at,updated_at,identity_quality)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     chain=excluded.chain,
+                     asset_symbol=excluded.asset_symbol,
+                     asset_address=CASE WHEN excluded.asset_address<>'' THEN excluded.asset_address ELSE campaigns.asset_address END,
+                     label=excluded.label,
+                     status=excluded.status,
+                     updated_at=excluded.updated_at,
+                     identity_quality=excluded.identity_quality""",
+                (campaign_id,chain,asset_symbol,asset_address,label or f"{asset_symbol} Campaign",status,created,now,identity_quality),
+            )
+
+    def list_campaigns(self) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows=con.execute("SELECT * FROM campaigns ORDER BY updated_at DESC,label ASC").fetchall()
+        return [dict(r) for r in rows]
+
+    def get_campaign(self, campaign_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row=con.execute("SELECT * FROM campaigns WHERE id=?",(campaign_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_position_campaign(self, position_id: str, campaign_id: str, campaign_label: str) -> None:
+        with self.connect() as con:
+            con.execute(
+                "UPDATE positions SET campaign_id=?,campaign_label=? WHERE id=?",
+                (campaign_id,campaign_label,position_id),
+            )
 
     def close_position_record(self, position_id: str) -> bool:
         with self.connect() as con:
