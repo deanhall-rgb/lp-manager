@@ -93,7 +93,7 @@ function campaignCard(c){
 function renderCampaigns(){
  const box=$('#campaign-grid');if(!box)return;const rows=state.campaigns||[];
  box.innerHTML=rows.length?rows.map(campaignCard).join(''):'<div class="empty-state">No campaigns yet. Campaigns are created automatically from canonical LP positions.</div>';
- $('[data-campaign-open]').forEach(b=>b.onclick=()=>showCampaign(b.dataset.campaignOpen));
+ $$('[data-campaign-open]').forEach(b=>b.onclick=()=>showCampaign(b.dataset.campaignOpen));
 }
 function showCampaign(id){
  const c=(state.campaigns||[]).find(x=>String(x.id)===String(id));if(!c)return;
