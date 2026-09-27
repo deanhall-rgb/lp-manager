@@ -1,3 +1,3 @@
-"""LP Manager v0.9 - stable live LP management, forecast tracking and direct close accounting."""
+"""LP Manager v0.9.1 - campaign accounting and provenance foundation."""
 
-__version__ = "0.9"
+__version__ = "0.9.1"
