@@ -92,6 +92,15 @@ async function researchCampaignThesis(id,force=true){
   return t;
  }catch(e){modal(`<div class="warning-box"><b>Sentiment research failed.</b> ${esc(e.message)}</div>`);return null}
 }
+async function researchCampaignThenDecision(id,positionId=null){
+ modal('<div class="empty-state">Refreshing exact-token thesis and then rebuilding the campaign decision…</div>');
+ try{
+  const t=await api('/api/campaign-thesis',{method:'POST',timeoutMs:120000,body:JSON.stringify({campaign_id:id,force_refresh:true})});
+  const c=(state.campaigns||[]).find(x=>String(x.id)===String(id));if(c){c.thesis=t;c.thesis_fresh=thesisFresh(t)}
+  renderCampaigns();renderSentiment();
+  await reviewCampaignDecision(id,positionId);
+ }catch(e){modal(`<div class="warning-box"><b>Thesis refresh failed.</b> ${esc(e.message)}</div>`)}
+}
 async function researchTokenThesis(){
  const chain=$('#sentiment-chain').value,pool=$('#sentiment-pool').value.trim(),asset=$('#sentiment-asset').value.trim();
  if(!pool){toast('Paste a Uniswap V3 pool address');return}
@@ -145,18 +154,20 @@ function campaignDecisionOption(o){
  return `<div class="list-card"><div class="card-head"><div><h3>${esc(o.label||o.action)}</h3><div class="tag-row">${badge(o.status||'AVAILABLE',tone)}${recommended?badge('RECOMMENDED','good'):''}</div></div></div>${metrics.length?`<div class="modal-grid lower">${metrics.join('')}</div>`:''}<p>${esc(o.summary||'')}</p></div>`;
 }
 function renderCampaignDecision(r){
- const cur=r.current_position||{},summary=r.campaign_summary||{},prefill=r.profit_lab_prefill||{},options=r.options||[];
+ const cur=r.current_position||{},summary=r.campaign_summary||{},prefill=r.profit_lab_prefill||{},options=r.options||[],t=r.thesis||null;
  const stateLabel=String(cur.range_state||'NO OPEN LP').replaceAll('_',' ');
  const profitWarning=r.profit_error?`<div class="warning-box lower"><b>Fresh range forecast unavailable:</b> ${esc(r.profit_error)}. The KEEP/HODL decision still uses current campaign state without inventing a forecast.</div>`:'';
  modal(`<div class="card-head"><div><h2>${esc(r.campaign_label)} · next move</h2><p class="meta">Campaign-level decision; child-position P/L remains unchanged.</p></div>${badge(r.recommended_action,r.recommended_action==='KEEP'?'good':r.recommended_action==='RE_RANGE'?'watch':'')}</div>
  <div class="notice lower"><b>${esc(r.headline||'')}</b><br>${esc(r.rationale||'')}</div>
  ${cur.id?`<div class="modal-grid lower">${info('Current leg',esc(cur.display_name||cur.id))}${info('Range state',esc(stateLabel))}${info('Current LP value',money(cur.current_lp_value_usd||0))}${info('Tracked fees',money(cur.tracked_fees_usd||0))}${info('Current leg P/L',cur.net_pnl_after_costs_usd==null?'Pending basis':campaignPnl(cur.net_pnl_after_costs_usd))}${info('Nearest edge',cur.nearest_edge_pct==null?'—':pct(cur.nearest_edge_pct,2))}</div>`:''}
  <div class="modal-grid lower">${info('Known campaign P/L',campaignPnl(summary.known_campaign_pnl_usd||0))}${info('Campaign lifetime fees',money(summary.lifetime_fees_usd||0))}${info('Rebalance capital',money(r.rebalance_capital_usd||0))}${info('Wallet campaign inventory',money(r.wallet_campaign_inventory_usd||0))}${info('Decision horizon',num(r.horizon_days||0,2)+' days')}${info('Fresh-range confidence',esc(r.decision_confidence||'LIMITED'))}</div>
- <div class="panel lower"><div class="panel-head"><div><h2>Compare next moves</h2><p>Fee economics first. Directional conviction is deliberately deferred to v0.9.3.</p></div></div><div class="card-list compact">${options.map(campaignDecisionOption).join('')}</div></div>
+ <div class="panel lower"><div class="panel-head"><div><h2>Campaign thesis</h2><p>Directional evidence is separate from fee economics and can become stale.</p></div>${t?badge(t.stance||'UNKNOWN',thesisTone(t)):badge('NOT RESEARCHED','watch')}</div>${t?`<div class="modal-grid">${info('Stance',esc(t.stance||'UNKNOWN'))}${info('Thesis confidence',pct(t.confidence||0,0))}${info('Holding comfort',esc(t.hold_comfort||'UNKNOWN'))}${info('Hold score',pct(t.hold_comfort_score||0,0))}${info('Research age',thesisAge(t))}</div><p>${esc(t.research_summary||'')}</p>`:'<div class="empty-state">No fresh asset thesis exists yet. Fee economics can still be compared, but HODL/EXIT conviction remains deliberately limited.</div>'}</div>
+ <div class="panel lower"><div class="panel-head"><div><h2>Compare next moves</h2><p>Fee economics remain primary; fresh thesis evidence changes holding/exit preference and can apply only a bounded range skew.</p></div></div><div class="card-list compact">${options.map(campaignDecisionOption).join('')}</div></div>
  ${profitWarning}
  <div class="notice lower"><b>Re-range means close → reopen.</b> Closing the current NFT freezes that leg's result; the replacement LP becomes a new position inside the same campaign. Wallet inventory is not silently added to the new capital allocation.</div>
- <div class="actions">${prefill.pool_address?'<button class="btn" id="campaign-profit-btn">Analyse proposed range in Profit Lab</button>':''}${cur.id?'<button class="btn secondary" id="campaign-current-position-btn">Open current position</button>':''}</div>
+ <div class="actions"><button class="btn secondary" id="campaign-thesis-btn">${t?'Refresh sentiment / thesis':'Research sentiment / thesis'}</button>${prefill.pool_address?'<button class="btn" id="campaign-profit-btn">Analyse proposed range in Profit Lab</button>':''}${cur.id?'<button class="btn secondary" id="campaign-current-position-btn">Open current position</button>':''}</div>
  <details class="lower"><summary>Decision limitations</summary><ul class="assumptions">${(r.limitations||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`);
+ const tb=$('#campaign-thesis-btn');if(tb)tb.onclick=()=>researchCampaignThenDecision(r.campaign_id,cur.id||null);
  const pb=$('#campaign-profit-btn');if(pb)pb.onclick=()=>openCampaignProfitLab(r);
  const cp=$('#campaign-current-position-btn');if(cp)cp.onclick=()=>{closeModal();showPosition(cur.id).catch(e=>toast(e.message))};
 }
