@@ -20,7 +20,7 @@ function sparkline(series){const rows=(series||[]).filter(x=>Number(x.close)>0);
 function info(label,value){return `<div class="info-box"><small>${esc(label)}</small><b>${value}</b></div>`}
 function compactUsd(v){const n=Number(v||0);if(!n)return '—';if(Math.abs(n)>=1e9)return `$${num(n/1e9,2)}b`;if(Math.abs(n)>=1e6)return `$${num(n/1e6,2)}m`;if(Math.abs(n)>=1e3)return `$${num(n/1e3,1)}k`;return `$${num(n,4)}`}
 function unitLabel(unit){const u=String(unit||'').toUpperCase();if(!u||u==='UNKNOWN')return 'unit not verified';if(u==='TOKEN_PRICE_USD'||u==='USD')return 'USD token price';if(u.includes('_PER_'))return u.replace('_PER_',' per ').replaceAll('_',' ');return u.replaceAll('_',' ')}
-function priceNum(v){const n=Number(v||0);if(!Number.isFinite(n))return '—';const a=Math.abs(n);if(a>=10000)return num(n,0);if(a>=100)return num(n,2);if(a>=1)return num(n,4);if(a>=0.001)return num(n,6);return num(n,10)}
+function priceNum(v){const n=Number(v||0);if(!Number.isFinite(n))return '—';const a=Math.abs(n);if(a>=1e18)return n.toExponential(3);if(a>=1e15)return num(n/1e15,2)+'Q';if(a>=1e12)return num(n/1e12,2)+'T';if(a>=1e9)return num(n/1e9,2)+'B';if(a>=1e6)return num(n/1e6,2)+'M';if(a>=10000)return num(n,0);if(a>=100)return num(n,2);if(a>=1)return num(n,4);if(a>=0.001)return num(n,6);return num(n,10)}
 function displayRange(low,high,unit,lens={}){if(lens?.primary_display==='MARKET_CAP'&&lens.lower_market_cap_usd&&lens.upper_market_cap_usd)return `${compactUsd(lens.lower_market_cap_usd)} → ${compactUsd(lens.upper_market_cap_usd)} market cap`;const u=String(unit||lens?.unit||'').toUpperCase();if(u==='TOKEN_PRICE_USD'||u==='USD'||lens?.primary_display==='TOKEN_PRICE_USD')return `$${priceNum(low)} → $${priceNum(high)}`;return `${priceNum(low)} → ${priceNum(high)} ${unitLabel(u)}`}
 
 function econHtml(e,title='Estimated economics'){
@@ -73,6 +73,44 @@ function renderProfitScorecard(){const p=state?.profit_scorecard||{},box=$('#ove
 
 function renderWallet(){const w=state.wallet;if(!w){$('#wallet-metrics').innerHTML='';$('#wallet-assets').innerHTML='<div class="empty-state">No wallet snapshot yet. Click Refresh wallet.</div>';return}$('#wallet-metrics').innerHTML=[['Tracked total',money(w.total_tracked_value_usd),'Liquid + current live LP'],['Liquid holdings',money(w.wallet_liquid_value_usd),'Visible wallet assets'],['LP value',money(w.lp_value_usd),'Current live deployed value'],['Visible assets',String((w.assets||[]).length),`${w.hidden_count||0} spam/dust hidden`],['Wallet',short(w.wallet),'Public address only']].map(x=>`<div class="metric"><div class="label">${x[0]}</div><div class="value">${x[1]}</div><div class="sub">${x[2]}</div></div>`).join('');const table=rows=>rows.length?`<table class="table"><thead><tr><th>Asset</th><th>Network</th><th>Balance</th><th>Price</th><th>Value</th><th>Discovery</th><th>Quality</th></tr></thead><tbody>${rows.sort((a,b)=>(b.value_usd||0)-(a.value_usd||0)).map(x=>`<tr><td><b>${esc(x.symbol)}</b><div class="meta">${x.address?short(x.address):'native'}</div></td><td>${esc(x.chain)}</td><td>${num(x.balance,6)}</td><td>${x.price_usd?money(x.price_usd):'—'}</td><td>${x.value_usd?money(x.value_usd):'—'}</td><td>${badge(x.discovery_source||x.type||'RPC')}</td><td>${badge(x.data_quality,x.price_usd?'good':'watch')}</td></tr>`).join('')}</tbody></table>`:'<div class="empty-state">None.</div>';const h=w.holdings||[];$('#wallet-assets').innerHTML=h.length?`${table(h)}<p class="meta">Coverage: ${esc(w.coverage||'')}</p>`:'<div class="empty-state">No visible positive balances were discovered. Refresh after provider setup or inspect hidden assets.</div>';const hidden=w.hidden_holdings||[];const hb=$('#wallet-hidden-btn');if(hb){hb.textContent=walletShowHidden?`Hide ${hidden.length} hidden`:`Show hidden (${hidden.length})`;$('#wallet-hidden').classList.toggle('hidden',!walletShowHidden);$('#wallet-hidden').innerHTML=walletShowHidden?`<div class="warning-box"><b>Spam/dust quarantine</b> These balances are excluded from tracked portfolio value by default.</div>${table(hidden)}`:''}}
 function renderNetworkCards(rows){return (rows||[]).map(r=>`<div class="list-card"><div class="card-head"><div><b>${esc(r.name||r.chain)}</b><div class="meta">${esc(r.rpc_source||'')} ${r.block_number?`· block ${Number(r.block_number).toLocaleString()}`:''}</div></div>${badge(r.status||((r.rpc_configured||r.ok)?'READY':'MISSING'),(r.ok||r.status==='CONNECTED')?'good':r.rpc_source==='PUBLIC_FALLBACK'?'watch':'')}</div>${r.latency_ms?`<div class="meta">${num(r.latency_ms,0)} ms</div>`:''}${r.error?`<div class="meta">${esc(r.error)}</div>`:''}</div>`).join('')||'<div class="empty-state">No network data.</div>'}
+
+function thesisTone(t){const s=String(t?.stance||'UNKNOWN').toUpperCase();return s.includes('BULLISH')?'good':s.includes('BEARISH')?'bad':s==='NEUTRAL'?'watch':''}
+function thesisFresh(t){return Boolean(t&&Number(t.fresh_until||0)>Date.now()/1000)}
+function thesisAge(t){if(!t?.generated_at)return 'Not researched';const h=Math.max(0,(Date.now()/1000-Number(t.generated_at))/3600);return h<1?num(h*60,0)+'m ago':num(h,1)+'h ago'}
+function thesisSummaryHtml(t){
+ if(!t)return '<div class="empty-state">No campaign thesis has been researched yet.</div>';
+ const src=(t.sources||[]).slice(0,5);
+ return `<div class="modal-grid">${info('Directional stance',esc(t.stance||'UNKNOWN'))}${info('Confidence',pct(t.confidence||0,0))}${info('Holding comfort',esc(t.hold_comfort||'UNKNOWN'))}${info('Hold comfort score',pct(t.hold_comfort_score||0,0))}${info('Technical signal',esc(t.technical_signal||t.technical?.technical_signal||'UNKNOWN'))}${info('Freshness',thesisFresh(t)?'FRESH · '+thesisAge(t):'STALE · '+thesisAge(t))}</div><div class="notice lower"><b>Research view:</b> ${esc(t.research_summary||'No summary supplied.')}</div><div class="two-col lower"><div class="list-card"><b>Why/holding view</b><p>${esc(t.hold_reason||'No holding-comfort rationale supplied.')}</p><div class="meta">${esc(t.range_implication||'')}</div></div><div class="list-card"><b>Invalidation</b><p>${esc(t.invalidation||'Not supplied.')}</p></div></div>${(t.catalysts||[]).length?`<div class="panel lower"><h3>Catalysts</h3><ul class="assumptions">${t.catalysts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}${(t.risks||[]).length?`<div class="panel lower"><h3>Risks</h3><ul class="assumptions">${t.risks.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}${src.length?`<details class="lower"><summary>Research sources</summary>${src.map(x=>`<div class="history-row"><b>${esc(x.title||'Source')}</b><span>${esc(x.url||'')}</span></div>`).join('')}</details>`:''}`;
+}
+function showThesis(t,title='Asset thesis'){modal(`<div class="card-head"><div><h2>${esc(title)}</h2><p class="meta">Directional research is advisory evidence; fee economics and execution safety remain separate.</p></div>${badge(t?.stance||'UNKNOWN',thesisTone(t))}</div>${thesisSummaryHtml(t)}`)}
+async function researchCampaignThesis(id,force=true){
+ modal('<div class="empty-state">Researching exact campaign token, current technical regime and holding-comfort evidence…</div>');
+ try{
+  const t=await api('/api/campaign-thesis',{method:'POST',timeoutMs:120000,body:JSON.stringify({campaign_id:id,force_refresh:Boolean(force)})});
+  const c=(state.campaigns||[]).find(x=>String(x.id)===String(id));if(c){c.thesis=t;c.thesis_fresh=thesisFresh(t)}
+  renderCampaigns();renderSentiment();showThesis(t,(c?.label||t.asset_symbol||'Asset')+' · thesis');
+  return t;
+ }catch(e){modal(`<div class="warning-box"><b>Sentiment research failed.</b> ${esc(e.message)}</div>`);return null}
+}
+async function researchTokenThesis(){
+ const chain=$('#sentiment-chain').value,pool=$('#sentiment-pool').value.trim(),asset=$('#sentiment-asset').value.trim();
+ if(!pool){toast('Paste a Uniswap V3 pool address');return}
+ const box=$('#sentiment-result');box.innerHTML='<div class="empty-state">Researching exact pool/token identity and current thesis…</div>';
+ try{
+  const t=await api('/api/token-thesis',{method:'POST',timeoutMs:120000,body:JSON.stringify({chain,pool_address:pool,asset_symbol:asset||null})});
+  box.innerHTML=`<div class="card-head"><div><h3>${esc(t.asset_symbol||asset||'Token')} thesis</h3><div class="meta">${esc(t.chain||chain)} · ${thesisAge(t)}</div></div>${badge(t.stance||'UNKNOWN',thesisTone(t))}</div>${thesisSummaryHtml(t)}`;
+ }catch(e){box.innerHTML=`<div class="warning-box">${esc(e.message)}</div>`}
+}
+function sentimentCampaignCard(c){
+ const t=c.thesis||null;
+ return `<article class="position-card"><div class="card-head"><div><div class="card-title">${esc(c.label||c.asset_symbol)}</div><div class="meta">${esc(c.chain)} · ${t?thesisAge(t):'Not researched'}</div></div>${t?badge(t.stance||'UNKNOWN',thesisTone(t)):badge('NO THESIS','watch')}</div><div class="tag-row">${t?badge('HOLD '+String(t.hold_comfort||'UNKNOWN'),String(t.hold_comfort)==='COMFORTABLE'?'good':String(t.hold_comfort)==='UNCOMFORTABLE'?'bad':'watch'):''}${t?badge((thesisFresh(t)?'FRESH':'STALE'),thesisFresh(t)?'good':'watch'):''}</div><div class="card-stats"><div class="card-stat"><b>${t?pct(t.confidence||0,0):'—'}</b><span>Thesis confidence</span></div><div class="card-stat"><b>${t?pct(t.hold_comfort_score||0,0):'—'}</b><span>Hold comfort</span></div><div class="card-stat"><b>${money(c.marked_exposure_usd||0)}</b><span>Marked exposure</span></div><div class="card-stat"><b>${campaignPnl(c.known_campaign_pnl_usd)}</b><span>Known campaign P/L</span></div></div><div class="actions"><button class="btn small" data-thesis-research="${esc(c.id)}">Research sentiment</button>${t?'<button class="btn secondary small" data-thesis-view="'+esc(c.id)+'">View thesis</button>':''}</div></article>`;
+}
+function renderSentiment(){
+ const box=$('#sentiment-campaigns');if(!box)return;const rows=state.campaigns||[];
+ box.innerHTML=rows.length?rows.map(sentimentCampaignCard).join(''):'<div class="empty-state">No campaigns available.</div>';
+ $$('[data-thesis-research]').forEach(b=>b.onclick=()=>researchCampaignThesis(b.dataset.thesisResearch,true));
+ $$('[data-thesis-view]').forEach(b=>b.onclick=()=>{const c=(state.campaigns||[]).find(x=>String(x.id)===String(b.dataset.thesisView));if(c?.thesis)showThesis(c.thesis,c.label+' · thesis')});
+}
 
 function campaignPnl(v){const n=Number(v||0);return `${n>=0?'+':''}${money(n)}`}
 function campaignCard(c){
