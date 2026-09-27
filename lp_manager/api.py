@@ -57,6 +57,7 @@ from .fee_metrics import observed_fee_metrics
 from .position_identity import canonical_display_name, authoritative_position
 from .financial_truth import portfolio_financial_truth
 from .close_accounting import finalise_execution_close, repair_confirmed_execution_closes
+from .campaign_accounting import build_campaigns, campaign_by_id, sync_campaign_registry
 
 
 class ScoutIntent(BaseModel):
@@ -448,7 +449,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.9", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.9.1", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -460,7 +461,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.9",
+            "version": "0.9.1",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -485,10 +486,12 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             [{"position": p, "risk": edge_risk(p)} for p in open_positions],
             key=lambda row: row["risk"]["score"], reverse=True,
         )
+        campaigns=build_campaigns(store)
         return {
             "summary": portfolio_summary(positions),
             "money": money_context(settings, store),
             "wallet": store.get_wallet_snapshot(),
+            "campaigns": campaigns,
             "portfolio_by_sleeve": portfolio_by_sleeve(positions),
             "strategy_profiles": policies_payload(),
             "scout_universe": scout_universe(),
@@ -507,6 +510,17 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "profit_scorecard": portfolio_profit_scorecard(store),
             "profit_last_recommendation": store.get_setting("profit:last_recommendation", None),
         }
+
+    @app.get("/api/campaigns")
+    def campaigns_view():
+        return {"campaigns":build_campaigns(store)}
+
+    @app.get("/api/campaigns/{campaign_id:path}")
+    def campaign_view(campaign_id: str):
+        row=campaign_by_id(store,campaign_id)
+        if not row:
+            raise HTTPException(404,"Campaign not found")
+        return row
 
     @app.get("/api/profit/scorecard")
     def profit_scorecard():
