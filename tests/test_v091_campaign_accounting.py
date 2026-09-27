@@ -73,7 +73,9 @@ def test_campaign_identity_groups_asset_across_quote_pairs():
 
     assert delta["id"] == "campaign:ROBINHOOD_CHAIN:DELTA"
     assert pons_eth["id"] == pons_usdg["id"] == "campaign:ROBINHOOD_CHAIN:PONS"
-    assert weth_income["id"] == "campaign:ROBINHOOD_CHAIN:ETH"\n    assert weth_income["label"] == "ETH"\n    assert weth_income["asset_symbol"] == "ETH"
+    assert weth_income["id"] == "campaign:ROBINHOOD_CHAIN:ETH"
+    assert weth_income["label"] == "ETH"
+    assert weth_income["asset_symbol"] == "ETH"
 
 
 def test_campaign_aggregates_child_results_without_counting_unattributed_wallet_inventory(tmp_path):
