@@ -212,6 +212,7 @@ class ProfitRangeIntent(BaseModel):
     sleeve: str = "AUTO"
     monthly_target_pct: float = 10.0
     history_days: int | None = None
+    campaign_id: str | None = None
 
 
 class CampaignDecisionIntent(BaseModel):
@@ -697,6 +698,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     monthly_target_pct=max(0.0,float(intent.monthly_target_pct)),
                     pool_fallback=pool_fallback,
                     compare_fee_tiers=False,
+                    thesis=store.get_setting(f"campaign:thesis:{intent.campaign_id}",None),
                 )
             except Exception as exc:
                 profit_error=str(exc)[:280]
@@ -743,9 +745,13 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         capital_usd=max(1.0,_display_capital_to_usd(intent.capital))
         sleeve=str(intent.sleeve or "AUTO").upper()
         target=max(0.0,float(intent.monthly_target_pct))
+        thesis=store.get_setting(f"campaign:thesis:{intent.campaign_id}",None) if intent.campaign_id else None
+        if thesis and not thesis_is_fresh(thesis):
+            thesis=None
+        thesis_version=int(float((thesis or {}).get("generated_at") or 0))
         cache_key=(
-            f"profit:last:v09:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
-            f"{round(capital_usd,2)}:{round(target,2)}"
+            f"profit:last:v093:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
+            f"{round(capital_usd,2)}:{round(target,2)}:{intent.campaign_id or 'NO_CAMPAIGN'}:{thesis_version}"
         )
         pool_fallback=None
         for op in store.list_opportunities(500):
@@ -784,18 +790,19 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     horizon_days=horizon, capital=capital_usd, sleeve=sleeve,
                     monthly_target_pct=target,
                     history_days=intent.history_days, pool_fallback=pool_fallback,
+                    thesis=thesis,
                 )
                 result["generated_at"]=time.time()
                 result["data_status"]="LIVE_OR_VALIDATED_HISTORY"
-                audit=store.record_forecast_snapshot(result,model_version="v0.9")
+                audit=store.record_forecast_snapshot(result,model_version="v0.9.3")
                 result["forecast_snapshot_id"]=audit["id"]
-                store.set_setting("profit:last_recommendation:v09", result)
+                store.set_setting("profit:last_recommendation:v093", result)
                 store.set_setting(cache_key,result)
                 return result
             except Exception as exc:
                 cached=store.get_setting(cache_key,None)
                 if not isinstance(cached,dict):
-                    last=store.get_setting("profit:last_recommendation:v09",None)
+                    last=store.get_setting("profit:last_recommendation:v093",None)
                     if isinstance(last,dict) and str(last.get("chain") or "").upper()==chain and str(last.get("pool_address") or "").lower()==address:
                         cached=last
                 if isinstance(cached,dict):
