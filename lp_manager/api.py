@@ -796,7 +796,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 result["data_status"]="LIVE_OR_VALIDATED_HISTORY"
                 audit=store.record_forecast_snapshot(result,model_version="v0.9")
                 result["forecast_snapshot_id"]=audit["id"]
-                store.set_setting("profit:last_recommendation:v093", result)\n                store.set_setting("profit:last_recommendation:v09", result)
+                store.set_setting("profit:last_recommendation:v093", result)
+                store.set_setting("profit:last_recommendation:v09", result)
                 store.set_setting(cache_key,result)
                 return result
             except Exception as exc:
