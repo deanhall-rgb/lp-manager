@@ -133,6 +133,109 @@ class IntelligenceService:
         context={"summary":summary,"positions":top,"opportunities":opportunities[:10],"recent_decisions":self.store.list_decisions(10)}
         return self._ask("Produce the current portfolio brief.",context,fallback,purpose="PORTFOLIO_BRIEF")
 
+    def campaign_thesis(
+        self,
+        campaign: dict[str, Any],
+        technical: dict[str, Any],
+        *,
+        pool_context: dict[str, Any] | None = None,
+        force_web: bool = True,
+    ) -> dict[str, Any]:
+        """Research asset direction and holding comfort on explicit user request.
+
+        This is advisory evidence only. The exact chain/contract is supplied to
+        reduce symbol-collision risk for small-cap tokens.
+        """
+        asset=str(campaign.get("asset_symbol") or "").upper()
+        address=str(campaign.get("asset_address") or "")
+        chain=str(campaign.get("chain") or "").upper()
+        fallback={
+            "stance":technical.get("stance") or "UNKNOWN",
+            "confidence":technical.get("confidence") or 25,
+            "hold_comfort":"UNKNOWN",
+            "hold_comfort_score":50,
+            "research_summary":technical.get("research_summary") or "Technical evidence only.",
+            "technical_signal":technical.get("technical_signal") or "NEUTRAL",
+            "fundamental_sentiment":"NOT_RESEARCHED",
+            "hold_reason":"Independent asset-specific evidence is unavailable; do not infer holding comfort from price momentum alone.",
+            "range_implication":technical.get("range_implication") or "Keep sentiment influence bounded until stronger evidence exists.",
+            "catalysts":[],
+            "risks":["No independent current asset/news research was completed."],
+            "invalidation":"Material price-regime or asset-specific evidence change.",
+            "sources":[],
+            "research_quality":"TECHNICAL_ONLY",
+        }
+        if not self.settings.ai_enabled or not self.settings.openai_api_key:
+            return {**fallback,"ai_mode":"DETERMINISTIC_FALLBACK","model":None,"generated_at":time.time()}
+
+        instructions=(
+            "You are the asset-thesis research layer for a concentrated-liquidity portfolio manager. "
+            "Research the EXACT token using the supplied chain and contract address; never rely on ticker symbol alone. "
+            "Separate technical ratio momentum from asset-specific fundamental/news sentiment. "
+            "The user needs two direct conclusions: directional stance over roughly the next 3-7 days, and whether this asset is reasonably comfortable to hold if an LP exits range into the asset. "
+            "Holding comfort must consider liquidity, token/protocol quality, concentration, identifiable catalysts/risks and evidence quality; it is not a guarantee of price appreciation. "
+            "Do not recommend leverage or claim certainty. If identity or evidence is weak, use UNKNOWN/CONDITIONAL rather than inventing confidence. "
+            "Return ONLY the requested JSON."
+        )
+        schema={
+            "type":"object",
+            "properties":{
+                "stance":{"type":"string","enum":["BULLISH","LEAN_BULLISH","NEUTRAL","LEAN_BEARISH","BEARISH","UNKNOWN"]},
+                "confidence":{"type":"number","minimum":0,"maximum":100},
+                "hold_comfort":{"type":"string","enum":["COMFORTABLE","CONDITIONAL","UNCOMFORTABLE","UNKNOWN"]},
+                "hold_comfort_score":{"type":"number","minimum":0,"maximum":100},
+                "research_summary":{"type":"string"},
+                "technical_signal":{"type":"string"},
+                "fundamental_sentiment":{"type":"string"},
+                "hold_reason":{"type":"string"},
+                "range_implication":{"type":"string"},
+                "catalysts":{"type":"array","items":{"type":"string"}},
+                "risks":{"type":"array","items":{"type":"string"}},
+                "invalidation":{"type":"string"},
+                "sources":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"url":{"type":"string"}},"required":["title","url"],"additionalProperties":False}},
+                "research_quality":{"type":"string","enum":["WEB_RESEARCH","LIMITED_WEB_RESEARCH","TECHNICAL_ONLY","IDENTITY_UNCERTAIN"]},
+            },
+            "required":["stance","confidence","hold_comfort","hold_comfort_score","research_summary","technical_signal","fundamental_sentiment","hold_reason","range_implication","catalysts","risks","invalidation","sources","research_quality"],
+            "additionalProperties":False,
+        }
+        context={
+            "asset":{"symbol":asset,"contract_address":address,"chain":chain},
+            "campaign":{
+                "status":campaign.get("status"),
+                "known_campaign_pnl_usd":campaign.get("known_campaign_pnl_usd"),
+                "lifetime_fees_usd":campaign.get("lifetime_fees_usd"),
+                "wallet_inventory":campaign.get("wallet_inventory"),
+                "open_positions":campaign.get("open_positions"),
+                "closed_positions":campaign.get("closed_positions"),
+            },
+            "technical":technical,
+            "pool_context":pool_context or {},
+            "research_horizon":"3-7 days for tactical direction; holding-comfort conclusion may look beyond that horizon.",
+        }
+        body={
+            "model":self.settings.openai_model,
+            "instructions":instructions,
+            "input":"TASK: Research campaign asset thesis and holding comfort.\nDATA:\n"+json.dumps(context,sort_keys=True,default=str),
+            "text":{"format":{"type":"json_schema","name":"campaign_asset_thesis","strict":True,"schema":schema}},
+        }
+        if force_web or self.settings.ai_web_search:
+            body["tools"]=[{"type":"web_search"}]
+        try:
+            r=requests.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization":f"Bearer {self.settings.openai_api_key}","Content-Type":"application/json"},
+                json=body,timeout=55,
+            )
+            r.raise_for_status()
+            payload=r.json()
+            self._record_usage(payload,"CAMPAIGN_THESIS")
+            parsed=json.loads(_extract_response_text(payload))
+            if not isinstance(parsed,dict):
+                raise ValueError("AI thesis output was not a JSON object")
+            return {**parsed,"ai_mode":"OPENAI_RESPONSES","model":self.settings.openai_model,"generated_at":time.time()}
+        except Exception as exc:
+            return {**fallback,"ai_mode":"DETERMINISTIC_FALLBACK_AFTER_ERROR","ai_error":str(exc)[:240],"model":self.settings.openai_model,"generated_at":time.time()}
+
     def position_review(self, position: dict[str, Any]) -> dict[str, Any]:
         decision=deterministic_plan(position)
         risk=edge_risk(position)
