@@ -13,6 +13,7 @@ on:
       - "v0.9"
       - "v0.9.1"
       - "v0.9.2"
+      - "v0.9.3"
   pull_request:
 
 jobs:
@@ -40,19 +41,19 @@ jobs:
 
   package:
     needs: test
-    if: github.ref == 'refs/heads/v0.9.2' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/v0.9.3' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build clean V0.9.2 release ZIP
+      - name: Build clean V0.9.3 release ZIP
         run: |
           mkdir -p dist
-          zip -r dist/LP_Manager_v0.9.2.zip . \
+          zip -r dist/LP_Manager_v0.9.3.zip . \
             -x '.git/*' 'dist/*' '__pycache__/*' '*.pyc' '.venv/*' 'data/*' '.env'
-      - name: Upload V0.9.2 release artifact
+      - name: Upload V0.9.3 release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LP_Manager_v0.9.2
-          path: dist/LP_Manager_v0.9.2.zip
+          name: LP_Manager_v0.9.3
+          path: dist/LP_Manager_v0.9.3.zip
           if-no-files-found: error
           retention-days: 30
