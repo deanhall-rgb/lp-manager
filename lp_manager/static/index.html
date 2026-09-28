@@ -20,7 +20,6 @@
       <button class="nav" data-section="opportunities"><span>⌕</span> Opportunities</button>
       <button class="nav" data-section="profit"><span>£</span> Profit Lab</button>
       <button class="nav" data-section="execution"><span>⇄</span> Execution Desk</button>
-      <button class="nav" data-section="replay"><span>↶</span> Replay</button>
       <button class="nav" data-section="decisions"><span>✦</span> Decisions</button>
       <button class="nav" data-section="automation"><span>⚙</span> Automation</button>
       <button class="nav" data-section="system"><span>☷</span> System</button>
@@ -55,7 +54,7 @@
     </section>
 
     <section id="positions-section" class="section">
-      <div class="section-hero"><div><h2>Positions & campaigns</h2><p>Every LP follows the same lifecycle record: thesis → range → monitoring → decisions → outcome.</p><div id="position-discovery-status" class="meta lower-tight">Owned V3 NFTs are auto-discovered from wallet ownership + transfer logs and verified on-chain.</div></div><div class="top-actions"><input id="delta-history-file" type="file" accept="application/json,.json" class="hidden"><button id="position-rescan-btn" class="btn secondary">Rescan wallet LPs</button><button id="position-tx-import-btn" class="btn secondary">Import opening tx</button><button id="delta-history-btn" class="btn secondary">Import DELTA research history</button><button id="legacy-import-btn" class="btn secondary">Sync old bot ledger</button><button id="new-position-btn-2" class="btn">Prepare position</button></div></div>
+      <div class="section-hero"><div><h2>Positions & campaigns</h2><p>Every LP follows the same lifecycle record: thesis → range → monitoring → decisions → outcome.</p><div id="position-discovery-status" class="meta lower-tight">Owned V3 NFTs are auto-discovered from wallet ownership + transfer logs and verified on-chain.</div></div><div class="top-actions"><button id="position-rescan-btn" class="btn">Refresh LPs</button></div></div>
       <div class="filter-row"><button class="pill active" data-position-filter="OPEN">Open</button><button class="pill" data-position-filter="ALL">All</button><button class="pill" data-position-filter="CLOSED">Closed</button></div>
       <div id="positions-grid" class="positions-grid"></div>
     </section>
@@ -145,6 +144,7 @@
       <div class="section-hero"><div><h2>System</h2><p>Provider health, execution limits and diagnostics without exposing secrets.</p></div><div class="top-actions"><button id="support-bundle-btn" class="btn secondary">Support bundle</button><button id="system-refresh-btn" class="btn">Refresh live data</button></div></div>
       <div class="two-col"><div class="panel"><div class="panel-head"><div><h2>RPC & providers</h2></div><button id="rpc-test-btn-2" class="btn secondary small">Run health test</button></div><div id="system-rpcs" class="card-list compact"></div></div><div class="panel"><div class="panel-head"><div><h2>AI intelligence</h2></div></div><div id="system-ai"></div></div></div>
       <div class="two-col lower"><div class="panel"><div class="panel-head"><div><h2>Execution authority</h2></div></div><div id="system-execution"></div></div><div class="panel"><div class="panel-head"><div><h2>Legacy integration</h2></div></div><div id="system-legacy"></div></div></div>
+      <div class="panel lower"><div class="panel-head"><div><h2>Advanced validation</h2><p>Replay is retained as an engineering/regression tool, but removed from the normal LP-management workflow.</p></div><button id="system-replay-btn" class="btn secondary small">Open Replay validation</button></div></div>
     </section>
   </main>
 </div>
