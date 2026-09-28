@@ -69,6 +69,11 @@ from .performance_log import (
     EXTERNAL_DEPOSIT,
     EXTERNAL_WITHDRAWAL,
 )
+from .wallet_audit import (
+    scan_wallet_audit,
+    wallet_audit_summary,
+    resolve_wallet_audit_event,
+)
 
 
 class ScoutIntent(BaseModel):
@@ -251,6 +256,17 @@ class PerformanceCashFlowIntent(BaseModel):
 
 class PerformanceTargetIntent(BaseModel):
     target_monthly_pct: float = 10.0
+
+
+class WalletAuditScanIntent(BaseModel):
+    chains: list[str] | None = None
+
+
+class WalletAuditResolveIntent(BaseModel):
+    event_id: str
+    classification: str
+    fiat_amount: float | None = None
+    note: str = ""
 
 
 class ProfitSearchIntent(BaseModel):
@@ -546,7 +562,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.9.4", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.9.5", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -558,7 +574,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.9.4",
+            "version": "0.9.5",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -606,6 +622,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "automation": get_automation_policy(store),
             "profit_scorecard": portfolio_profit_scorecard(store),
             "performance_log": build_performance_log(store, capture=True),
+            "wallet_audit": wallet_audit_summary(settings, store),
             "profit_last_recommendation": store.get_setting("profit:last_recommendation", None),
         }
 
@@ -1699,6 +1716,30 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     @app.get("/api/performance")
     def performance_view(limit: int = 120):
         return build_performance_log(store, capture=True, limit=max(1,min(366,int(limit))))
+
+    @app.get("/api/wallet-audit")
+    def wallet_audit_view():
+        return wallet_audit_summary(settings, store)
+
+    @app.post("/api/wallet-audit/scan")
+    def wallet_audit_scan(intent: WalletAuditScanIntent):
+        result=scan_wallet_audit(settings,store,chains=intent.chains)
+        return {**result,"audit":wallet_audit_summary(settings,store)}
+
+    @app.post("/api/wallet-audit/resolve")
+    def wallet_audit_resolve(intent: WalletAuditResolveIntent):
+        try:
+            row=resolve_wallet_audit_event(
+                settings,store,intent.event_id,
+                classification=intent.classification,
+                fiat_amount=intent.fiat_amount,
+                note=intent.note,
+            )
+        except KeyError as exc:
+            raise HTTPException(404,str(exc))
+        except ValueError as exc:
+            raise HTTPException(400,str(exc))
+        return {"ok":True,"event":row,"audit":wallet_audit_summary(settings,store)}
 
     @app.post("/api/performance/target")
     def performance_target(intent: PerformanceTargetIntent):
