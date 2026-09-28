@@ -16,6 +16,7 @@ HISTORICAL_LOOKBACK_DAYS = 35
 DAYS_IN_MONTH = 30.4375
 FEE_TARGET_SETTING = "performance:monthly_fee_target_pct"
 DEFAULT_MONTHLY_FEE_TARGET_PCT = 10.0
+OFFICIAL_PERFORMANCE_START_DAY = "2026-09-24"
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -598,8 +599,15 @@ def performance_log(store, *, capture: bool = False, limit: int = 120) -> dict[s
         if historical:
             all_days[day_key] = historical
 
-    days = sorted(all_days.values(), key=lambda row: str(row.get("day_key") or ""), reverse=True)[:max(1, int(limit))]
-    chronological_recorded = sorted(recorded.values(), key=lambda row: str(row.get("day_key") or ""))
+    days = sorted(
+        [row for row in all_days.values() if str(row.get("day_key") or "") >= OFFICIAL_PERFORMANCE_START_DAY],
+        key=lambda row: str(row.get("day_key") or ""),
+        reverse=True,
+    )[:max(1, int(limit))]
+    chronological_recorded = sorted(
+        [row for row in recorded.values() if str(row.get("day_key") or "") >= OFFICIAL_PERFORMANCE_START_DAY],
+        key=lambda row: str(row.get("day_key") or ""),
+    )
 
     if chronological_recorded:
         first = chronological_recorded[0]
@@ -654,8 +662,9 @@ def performance_log(store, *, capture: bool = False, limit: int = 120) -> dict[s
             "current_unclaimed_fees_usd": current.get("unclaimed_fees_usd"),
         },
         "days": days,
+        "official_start_day": OFFICIAL_PERFORMANCE_START_DAY,
         "note": (
-            "Direct portfolio P/L begins with the first v0.9.4 accounting snapshot. Earlier dates are backfilled only "
+            "Official LP fee-performance reporting starts on 24/09/2026. Direct portfolio P/L begins with the first v0.9.4 accounting snapshot. Earlier dates are backfilled only "
             "from stored evidence such as fee-tracker observations, lifecycle events, forecasts, actions and decisions; "
             "historical whole-portfolio P/L is shown as Not captured rather than invented. From v0.9.4 onward the system "
             "also keeps hourly accounting checkpoints. Accounting wealth is liquid wallet + open LP principal + currently "
@@ -665,6 +674,8 @@ def performance_log(store, *, capture: bool = False, limit: int = 120) -> dict[s
 
 
 def performance_day(store, day_key: str) -> dict[str, Any] | None:
+    if str(day_key or "") < OFFICIAL_PERFORMANCE_START_DAY:
+        return None
     target_pct=performance_fee_target_pct(store)
     row = store.get_performance_day(day_key)
     if row:
