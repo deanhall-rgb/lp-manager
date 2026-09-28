@@ -11,6 +11,7 @@ from lp_manager.performance_log import (
     performance_day,
     performance_log,
     set_performance_fee_target_pct,
+    OFFICIAL_PERFORMANCE_START_DAY,
 )
 
 
@@ -169,6 +170,62 @@ def test_v094_capture_retains_hourly_checkpoints(tmp_path):
     assert detail["hourly"][0]["samples"] == 2
 
 
+def test_official_performance_log_starts_24_september_without_deleting_underlying_evidence(tmp_path):
+    store=Store(tmp_path/"official_start.sqlite3")
+    tz=datetime.now().astimezone().tzinfo
+    position=_position(unclaimed=6.0,realised=0.0)
+    position.opened_at=datetime(2026,9,23,8,0,tzinfo=tz).timestamp()
+    store.upsert_position(position)
+    observations=[
+        {"timestamp":datetime(2026,9,23,10,0,tzinfo=tz).timestamp(),"cumulative_earned_usd":1.0},
+        {"timestamp":datetime(2026,9,23,20,0,tzinfo=tz).timestamp(),"cumulative_earned_usd":3.0},
+        {"timestamp":datetime(2026,9,24,10,0,tzinfo=tz).timestamp(),"cumulative_earned_usd":4.0},
+        {"timestamp":datetime(2026,9,24,20,0,tzinfo=tz).timestamp(),"cumulative_earned_usd":6.0},
+    ]
+    store.set_setting("fees:tracker:"+position.id,{
+        "opened_at":position.opened_at,
+        "cumulative_earned_usd":6.0,
+        "observations":observations,
+    })
+
+    log=performance_log(store,capture=False)
+    assert OFFICIAL_PERFORMANCE_START_DAY == "2026-09-24"
+    assert log["official_start_day"] == "2026-09-24"
+    assert "2026-09-24" in [x["day_key"] for x in log["days"]]
+    assert "2026-09-23" not in [x["day_key"] for x in log["days"]]
+    # Underlying tracker evidence is preserved; it is only excluded from the official view.
+    tracker=store.get_setting("fees:tracker:"+position.id,{})
+    assert len(tracker["observations"]) == 4
+    assert performance_day(store,"2026-09-23") is None
+
+
+def test_v094_final_cleanup_keeps_replay_as_advanced_validation_only():
+    root=Path(__file__).parents[1]
+    html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
+    js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
+
+    assert 'data-section="replay"' not in html
+    assert 'id="replay-section"' in html
+    assert 'id="system-replay-btn"' in html
+    assert "Open Replay validation" in html
+    assert "systemReplay.onclick=()=>navigate('replay')" in js
+
+
+def test_v094_final_cleanup_positions_exposes_only_safe_lp_refresh():
+    root=Path(__file__).parents[1]
+    html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
+    js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
+
+    assert 'id="position-rescan-btn"' in html
+    assert "Refresh LPs" in html
+    assert 'id="position-tx-import-btn"' not in html
+    assert 'id="delta-history-btn"' not in html
+    assert 'id="legacy-import-btn"' not in html
+    assert 'id="new-position-btn-2"' not in html
+    assert 'id="delta-history-file"' not in html
+    assert "positionRescan.onclick=()=>rescanWalletLPs()" in js
+
+
 def test_v094_ui_has_separate_performance_log_workspace():
     root=Path(__file__).parents[1]
     html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
@@ -193,3 +250,4 @@ def test_v094_ui_has_separate_performance_log_workspace():
     assert "$('[data-performance-day]').forEach" in js
     assert "Hourly checkpoints" in js
     assert "Record external cash flow" in js
+    assert "official_start_day" not in js or "Official LP fee-performance reporting starts" in js
