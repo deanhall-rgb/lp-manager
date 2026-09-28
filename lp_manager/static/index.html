@@ -9,12 +9,13 @@
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.9.3 · sentiment & thesis</div></div></div>
+    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.9.4 · performance log</div></div></div>
     <nav>
       <button class="nav active" data-section="overview"><span>⌂</span> Overview</button>
       <button class="nav" data-section="wallet"><span>◈</span> Wallet</button>
       <button class="nav" data-section="positions"><span>▦</span> Positions</button>
       <button class="nav" data-section="campaigns"><span>◎</span> Campaigns</button>
+      <button class="nav" data-section="performance"><span>↗</span> Performance Log</button>
       <button class="nav" data-section="sentiment"><span>◐</span> Sentiment</button>
       <button class="nav" data-section="opportunities"><span>⌕</span> Opportunities</button>
       <button class="nav" data-section="profit"><span>£</span> Profit Lab</button>
@@ -63,6 +64,13 @@
       <div class="section-hero"><div><h2>Campaigns</h2><p>Asset-level accounting across every LP leg. Position outcomes stay intact while the campaign shows the combined economic story.</p></div></div>
       <div class="notice"><b>Accounting boundary:</b> campaign P/L aggregates evidenced LP outcomes. Current wallet inventory is shown alongside it, but is excluded from P/L until its acquisition cost/provenance is known.</div>
       <div id="campaign-grid" class="positions-grid lower"></div>
+    </section>
+
+    <section id="performance-section" class="section">
+      <div class="section-hero"><div><h2>Performance Log</h2><p>Daily portfolio P/L, fee production, realised results, costs and actions with deposits/withdrawals kept separate from investment performance.</p></div><button id="performance-cashflow-btn" class="btn secondary">Record cash flow</button></div>
+      <div id="performance-note" class="notice"></div>
+      <div id="performance-running" class="metric-grid"></div>
+      <div class="panel lower"><div class="panel-head"><div><h2>Daily accounting</h2><p>Each day starts from the first v0.9.4 observation and updates through the latest sample. Click a day for position changes and recorded actions.</p></div></div><div id="performance-days"></div></div>
     </section>
 
     <section id="sentiment-section" class="section">
