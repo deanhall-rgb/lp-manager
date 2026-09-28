@@ -173,25 +173,22 @@ def test_robinscan_public_history_parses_transactions_transfers_and_gas(monkeypa
         "method":"approve",
         "status":"ok",
     }]
-    transfer_rows=[{
-        "txHash":"0xapprove",
-        "logIndex":7,
-        "timestamp":"2026-09-01T12:00:00Z",
-        "method":"transfer",
-        "from":{"hash":wallet,"name":None},
-        "to":{"hash":"0x3333333333333333333333333333333333333333","name":"Pool"},
-        "amount":"4800000000000000000000",
-        "decimals":"18",
-        "token":{"address_hash":"0xe8ffd7e24187f72afb08d75b1bb13088a989a791","symbol":"DELTA","name":"DELTA"},
-    }]
-    monkeypatch.setattr(
-        wallet_audit,
-        "_robinscan_pages",
-        lambda path,max_pages=100: transfer_rows if path.endswith("/transfers") else tx_rows,
-    )
+    monkeypatch.setattr(wallet_audit,"_robinscan_pages",lambda path,max_pages=100:tx_rows)
+    monkeypatch.setattr(wallet_audit,"_robinscan_tx_detail",lambda tx_hash:{
+        "hash":tx_hash,
+        "method":"approve",
+        "tokenTransfers":[{
+            "logIndex":7,
+            "from":{"hash":wallet,"name":None},
+            "to":{"hash":"0x3333333333333333333333333333333333333333","name":"Pool"},
+            "value":"4800000000000000000000",
+            "decimals":"18",
+            "token":{"address_hash":"0xe8ffd7e24187f72afb08d75b1bb13088a989a791","symbol":"DELTA","name":"DELTA"},
+        }],
+    })
     cfg=chain_config("ROBINHOOD_CHAIN")
     txs=wallet_audit._robinscan_transactions(cfg,wallet,{})
-    transfers=wallet_audit._robinscan_transfers(cfg,wallet)
+    transfers=wallet_audit._robinscan_transfers_from_details(cfg,wallet,txs)
 
     assert len(txs)==1
     assert txs[0]["kind"]=="APPROVAL"
@@ -215,14 +212,15 @@ def test_robinhood_scan_prefers_public_robinscan_and_marks_bridge_internal(tmp_p
         "source":"ROBINSCAN_PUBLIC_API","payload":{},
     }]
     monkeypatch.setattr(wallet_audit,"_robinscan_transactions",lambda cfg,wallet,known:tx)
-    monkeypatch.setattr(wallet_audit,"_robinscan_transfers",lambda cfg,wallet:[])
+    monkeypatch.setattr(wallet_audit,"_robinscan_transfers_from_details",lambda cfg,wallet,tx_rows:[])
+    monkeypatch.setattr(wallet_audit,"_alchemy_url",lambda cfg:"")
     monkeypatch.setattr(wallet_audit,"_blockscout_transactions",lambda *a,**k: (_ for _ in ()).throw(AssertionError("Blockscout should not be used for Robinhood when Robinscan works")))
 
     result=wallet_audit.scan_wallet_audit(_settings(),store,chains=["ROBINHOOD_CHAIN"])
     row=result["chains"][0]
     assert row["full_transaction_history"] is True
     assert row["transaction_provider"]=="ROBINSCAN_PUBLIC_API"
-    assert row["transfer_provider"]=="ROBINSCAN_PUBLIC_API"
+    assert row["transfer_provider"]=="ROBINSCAN_TX_DETAIL"
     assert row["transaction_error"]==""
     assert row["transactions"]==1
     assert row["transfers"]==1
@@ -244,8 +242,9 @@ def test_full_history_count_only_counts_active_chains(tmp_path):
             {"chain":"ARBITRUM","transfers":0,"transactions":0,"full_transaction_history":False},
         ],
     })
+    store.list_positions=lambda status=None:[{"chain":"ROBINHOOD_CHAIN","monitoring_class":"TACTICAL_CAMPAIGN"}]
     summary=wallet_audit_summary(_settings(),store)
-    assert summary["metrics"]["active_chains"]==2
+    assert summary["metrics"]["active_chains"]==3
     assert summary["metrics"]["full_history_chains"]==2
 
 
