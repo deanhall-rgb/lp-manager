@@ -80,4 +80,6 @@ def test_v094_ui_has_separate_performance_log_workspace():
     assert "Accounting wealth" in js
     assert "Monthly fee run-rate" in js
     assert "data-performance-day" in js
+    assert "$('[data-performance-day]').forEach" in js
+    assert " $('[data-performance-day]').forEach" not in js
     assert "Record external cash flow" in js
