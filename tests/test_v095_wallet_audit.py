@@ -160,6 +160,95 @@ def test_wallet_audit_summary_includes_full_transactions_gas_and_transfer_contex
     assert summary["activity"][0]["transfers"][0]["asset"]=="ETH"
 
 
+def test_robinscan_public_history_parses_transactions_transfers_and_gas(monkeypatch):
+    wallet="0x1111111111111111111111111111111111111111"
+    tx_rows=[{
+        "hash":"0xapprove",
+        "blockNumber":123,
+        "timestamp":"2026-09-01T12:00:00Z",
+        "from":{"hash":wallet,"name":None},
+        "to":{"hash":"0x2222222222222222222222222222222222222222","name":"DELTA"},
+        "value":"0",
+        "fee":"2500000000000",
+        "method":"approve",
+        "status":"ok",
+    }]
+    transfer_rows=[{
+        "txHash":"0xapprove",
+        "logIndex":7,
+        "timestamp":"2026-09-01T12:00:00Z",
+        "method":"transfer",
+        "from":{"hash":wallet,"name":None},
+        "to":{"hash":"0x3333333333333333333333333333333333333333","name":"Pool"},
+        "amount":"4800000000000000000000",
+        "decimals":"18",
+        "token":{"address_hash":"0xe8ffd7e24187f72afb08d75b1bb13088a989a791","symbol":"DELTA","name":"DELTA"},
+    }]
+    monkeypatch.setattr(
+        wallet_audit,
+        "_robinscan_pages",
+        lambda path,max_pages=100: transfer_rows if path.endswith("/transfers") else tx_rows,
+    )
+    cfg=chain_config("ROBINHOOD_CHAIN")
+    txs=wallet_audit._robinscan_transactions(cfg,wallet,{})
+    transfers=wallet_audit._robinscan_transfers(cfg,wallet)
+
+    assert len(txs)==1
+    assert txs[0]["kind"]=="APPROVAL"
+    assert txs[0]["source"]=="ROBINSCAN_PUBLIC_API"
+    assert abs(txs[0]["gas_native"]-0.0000025)<1e-15
+    assert len(transfers)==1
+    assert transfers[0]["asset"]=="DELTA"
+    assert transfers[0]["amount"]==4800.0
+    assert transfers[0]["direction"]=="OUT"
+
+
+def test_robinhood_scan_prefers_public_robinscan_and_marks_bridge_internal(tmp_path, monkeypatch):
+    store=Store(tmp_path/"rhscan.sqlite3")
+    wallet=_settings().wallet_address
+    cfg=chain_config("ROBINHOOD_CHAIN")
+    tx=[{
+        "id":"wat:bridge","chain":"ROBINHOOD_CHAIN","tx_hash":"0xbridge","occurred_at":1_790_000_000.0,
+        "direction":"OUT","kind":"BRIDGE","method":"bridge","from_address":wallet,
+        "to_address":"0x4444444444444444444444444444444444444444","to_name":"Bridge",
+        "native_symbol":"ETH","value_native":0.1,"gas_native":0.00001,"success":True,
+        "source":"ROBINSCAN_PUBLIC_API","payload":{},
+    }]
+    monkeypatch.setattr(wallet_audit,"_robinscan_transactions",lambda cfg,wallet,known:tx)
+    monkeypatch.setattr(wallet_audit,"_robinscan_transfers",lambda cfg,wallet:[])
+    monkeypatch.setattr(wallet_audit,"_blockscout_transactions",lambda *a,**k: (_ for _ in ()).throw(AssertionError("Blockscout should not be used for Robinhood when Robinscan works")))
+
+    result=wallet_audit.scan_wallet_audit(_settings(),store,chains=["ROBINHOOD_CHAIN"])
+    row=result["chains"][0]
+    assert row["full_transaction_history"] is True
+    assert row["transaction_provider"]=="ROBINSCAN_PUBLIC_API"
+    assert row["transfer_provider"]=="ROBINSCAN_PUBLIC_API"
+    assert row["transaction_error"]==""
+    assert row["transactions"]==1
+    assert row["transfers"]==1
+
+    events=store.list_wallet_audit_events(10)
+    assert len(events)==1
+    assert events[0]["review_status"]=="INTERNAL_TRANSFER"
+
+
+def test_full_history_count_only_counts_active_chains(tmp_path):
+    store=Store(tmp_path/"coverage.sqlite3")
+    store.set_setting("wallet_audit:last_scan",{
+        "read_at":1_790_000_100.0,
+        "coverage_complete":True,
+        "chains":[
+            {"chain":"ETHEREUM","transfers":11,"transactions":11,"full_transaction_history":True},
+            {"chain":"POLYGON","transfers":4,"transactions":0,"full_transaction_history":True},
+            {"chain":"BASE","transfers":0,"transactions":0,"full_transaction_history":True},
+            {"chain":"ARBITRUM","transfers":0,"transactions":0,"full_transaction_history":False},
+        ],
+    })
+    summary=wallet_audit_summary(_settings(),store)
+    assert summary["metrics"]["active_chains"]==2
+    assert summary["metrics"]["full_history_chains"]==2
+
+
 def test_v095_wallet_audit_ui_is_separate_and_manual_review_is_explicit():
     root=Path(__file__).parents[1]
     html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
