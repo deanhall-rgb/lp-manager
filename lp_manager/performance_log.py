@@ -191,6 +191,7 @@ def _tracker_rows(store) -> list[dict[str, Any]]:
 
 def _fee_evidence_for_day(store, day_key: str) -> tuple[float, list[dict[str, Any]], list[float]]:
     start, end = _local_day_window(day_key)
+    effective_end=min(end,time.time()) if day_key==_local_day_key() else end
     positions = _position_map(store)
     detail: list[dict[str, Any]] = []
     evidence_times: list[float] = []
@@ -198,14 +199,14 @@ def _fee_evidence_for_day(store, day_key: str) -> tuple[float, list[dict[str, An
 
     for item in _tracker_rows(store):
         observations = item["observations"]
-        if observations[-1]["timestamp"] < start or observations[0]["timestamp"] >= end:
+        if observations[-1]["timestamp"] < start or observations[0]["timestamp"] >= effective_end:
             continue
         pid = str(item["position_id"])
         tracker = item["tracker"]
         opened = max(0.0, _f(tracker.get("opened_at")))
         before_start = [x for x in observations if x["timestamp"] <= start]
-        in_day = [x for x in observations if start <= x["timestamp"] < end]
-        before_end = [x for x in observations if x["timestamp"] < end]
+        in_day = [x for x in observations if start <= x["timestamp"] < effective_end]
+        before_end = [x for x in observations if x["timestamp"] < effective_end]
         if not before_end:
             continue
 
@@ -229,7 +230,7 @@ def _fee_evidence_for_day(store, day_key: str) -> tuple[float, list[dict[str, An
         # describe the calendar day as recorded. Otherwise the delta is still
         # genuine observed evidence but only covers part of the day.
         start_ok = abs(coverage_start - start) <= 2 * 3600 or (opened and start <= opened < end)
-        end_ok = (end - last["timestamp"]) <= 2 * 3600
+        end_ok = (effective_end - last["timestamp"]) <= 2 * 3600
         quality = "RECORDED" if start_ok and end_ok else "PARTIAL"
 
         position = positions.get(pid) or {}
