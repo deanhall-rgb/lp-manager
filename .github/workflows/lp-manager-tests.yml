@@ -56,6 +56,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LP_Manager_v0.9.5
-          path: dist/LP_Manager_v0.9.4.zip
+          path: dist/LP_Manager_v0.9.5.zip
           if-no-files-found: error
           retention-days: 30
