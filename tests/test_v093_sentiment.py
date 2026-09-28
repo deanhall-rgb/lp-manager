@@ -157,3 +157,7 @@ def test_v093_ui_exposes_sentiment_and_campaign_profit_overlay():
     assert "campaign_id:sameCampaign?profitDecisionContext.campaign_id:null" in js
     assert "Research sentiment / thesis" in js
     assert "technical skew" in js.lower()
+    assert "FRESH THESIS REQUIRED" in js
+    assert "Full research detail" in js
+    assert "Hold comfort combines direction" in js
+    assert "Pool ratio regime:" in js
