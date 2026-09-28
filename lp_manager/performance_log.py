@@ -13,6 +13,9 @@ EXTERNAL_DEPOSIT = "EXTERNAL_DEPOSIT"
 EXTERNAL_WITHDRAWAL = "EXTERNAL_WITHDRAWAL"
 TRACKER_PREFIX = "fees:tracker:"
 HISTORICAL_LOOKBACK_DAYS = 35
+DAYS_IN_MONTH = 30.4375
+FEE_TARGET_SETTING = "performance:monthly_fee_target_pct"
+DEFAULT_MONTHLY_FEE_TARGET_PCT = 10.0
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -21,6 +24,54 @@ def _f(value: Any, default: float = 0.0) -> float:
         return number if math.isfinite(number) else default
     except Exception:
         return default
+
+
+def performance_fee_target_pct(store) -> float:
+    return max(0.0, min(100.0, _f(store.get_setting(FEE_TARGET_SETTING, DEFAULT_MONTHLY_FEE_TARGET_PCT), DEFAULT_MONTHLY_FEE_TARGET_PCT)))
+
+
+def set_performance_fee_target_pct(store, value: float) -> float:
+    target=max(0.0, min(100.0, _f(value, DEFAULT_MONTHLY_FEE_TARGET_PCT)))
+    store.set_setting(FEE_TARGET_SETTING, target)
+    return target
+
+
+def _target_position_map(store) -> dict[str, dict[str, Any]]:
+    out={}
+    for p in store.list_positions():
+        if str(p.get("monitoring_class") or "").upper()=="ARCHIVED_SUPERSEDED":
+            continue
+        if str(p.get("source") or "")=="legacy_campaign_ledger":
+            continue
+        out[str(p.get("id") or "")]=p
+    return out
+
+
+def _position_target_capital(position: dict[str, Any]) -> tuple[float, str]:
+    capital=max(0.0, _f(position.get("capital_value")))
+    if capital>0:
+        quality="RECORDED" if str(position.get("cost_basis_quality") or "").upper() not in {"", "UNKNOWN"} else "PARTIAL"
+        return capital, quality
+    fallback=max(0.0, _f(position.get("current_value")))
+    return fallback, "PARTIAL" if fallback>0 else "MISSING"
+
+
+def _position_overlap(position: dict[str, Any], start: float, end: float) -> tuple[float, float]:
+    opened=max(0.0, _f(position.get("opened_at")))
+    closed=max(0.0, _f(position.get("closed_at")))
+    left=max(float(start), opened if opened>0 else float(start))
+    right=min(float(end), closed if closed>0 else float(end))
+    return left, max(left, right)
+
+
+def _fee_target_row(actual: float | None, target: float | None) -> tuple[float | None, float | None, str]:
+    if actual is None or target is None:
+        return None, None, "NOT_COMPARABLE"
+    if target<=0:
+        return None, round(actual,4), "NO_TARGET"
+    attainment=actual/target*100.0
+    surplus=actual-target
+    return round(attainment,2), round(surplus,4), "AHEAD" if surplus>=0 else "BEHIND"
 
 
 def _local_day_key(timestamp: float | None = None) -> str:
@@ -203,6 +254,82 @@ def _fee_evidence_for_day(store, day_key: str) -> tuple[float, list[dict[str, An
     return round(total, 4), detail, evidence_times
 
 
+def _fee_performance_for_day(store, day_key: str, monthly_target_pct: float) -> dict[str, Any]:
+    day_start, day_end = _local_day_window(day_key)
+    fees, detail, _ = _fee_evidence_for_day(store, day_key)
+    if not detail:
+        return {
+            "fee_actual_usd": None,
+            "fee_target_usd": None,
+            "fee_target_monthly_pct": round(monthly_target_pct,3),
+            "fee_attainment_pct": None,
+            "fee_surplus_usd": None,
+            "fee_target_status": "NO_FEE_EVIDENCE",
+            "target_time_weighted_lp_capital_usd": None,
+            "target_capital_time_usd_days": None,
+            "target_window_hours": None,
+            "target_quality": "NOT_CAPTURED",
+            "fee_target_positions": [],
+        }
+
+    positions=_target_position_map(store)
+    capital_seconds=0.0
+    target_total=0.0
+    target_rows=[]
+    qualities=[]
+    starts=[]
+    ends=[]
+
+    for row in detail:
+        p=positions.get(str(row.get("position_id") or "")) or {}
+        capital,capital_quality=_position_target_capital(p)
+        coverage_start=max(day_start, _f(row.get("coverage_start"), day_start))
+        coverage_end=min(day_end, _f(row.get("coverage_end"), day_end))
+        if p:
+            active_start,active_end=_position_overlap(p,coverage_start,coverage_end)
+        else:
+            active_start,active_end=coverage_start,coverage_end
+            capital_quality="MISSING"
+        seconds=max(0.0,active_end-active_start)
+        capital_days=capital*seconds/86400.0
+        target=capital_days*monthly_target_pct/100.0/DAYS_IN_MONTH if capital>0 and seconds>0 else None
+        if target is not None:
+            target_total+=target
+            capital_seconds+=capital*seconds
+        starts.append(active_start)
+        ends.append(active_end)
+        qualities.extend([str(row.get("quality") or "PARTIAL"),capital_quality])
+        target_rows.append({
+            **row,
+            "target_capital_usd": round(capital,4) if capital>0 else None,
+            "target_coverage_hours": round(seconds/3600.0,3),
+            "fee_target_usd": round(target,4) if target is not None else None,
+            "target_capital_quality": capital_quality,
+        })
+
+    comparable=bool(target_rows) and any(x.get("fee_target_usd") is not None for x in target_rows)
+    target_value=round(target_total,4) if comparable else None
+    actual_value=round(fees,4)
+    attainment,surplus,status=_fee_target_row(actual_value,target_value)
+    span=max(0.0,max(ends)-min(starts)) if starts and ends else 0.0
+    avg_capital=(capital_seconds/span) if span>0 and capital_seconds>0 else None
+    quality="RECORDED" if qualities and all(q=="RECORDED" for q in qualities) else "PARTIAL"
+
+    return {
+        "fee_actual_usd": actual_value,
+        "fee_target_usd": target_value,
+        "fee_target_monthly_pct": round(monthly_target_pct,3),
+        "fee_attainment_pct": attainment,
+        "fee_surplus_usd": surplus,
+        "fee_target_status": status,
+        "target_time_weighted_lp_capital_usd": round(avg_capital,4) if avg_capital is not None else None,
+        "target_capital_time_usd_days": round(capital_seconds/86400.0,4) if capital_seconds>0 else None,
+        "target_window_hours": round(span/3600.0,3) if span>0 else None,
+        "target_quality": quality,
+        "fee_target_positions": target_rows,
+    }
+
+
 def _day_timeline(store, day_key: str) -> list[dict[str, Any]]:
     start, end = _local_day_window(day_key)
     timeline: list[dict[str, Any]] = []
@@ -314,9 +441,11 @@ def _day_timeline(store, day_key: str) -> list[dict[str, Any]]:
     return timeline[:250]
 
 
-def _historical_day(store, day_key: str, *, include_timeline: bool = False) -> dict[str, Any] | None:
+def _historical_day(store, day_key: str, *, include_timeline: bool = False, monthly_target_pct: float | None = None) -> dict[str, Any] | None:
     start, end = _local_day_window(day_key)
     fees, fee_positions, fee_times = _fee_evidence_for_day(store, day_key)
+    target_pct=performance_fee_target_pct(store) if monthly_target_pct is None else float(monthly_target_pct)
+    fee_performance=_fee_performance_for_day(store,day_key,target_pct)
     timeline = _day_timeline(store, day_key)
     evidence_times = list(fee_times) + [_f(x.get("timestamp")) for x in timeline if _f(x.get("timestamp")) > 0]
     if not evidence_times and not fee_positions:
@@ -358,17 +487,20 @@ def _historical_day(store, day_key: str, *, include_timeline: bool = False) -> d
         ),
         "historical_positions": fee_positions,
         "hourly": [],
+        **fee_performance,
         **({"timeline": timeline} if include_timeline else {}),
     }
 
 
-def _summarise_day(store, row: dict[str, Any], *, include_timeline: bool = False) -> dict[str, Any]:
+def _summarise_day(store, row: dict[str, Any], *, include_timeline: bool = False, monthly_target_pct: float | None = None) -> dict[str, Any]:
     opening = dict(row.get("opening") or {})
     closing = dict(row.get("closing") or {})
     day_key = str(row.get("day_key") or opening.get("day_key") or closing.get("day_key") or "")
     start, end = _local_day_window(day_key)
     events = [e for e in store.list_financial_events(5000) if start <= _f(e.get("occurred_at")) < end]
     external_flow, flow_rows = _external_flows(events)
+    target_pct=performance_fee_target_pct(store) if monthly_target_pct is None else float(monthly_target_pct)
+    fee_performance=_fee_performance_for_day(store,day_key,target_pct)
 
     opening_wealth = _f(opening.get("tracked_wealth_usd"))
     closing_wealth = _f(closing.get("tracked_wealth_usd"))
@@ -406,6 +538,7 @@ def _summarise_day(store, row: dict[str, Any], *, include_timeline: bool = False
         ),
         "historical_positions": [],
         "hourly": store.list_performance_hours(day_key) if include_timeline else [],
+        **fee_performance,
     }
     if include_timeline:
         out["timeline"] = _day_timeline(store, day_key)
@@ -449,9 +582,10 @@ def performance_log(store, *, capture: bool = False, limit: int = 120) -> dict[s
     if capture:
         capture_performance_sample(store)
 
+    target_pct=performance_fee_target_pct(store)
     recorded_rows = store.list_performance_days(limit)
     recorded = {
-        str(row.get("day_key")): _summarise_day(store, row, include_timeline=False)
+        str(row.get("day_key")): _summarise_day(store, row, include_timeline=False, monthly_target_pct=target_pct)
         for row in recorded_rows
     }
 
@@ -459,7 +593,7 @@ def performance_log(store, *, capture: bool = False, limit: int = 120) -> dict[s
     for day_key in _evidence_day_keys(store):
         if day_key in all_days:
             continue
-        historical = _historical_day(store, day_key, include_timeline=False)
+        historical = _historical_day(store, day_key, include_timeline=False, monthly_target_pct=target_pct)
         if historical:
             all_days[day_key] = historical
 
@@ -479,6 +613,11 @@ def performance_log(store, *, capture: bool = False, limit: int = 120) -> dict[s
     fees = sum(_f(day.get("fees_earned_usd")) for day in days)
     current = dict((chronological_recorded[-1].get("closing") if chronological_recorded else {}) or {})
     partial_days = sum(1 for day in days if day.get("evidence_quality") != "RECORDED")
+    comparable=[d for d in days if d.get("fee_actual_usd") is not None and d.get("fee_target_usd") is not None]
+    compared_actual=sum(_f(d.get("fee_actual_usd")) for d in comparable)
+    compared_target=sum(_f(d.get("fee_target_usd")) for d in comparable)
+    compared_attainment,compared_surplus,compared_status=_fee_target_row(compared_actual,compared_target)
+    target_capital_days=sum(_f(d.get("target_capital_time_usd_days")) for d in comparable)
 
     return {
         "started_at": min((_f(day.get("first_sample_at")) for day in days if _f(day.get("first_sample_at")) > 0), default=None),
@@ -486,6 +625,17 @@ def performance_log(store, *, capture: bool = False, limit: int = 120) -> dict[s
         "logged_days": len(days),
         "recorded_days": len(recorded),
         "historical_evidence_days": partial_days,
+        "monthly_fee_target_pct": round(target_pct,3),
+        "fee_performance": {
+            "actual_fees_usd": round(compared_actual,4),
+            "target_fees_usd": round(compared_target,4),
+            "surplus_usd": compared_surplus,
+            "attainment_pct": compared_attainment,
+            "status": compared_status,
+            "comparable_days": len(comparable),
+            "capital_time_usd_days": round(target_capital_days,4),
+            "guardrail": "REPORTING_ONLY_DO_NOT_INCREASE_RISK_TO_HIT_TARGET",
+        },
         "running": {
             "start_wealth_usd": round(start_wealth, 4),
             "current_wealth_usd": round(current_wealth, 4),
@@ -514,7 +664,8 @@ def performance_log(store, *, capture: bool = False, limit: int = 120) -> dict[s
 
 
 def performance_day(store, day_key: str) -> dict[str, Any] | None:
+    target_pct=performance_fee_target_pct(store)
     row = store.get_performance_day(day_key)
     if row:
-        return _summarise_day(store, row, include_timeline=True)
-    return _historical_day(store, day_key, include_timeline=True)
+        return _summarise_day(store, row, include_timeline=True, monthly_target_pct=target_pct)
+    return _historical_day(store, day_key, include_timeline=True, monthly_target_pct=target_pct)
