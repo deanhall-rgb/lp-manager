@@ -60,6 +60,13 @@ from .close_accounting import finalise_execution_close, repair_confirmed_executi
 from .campaign_accounting import build_campaigns, campaign_by_id, sync_campaign_registry
 from .campaign_decision import build_campaign_decision
 from .campaign_sentiment import technical_fallback, normalise_thesis, execution_skew_pct, thesis_is_fresh
+from .performance_log import (
+    performance_log as build_performance_log,
+    performance_day as build_performance_day,
+    capture_performance_sample,
+    EXTERNAL_DEPOSIT,
+    EXTERNAL_WITHDRAWAL,
+)
 
 
 class ScoutIntent(BaseModel):
@@ -231,6 +238,13 @@ class TokenThesisIntent(BaseModel):
     chain: str
     pool_address: str
     asset_symbol: str | None = None
+
+
+class PerformanceCashFlowIntent(BaseModel):
+    direction: str
+    amount: float
+    note: str = ""
+    tx_hash: str = ""
 
 
 class ProfitSearchIntent(BaseModel):
@@ -526,7 +540,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.9.2", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.9.4", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -538,7 +552,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.9.2",
+            "version": "0.9.4",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -585,6 +599,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "ai": intelligence.status(),
             "automation": get_automation_policy(store),
             "profit_scorecard": portfolio_profit_scorecard(store),
+            "performance_log": build_performance_log(store, capture=True),
             "profit_last_recommendation": store.get_setting("profit:last_recommendation", None),
         }
 
@@ -1343,7 +1358,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def support_bundle():
         path = build_support_bundle(
             store, output_dir=settings.data_dir / "support",
-            extra={"version":"0.9.2", "execution":executor.capabilities(), "scout_universe":scout_universe()},
+            extra={"version":"0.9.4", "execution":executor.capabilities(), "scout_universe":scout_universe()},
         )
         return {"ok": True, "filename": path.name, "download": f"/api/support/bundle/{path.name}"}
 
@@ -1674,6 +1689,35 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             raise HTTPException(400,str(exc)) from exc
         except Exception as exc:
             raise HTTPException(502,str(exc)) from exc
+
+    @app.get("/api/performance")
+    def performance_view(limit: int = 120):
+        return build_performance_log(store, capture=True, limit=max(1,min(366,int(limit))))
+
+    @app.post("/api/performance/cash-flow")
+    def performance_cash_flow(intent: PerformanceCashFlowIntent):
+        direction=str(intent.direction or "").upper()
+        if direction not in {"DEPOSIT","WITHDRAWAL"}:
+            raise HTTPException(400,"direction must be DEPOSIT or WITHDRAWAL")
+        amount_display=max(0.0,float(intent.amount or 0))
+        if amount_display<=0:
+            raise HTTPException(400,"amount must be positive")
+        amount_usd=_display_capital_to_usd(amount_display)
+        event_type=EXTERNAL_DEPOSIT if direction=="DEPOSIT" else EXTERNAL_WITHDRAWAL
+        event=store.record_financial_event(
+            position_id=None,campaign_id=None,event_type=event_type,chain="PORTFOLIO",
+            tx_hash=str(intent.tx_hash or ""),amount_usd=amount_usd,status="CONFIRMED",
+            payload={"note":str(intent.note or ""),"display_amount":amount_display,"display_currency":money_context(settings,store).get("display_currency")},
+        )
+        capture_performance_sample(store)
+        return {"ok":True,"event":event,"performance":build_performance_log(store, capture=False)}
+
+    @app.get("/api/performance/{day_key}")
+    def performance_day_view(day_key: str):
+        row=build_performance_day(store,day_key)
+        if not row:
+            raise HTTPException(404,"Performance day not found")
+        return row
 
     @app.get("/api/financial-truth")
     def financial_truth():
