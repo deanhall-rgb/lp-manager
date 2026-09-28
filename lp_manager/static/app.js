@@ -86,40 +86,80 @@ function walletAuditTransferText(e){
  const dir=String(e.direction||'');
  return (dir==='IN'?'Received ':dir==='OUT'?'Sent ':'Moved ')+num(e.amount||0,8)+' '+esc(e.asset||'TOKEN');
 }
+function walletAuditTxLabel(tx){
+ const kind=String(tx?.kind||'TRANSACTION').replaceAll('_',' ');
+ const method=String(tx?.method||'').trim();
+ return method?kind+' · '+method:kind;
+}
+function walletAuditTransfersInline(rows){
+ if(!rows?.length)return 'No asset transfer';
+ return rows.slice(0,4).map(x=>(String(x.direction)==='IN'?'+':String(x.direction)==='OUT'?'-':'')+num(x.amount||0,6)+' '+esc(x.asset||'TOKEN')).join(' · ')+(rows.length>4?' · +'+(rows.length-4)+' more':'');
+}
 function renderWalletAudit(){
- const a=state.wallet_audit||{},m=a.metrics||{},currency=a.currency||state?.money?.display_currency||'GBP',note=$('#wallet-audit-note'),metrics=$('#wallet-audit-metrics'),gaps=$('#wallet-audit-gaps'),history=$('#wallet-audit-history');
- if(note){const scan=a.last_scan||{};const scanned=scan.read_at?when(scan.read_at):'Not scanned yet';note.className='notice '+(Number(m.unresolved_count||0)>0?'warn':'good');note.innerHTML='<b>Audit status:</b> '+num(m.unresolved_count||0,0)+' transfer gap'+(Number(m.unresolved_count||0)===1?'':'s')+' need review. Last chain scan: '+esc(scanned)+'. Internal swaps/protocol activity is kept separate from real cash funding.'}
+ const a=state.wallet_audit||{},m=a.metrics||{},currency=a.currency||state?.money?.display_currency||'GBP',note=$('#wallet-audit-note'),metrics=$('#wallet-audit-metrics'),coverage=$('#wallet-audit-coverage'),gaps=$('#wallet-audit-gaps'),activity=$('#wallet-audit-activity'),history=$('#wallet-audit-history');
+ if(note){
+  const scan=a.last_scan||{},scanned=scan.read_at?when(scan.read_at):'Not scanned yet',full=Number(m.full_history_chains||0),active=Number(m.active_chains||0);
+  note.className='notice '+(Number(m.unresolved_count||0)>0||((scan.chains||[]).some(x=>x.transaction_error))?'warn':'good');
+  note.innerHTML='<b>Audit status:</b> '+num(m.observed_transactions||0,0)+' full transactions + '+num(m.observed_transfers||0,0)+' asset transfers stored. '+num(m.unresolved_count||0,0)+' funding gap'+(Number(m.unresolved_count||0)===1?'':'s')+' need review. Full transaction history on '+full+'/'+active+' active chains. Last scan: '+esc(scanned)+'.';
+ }
  if(metrics)metrics.innerHTML=[
   ['Cash invested',displayMoneyRaw(m.confirmed_contributions||0,currency),'Confirmed real-money cost including provider fees'],
   ['Cash withdrawn',displayMoneyRaw(m.confirmed_withdrawals||0,currency),'Confirmed money returned to you'],
   ['Current portfolio',displayMoneyRaw(m.current_portfolio_value||0,currency),'Wallet + LP capital currently tracked'],
-  ['True lifetime P/L',displayMoneyRaw(m.provisional_true_pnl||0,currency),m.pnl_complete?'AUDITED':'PROVISIONAL · resolve '+num(m.unresolved_count||0,0)+' gaps'],
-  ['Funding gaps',String(m.unresolved_count||0),'One-sided transfers needing your classification']
+  ['True lifetime P/L',displayMoneyRaw(m.provisional_true_pnl||0,currency),m.pnl_complete?'AUDITED':'PROVISIONAL · funding/coverage not complete'],
+  ['Funding gaps',String(m.unresolved_count||0),'One-sided transfers needing your classification'],
+  ['On-chain transactions',String(m.observed_transactions||0),'Contract calls, approvals and transfers']
  ].map(x=>'<div class="metric"><div class="label">'+x[0]+'</div><div class="value">'+x[1]+'</div><div class="sub">'+x[2]+'</div></div>').join('');
+
+ if(coverage){
+  const rows=a.coverage||[],gas=new Map((a.gas_by_chain||[]).map(x=>[String(x.chain),x]));
+  coverage.innerHTML=rows.length?'<table class="table"><thead><tr><th>Network</th><th>History coverage</th><th>Transfers</th><th>Transactions</th><th>Gas paid by wallet</th><th>Provider</th></tr></thead><tbody>'+
+   rows.filter(x=>Number(x.transfers||0)>0||Number(x.transactions||0)>0||x.transfer_error||x.transaction_error).map(x=>{const g=gas.get(String(x.chain))||{};const provider=x.transaction_provider||x.transfer_provider||'NONE';const errors=[x.transfer_error,x.transaction_error].filter(Boolean).join(' · ');return '<tr><td><b>'+esc(x.chain||'')+'</b></td><td>'+badge(x.full_transaction_history?'FULL':'PARTIAL',x.full_transaction_history?'good':'watch')+(errors?'<div class="meta">'+esc(errors)+'</div>':'')+'</td><td>'+num(x.transfers||0,0)+'</td><td>'+num(x.transactions||0,0)+'</td><td>'+(Number(g.gas_native||0)>0?num(g.gas_native,9)+' '+esc(g.native_symbol||x.native_symbol||'ETH'):'—')+'</td><td>'+esc(provider)+'</td></tr>'}).join('')+
+   '</tbody></table>':'<div class="empty-state">Run Scan wallet history to build full transaction coverage.</div>';
+ }
+
  if(gaps){
   const rows=a.unresolved||[];
-  gaps.innerHTML=rows.length?'<table class="table"><thead><tr><th>Date</th><th>Movement</th><th>Network</th><th>Other wallet / contract</th><th></th></tr></thead><tbody>'+
-   rows.map(e=>{const other=String(e.direction)==='IN'?e.from_address:e.to_address;return '<tr><td>'+when(e.occurred_at)+'</td><td><b>'+walletAuditTransferText(e)+'</b><div class="meta">'+esc(String(e.category||'transfer'))+' · '+short(e.tx_hash||'')+'</div></td><td>'+esc(e.chain||'')+'</td><td>'+short(other||'unknown')+'</td><td><button class="btn small" data-wallet-audit-review="'+esc(e.id)+'">Review</button></td></tr>'}).join('')+
+  gaps.innerHTML=rows.length?'<table class="table"><thead><tr><th>Date</th><th>Movement</th><th>Network</th><th>Transaction context</th><th>Other wallet / contract</th><th></th></tr></thead><tbody>'+
+   rows.map(e=>{const other=String(e.direction)==='IN'?e.from_address:e.to_address,tx=e.transaction||{};return '<tr><td>'+when(e.occurred_at)+'</td><td><b>'+walletAuditTransferText(e)+'</b><div class="meta">'+esc(String(e.category||'transfer'))+' · '+short(e.tx_hash||'')+'</div></td><td>'+esc(e.chain||'')+'</td><td>'+(tx.kind?'<b>'+esc(walletAuditTxLabel(tx))+'</b><div class="meta">'+(Number(tx.gas_native||0)>0?'gas '+num(tx.gas_native,9)+' '+esc(tx.native_symbol||'ETH'):'no wallet gas / inbound')+'</div>':'Transfer evidence only')+'</td><td>'+short(other||'unknown')+'</td><td><button class="btn small" data-wallet-audit-review="'+esc(e.id)+'">Review</button></td></tr>'}).join('')+
    '</tbody></table>':'<div class="empty-state">No unresolved transfer gaps. The cash-capital baseline is fully classified for the transfers discovered so far.</div>';
   $$('[data-wallet-audit-review]').forEach(b=>b.onclick=()=>openWalletAuditReview(b.dataset.walletAuditReview));
  }
+
+ if(activity){
+  const rows=a.activity||[];
+  activity.innerHTML=rows.length?'<table class="table"><thead><tr><th>Date</th><th>Network</th><th>Activity</th><th>Asset movement</th><th>Gas</th><th>Tx</th></tr></thead><tbody>'+
+   rows.slice(0,750).map(e=>'<tr class="clickable-row" data-wallet-audit-activity="'+esc(e.id||'')+'"><td>'+when(e.occurred_at)+'</td><td>'+esc(e.chain||'')+'</td><td><b>'+esc(walletAuditTxLabel(e))+'</b><div class="meta">'+esc(e.to_name||short(e.to_address||''))+' · '+esc(e.source||'')+'</div></td><td>'+walletAuditTransfersInline(e.transfers||[])+'</td><td>'+(Number(e.gas_native||0)>0?num(e.gas_native,9)+' '+esc(e.native_symbol||'ETH'):'—')+'</td><td>'+short(e.tx_hash||'')+'</td></tr>').join('')+
+   '</tbody></table>':'<div class="empty-state">No transaction history stored yet. Run the audit scan.</div>';
+  $$('[data-wallet-audit-activity]').forEach(row=>row.onclick=()=>showWalletAuditActivity(row.dataset.walletAuditActivity));
+ }
+
  if(history){
   const rows=(a.events||[]).filter(e=>String(e.review_status||'')!=='UNRESOLVED').slice(0,200);
   history.innerHTML=rows.length?'<table class="table"><thead><tr><th>Date</th><th>Movement</th><th>Classification</th><th>Cash evidence</th><th>Tx</th></tr></thead><tbody>'+
    rows.map(e=>'<tr><td>'+when(e.occurred_at)+'</td><td><b>'+walletAuditTransferText(e)+'</b><div class="meta">'+esc(e.chain||'')+'</div></td><td>'+badge(walletAuditStatusLabel(e.review_status),walletAuditStatusTone(e.review_status))+'</td><td>'+(e.fiat_amount==null?'—':displayMoneyRaw(e.fiat_amount,e.fiat_currency||currency))+(e.note?'<div class="meta">'+esc(e.note)+'</div>':'')+'</td><td>'+short(e.tx_hash||'')+'</td></tr>').join('')+
-   '</tbody></table>':'<div class="empty-state">No reviewed wallet movements yet. Run the audit scan first.</div>';
+   '</tbody></table>':'<div class="empty-state">No reviewed wallet movements yet.</div>';
  }
+}
+function showWalletAuditActivity(id){
+ const a=state.wallet_audit||{},e=(a.activity||[]).find(x=>String(x.id)===String(id));
+ if(!e){toast('Transaction detail not found');return}
+ const transfers=e.transfers||[];
+ modal('<div class="card-head"><div><h2>'+esc(walletAuditTxLabel(e))+'</h2><p class="meta">'+esc(e.chain||'')+' · '+when(e.occurred_at)+'</p></div>'+badge(e.success===false?'FAILED':'CONFIRMED',e.success===false?'bad':'good')+'</div>'+
+  '<div class="modal-grid lower">'+info('Direction',esc(e.direction||'—'))+info('Native value',num(e.value_native||0,9)+' '+esc(e.native_symbol||''))+info('Gas paid',Number(e.gas_native||0)>0?num(e.gas_native,12)+' '+esc(e.native_symbol||'ETH'):'—')+info('Method',esc(e.method||'—'))+info('Contract / destination',esc(e.to_name||short(e.to_address||'')))+info('Source',esc(e.source||''))+'</div>'+
+  '<div class="notice lower"><b>Transaction:</b> '+esc(e.tx_hash||'')+'<br><b>From:</b> '+esc(e.from_address||'')+'<br><b>To:</b> '+esc(e.to_address||'')+'</div>'+
+  '<div class="panel lower"><h3>Related asset movement</h3>'+(transfers.length?transfers.map(x=>'<div class="history-row"><b>'+esc(String(x.direction||''))+' '+num(x.amount||0,8)+' '+esc(x.asset||'TOKEN')+'</b><span>'+esc(walletAuditStatusLabel(x.review_status||''))+'</span></div>').join(''):'<div class="empty-state">No asset transfer was emitted. This is exactly the type of approval/contract call the old transfer-only audit missed.</div>')+'</div>');
 }
 function openWalletAuditReview(id){
  const a=state.wallet_audit||{},e=(a.events||[]).find(x=>String(x.id)===String(id))||(a.unresolved||[]).find(x=>String(x.id)===String(id));
  if(!e){toast('Audit transfer not found');return}
- const currency=a.currency||state?.money?.display_currency||'GBP',other=String(e.direction)==='IN'?e.from_address:e.to_address;
+ const currency=a.currency||state?.money?.display_currency||'GBP',other=String(e.direction)==='IN'?e.from_address:e.to_address,tx=e.transaction||{};
  modal('<h2>Classify wallet movement</h2><p class="meta">'+esc(walletAuditTransferText(e))+' · '+esc(e.chain||'')+' · '+when(e.occurred_at)+'</p>'+
-  '<div class="notice lower"><b>Other address:</b> '+esc(other||'unknown')+'<br><b>Transaction:</b> '+esc(e.tx_hash||'')+'</div>'+
+  '<div class="notice lower"><b>Other address:</b> '+esc(other||'unknown')+'<br><b>Transaction:</b> '+esc(e.tx_hash||'')+(tx.kind?'<br><b>On-chain context:</b> '+esc(walletAuditTxLabel(tx))+(Number(tx.gas_native||0)>0?' · gas '+num(tx.gas_native,9)+' '+esc(tx.native_symbol||'ETH'):''):'')+'</div>'+
   '<div class="form-grid lower"><div class="field"><label>What was this?</label><select id="wallet-audit-classification"><option value="CONFIRMED_FUNDING">New money / funding</option><option value="INTERNAL_TRANSFER">Transfer from/to one of my wallets or a bridge</option><option value="CONFIRMED_WITHDRAWAL">Cash withdrawal / money returned to me</option><option value="IGNORE">Ignore / irrelevant</option></select></div>'+
   '<div class="field"><label>Real cash amount ('+esc(currency)+')</label><input id="wallet-audit-fiat" type="number" min="0" step="0.01" placeholder="Required for funding/withdrawal"></div>'+
-  '<div class="field grow"><label>Note</label><input id="wallet-audit-review-note" placeholder="e.g. MoonPay £500 incl fees, transferred from old wallet"></div></div>'+
-  '<div class="notice lower"><b>For new money:</b> enter what it actually cost you in cash, including MoonPay/provider fees. Do not enter the crypto value received.</div>'+
+  '<div class="field grow"><label>Note</label><input id="wallet-audit-review-note" placeholder="e.g. Transak £500 incl fees, transferred from old wallet"></div></div>'+
+  '<div class="notice lower"><b>For new money:</b> enter what it actually cost you in cash, including provider fees. Do not enter the crypto value received.</div>'+
   '<div class="actions"><button id="wallet-audit-save" class="btn">Save classification</button></div>');
  const select=$('#wallet-audit-classification');
  if(String(e.direction)==='OUT')select.value='INTERNAL_TRANSFER';
@@ -132,12 +172,12 @@ async function saveWalletAuditReview(id){
  closeModal();await refresh();toast('Wallet movement classified');
 }
 async function scanWalletAudit(){
- const btn=$('#wallet-audit-scan-btn');if(btn){btn.disabled=true;btn.textContent='Scanning history…'}
+ const btn=$('#wallet-audit-scan-btn');if(btn){btn.disabled=true;btn.textContent='Scanning full history…'}
  try{
-  const r=await api('/api/wallet-audit/scan',{method:'POST',timeoutMs:180000,body:JSON.stringify({chains:null})});
+  const r=await api('/api/wallet-audit/scan',{method:'POST',timeoutMs:240000,body:JSON.stringify({chains:null})});
   await refresh();
-  const ok=(r.chains||[]).filter(x=>x.ok).length,failed=(r.chains||[]).filter(x=>!x.ok);
-  toast('Wallet audit scan complete: '+num(r.imported||0,0)+' transfers · '+ok+' chains read'+(failed.length?' · '+failed.length+' unavailable':''));
+  const full=(r.chains||[]).filter(x=>x.full_transaction_history).length,active=(r.chains||[]).filter(x=>Number(x.transactions||0)>0||Number(x.transfers||0)>0).length;
+  toast('Wallet audit complete: '+num(r.imported||0,0)+' transfers · '+num(r.transactions||0,0)+' transactions · full history '+full+'/'+active+' active chains');
  }finally{if(btn){btn.disabled=false;btn.textContent='Scan wallet history'}}
 }
 
