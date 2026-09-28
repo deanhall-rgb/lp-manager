@@ -67,10 +67,11 @@
     </section>
 
     <section id="performance-section" class="section">
-      <div class="section-hero"><div><h2>Performance Log</h2><p>Daily portfolio P/L, fee production, realised results, costs and actions with deposits/withdrawals kept separate from investment performance.</p></div><button id="performance-cashflow-btn" class="btn secondary">Record cash flow</button></div>
+      <div class="section-hero"><div><h2>Performance Log</h2><p>Fee income versus a movable monthly target, scaled to the LP capital actually committed during each evidence window.</p></div><div class="top-actions"><div class="inline-controls"><label class="inline-label" for="performance-target-rate">Monthly fee target %</label><input id="performance-target-rate" type="number" min="0" max="100" step="0.5" value="10"><button id="performance-target-btn" class="btn small">Update target</button></div><button id="performance-cashflow-btn" class="btn secondary">Record cash flow</button></div></div>
       <div id="performance-note" class="notice"></div>
-      <div id="performance-running" class="metric-grid"></div>
-      <div class="panel lower"><div class="panel-head"><div><h2>Daily accounting</h2><p>Each day starts from the first v0.9.4 observation and updates through the latest sample. Click a day for position changes and recorded actions.</p></div></div><div id="performance-days"></div></div>
+      <div id="performance-fee-summary" class="metric-grid"></div>
+      <div class="panel lower"><div class="panel-head"><div><h2>Daily fee performance</h2><p>Actual tracked fees are compared with the target for the same time window and time-weighted LP capital. Out-of-range capital still counts against the target.</p></div></div><div id="performance-days"></div></div>
+      <details class="panel lower"><summary>Accounting & audit detail</summary><div id="performance-running" class="metric-grid lower"></div><p class="meta lower-tight">P/L, wealth, cash flow and transaction accounting remain available here; click any day above for full position, hourly and action evidence.</p></details>
     </section>
 
     <section id="sentiment-section" class="section">
