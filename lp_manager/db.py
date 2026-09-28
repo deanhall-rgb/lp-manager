@@ -182,6 +182,30 @@ CREATE TABLE IF NOT EXISTS performance_hourly (
     opening_json TEXT NOT NULL,
     closing_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS wallet_audit_events (
+    id TEXT PRIMARY KEY,
+    chain TEXT NOT NULL,
+    tx_hash TEXT NOT NULL,
+    transfer_key TEXT NOT NULL,
+    occurred_at REAL NOT NULL DEFAULT 0,
+    direction TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    asset TEXT NOT NULL DEFAULT '',
+    token_address TEXT NOT NULL DEFAULT '',
+    amount REAL NOT NULL DEFAULT 0,
+    from_address TEXT NOT NULL DEFAULT '',
+    to_address TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    review_status TEXT NOT NULL DEFAULT 'UNRESOLVED',
+    fiat_amount REAL,
+    fiat_currency TEXT NOT NULL DEFAULT 'GBP',
+    note TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_audit_time ON wallet_audit_events(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wallet_audit_status ON wallet_audit_events(review_status, occurred_at DESC);
 CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,
     chain TEXT NOT NULL,
@@ -841,6 +865,93 @@ class Store:
             except Exception: row["closing"]={}
             out.append(row)
         return out
+
+    def upsert_wallet_audit_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        now=time.time()
+        row={
+            "id":str(event.get("id") or uuid.uuid4().hex),
+            "chain":str(event.get("chain") or ""),
+            "tx_hash":str(event.get("tx_hash") or ""),
+            "transfer_key":str(event.get("transfer_key") or ""),
+            "occurred_at":float(event.get("occurred_at") or 0),
+            "direction":str(event.get("direction") or ""),
+            "category":str(event.get("category") or ""),
+            "asset":str(event.get("asset") or ""),
+            "token_address":str(event.get("token_address") or ""),
+            "amount":float(event.get("amount") or 0),
+            "from_address":str(event.get("from_address") or ""),
+            "to_address":str(event.get("to_address") or ""),
+            "source":str(event.get("source") or ""),
+            "review_status":str(event.get("review_status") or "UNRESOLVED"),
+            "fiat_amount":event.get("fiat_amount"),
+            "fiat_currency":str(event.get("fiat_currency") or "GBP"),
+            "note":str(event.get("note") or ""),
+            "payload_json":json.dumps(event.get("payload") or {},sort_keys=True),
+            "created_at":float(event.get("created_at") or now),
+            "updated_at":now,
+        }
+        with self.connect() as con:
+            existing=con.execute("SELECT review_status,fiat_amount,fiat_currency,note,created_at FROM wallet_audit_events WHERE id=?",(row["id"],)).fetchone()
+            if existing:
+                row["review_status"]=str(existing[0] or row["review_status"])
+                row["fiat_amount"]=existing[1]
+                row["fiat_currency"]=str(existing[2] or row["fiat_currency"])
+                row["note"]=str(existing[3] or "")
+                row["created_at"]=float(existing[4] or now)
+            con.execute(
+                """INSERT INTO wallet_audit_events(
+                    id,chain,tx_hash,transfer_key,occurred_at,direction,category,asset,token_address,amount,
+                    from_address,to_address,source,review_status,fiat_amount,fiat_currency,note,payload_json,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    chain=excluded.chain,tx_hash=excluded.tx_hash,transfer_key=excluded.transfer_key,
+                    occurred_at=excluded.occurred_at,direction=excluded.direction,category=excluded.category,
+                    asset=excluded.asset,token_address=excluded.token_address,amount=excluded.amount,
+                    from_address=excluded.from_address,to_address=excluded.to_address,source=excluded.source,
+                    payload_json=excluded.payload_json,updated_at=excluded.updated_at""",
+                tuple(row[k] for k in (
+                    "id","chain","tx_hash","transfer_key","occurred_at","direction","category","asset","token_address",
+                    "amount","from_address","to_address","source","review_status","fiat_amount","fiat_currency",
+                    "note","payload_json","created_at","updated_at"
+                )),
+            )
+        return self.get_wallet_audit_event(row["id"]) or {}
+
+    def get_wallet_audit_event(self, event_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            raw=con.execute("SELECT * FROM wallet_audit_events WHERE id=?",(str(event_id),)).fetchone()
+        if not raw: return None
+        row=dict(raw)
+        try: row["payload"]=json.loads(row.pop("payload_json") or "{}")
+        except Exception: row["payload"]={}
+        return row
+
+    def list_wallet_audit_events(self, limit: int = 1000, review_status: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            if review_status:
+                rows=con.execute(
+                    "SELECT * FROM wallet_audit_events WHERE review_status=? ORDER BY occurred_at DESC LIMIT ?",
+                    (str(review_status),max(1,int(limit))),
+                ).fetchall()
+            else:
+                rows=con.execute("SELECT * FROM wallet_audit_events ORDER BY occurred_at DESC LIMIT ?",(max(1,int(limit)),)).fetchall()
+        out=[]
+        for raw in rows:
+            row=dict(raw)
+            try: row["payload"]=json.loads(row.pop("payload_json") or "{}")
+            except Exception: row["payload"]={}
+            out.append(row)
+        return out
+
+    def resolve_wallet_audit_event(self, event_id: str, *, review_status: str, fiat_amount: float | None = None, fiat_currency: str = "GBP", note: str = "") -> dict[str, Any] | None:
+        with self.connect() as con:
+            con.execute(
+                """UPDATE wallet_audit_events
+                   SET review_status=?,fiat_amount=?,fiat_currency=?,note=?,updated_at=?
+                   WHERE id=?""",
+                (str(review_status),None if fiat_amount is None else float(fiat_amount),str(fiat_currency or "GBP"),str(note or ""),time.time(),str(event_id)),
+            )
+        return self.get_wallet_audit_event(event_id)
 
     def save_wallet_snapshot(self, snapshot: dict[str, Any]) -> None:
         with self.connect() as con:
