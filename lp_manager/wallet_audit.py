@@ -350,6 +350,171 @@ def _blockscout_transactions(cfg: ChainConfig, wallet: str, known_events: dict[s
     return out
 
 
+def _robinscan_pages(path: str, *, max_pages: int = 100) -> list[dict[str,Any]]:
+    base="https://robinscan.io"
+    cursor=None
+    rows=[]
+    for _ in range(max_pages):
+        params={"cursor":cursor} if cursor else {}
+        r=requests.get(
+            base+path,
+            params=params,
+            timeout=35,
+            headers={"Accept":"application/json","User-Agent":"LP-Manager/0.9.5"},
+        )
+        r.raise_for_status()
+        payload=r.json()
+        if not isinstance(payload,dict):
+            raise RuntimeError("Robinscan returned an unexpected response")
+        rows.extend(payload.get("items") or [])
+        cursor=payload.get("next")
+        if not cursor:
+            break
+    return rows
+
+
+def _robinscan_transactions(cfg: ChainConfig, wallet: str, known_events: dict[str,str]) -> list[dict[str,Any]]:
+    rows=_robinscan_pages(f"/api/address/{wallet}/txs")
+    wallet_l=_norm_address(wallet)
+    out=[]
+    seen=set()
+    for row in rows:
+        tx=str(row.get("hash") or "").strip()
+        if not tx or tx.lower() in seen:
+            continue
+        seen.add(tx.lower())
+        frm,frm_name=_addr_value(row.get("from"))
+        to,to_name=_addr_value(row.get("to"))
+        frm_l=_norm_address(frm);to_l=_norm_address(to)
+        direction="SELF" if frm_l==wallet_l and to_l==wallet_l else "OUT" if frm_l==wallet_l else "IN" if to_l==wallet_l else "ASSOCIATED"
+        method=str(row.get("method") or "").strip()
+        fee_wei=_int_any(row.get("fee"))
+        known=known_events.get(tx.lower(),"")
+        kind=_transaction_kind(cfg,row,method,to,to_name,known)
+        status=str(row.get("status") or "").lower()
+        out.append({
+            "id":_tx_id(cfg.key,tx),
+            "chain":cfg.key,
+            "tx_hash":tx,
+            "occurred_at":_iso_ts(row.get("timestamp")),
+            "direction":direction,
+            "kind":kind,
+            "method":method,
+            "from_address":frm,
+            "to_address":to,
+            "to_name":to_name or frm_name,
+            "native_symbol":cfg.native_symbol,
+            "value_native":max(0.0,_int_any(row.get("value"))/1e18),
+            "gas_native":max(0.0,fee_wei/1e18) if direction in {"OUT","SELF"} else 0.0,
+            "success":status not in {"error","failed","reverted","0"},
+            "source":"ROBINSCAN_PUBLIC_API",
+            "payload":{
+                "block":row.get("blockNumber"),
+                "fee_wei":fee_wei,
+                "known_lp_manager_event":known,
+            },
+        })
+    return out
+
+
+def _robinscan_transfers(cfg: ChainConfig, wallet: str) -> list[dict[str,Any]]:
+    rows=_robinscan_pages(f"/api/address/{wallet}/transfers")
+    wallet_l=_norm_address(wallet)
+    out=[]
+    seen=set()
+    for idx,row in enumerate(rows):
+        tx=str(row.get("txHash") or "").strip()
+        frm,frm_name=_addr_value(row.get("from"))
+        to,to_name=_addr_value(row.get("to"))
+        frm_l=_norm_address(frm);to_l=_norm_address(to)
+        direction="SELF" if frm_l==wallet_l and to_l==wallet_l else "IN" if to_l==wallet_l else "OUT" if frm_l==wallet_l else ""
+        if not direction:
+            continue
+        token=row.get("token") or {}
+        symbol=str(token.get("symbol") or token.get("name") or "TOKEN").strip() or "TOKEN"
+        if _SUSPICIOUS.search(symbol):
+            continue
+        decimals=max(0,_int_any(row.get("decimals"),18))
+        raw_amount=row.get("amount")
+        try:
+            amount=max(0.0,int(str(raw_amount or "0"))/(10**decimals))
+        except Exception:
+            amount=max(0.0,_f(raw_amount))
+        if amount<=0:
+            continue
+        token_address=str(token.get("address_hash") or "")
+        unique=str(row.get("logIndex") if row.get("logIndex") is not None else f"transfer:{idx}:{token_address}")
+        key=(tx.lower(),unique,direction)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "id":_event_id(cfg.key,tx,unique,direction,symbol,amount),
+            "chain":cfg.key,
+            "tx_hash":tx,
+            "transfer_key":unique,
+            "occurred_at":_iso_ts(row.get("timestamp")),
+            "direction":direction,
+            "category":"erc20",
+            "asset":symbol,
+            "token_address":token_address,
+            "amount":amount,
+            "from_address":frm,
+            "to_address":to,
+            "source":"ROBINSCAN_PUBLIC_API",
+            "payload":{"method":row.get("method"),"from_name":frm_name,"to_name":to_name},
+        })
+    return out
+
+
+def _native_transfer_rows_from_transactions(cfg: ChainConfig, rows: list[dict[str,Any]]) -> list[dict[str,Any]]:
+    out=[]
+    for idx,tx in enumerate(rows):
+        amount=max(0.0,_f(tx.get("value_native")))
+        direction=str(tx.get("direction") or "")
+        if amount<=0 or direction not in {"IN","OUT","SELF"}:
+            continue
+        tx_hash=str(tx.get("tx_hash") or "")
+        unique=f"native:{idx}"
+        out.append({
+            "id":_event_id(cfg.key,tx_hash,unique,direction,cfg.native_symbol,amount),
+            "chain":cfg.key,
+            "tx_hash":tx_hash,
+            "transfer_key":unique,
+            "occurred_at":_f(tx.get("occurred_at")),
+            "direction":direction,
+            "category":"external",
+            "asset":cfg.native_symbol,
+            "token_address":"",
+            "amount":amount,
+            "from_address":str(tx.get("from_address") or ""),
+            "to_address":str(tx.get("to_address") or ""),
+            "source":str(tx.get("source") or "ROBINSCAN_PUBLIC_API"),
+            "payload":{"transaction_kind":tx.get("kind"),"method":tx.get("method")},
+        })
+    return out
+
+
+def _classify_with_transaction_context(store, rows: list[dict[str,Any]], tx_rows: list[dict[str,Any]]) -> list[dict[str,Any]]:
+    classified=_classify_scan_rows(store,rows)
+    context={str(x.get("tx_hash") or "").lower():str(x.get("kind") or "").upper() for x in tx_rows}
+    bridge_kinds={"BRIDGE"}
+    protocol_kinds={"LP_ACTION","APPROVAL","SWAP","OPEN_POSITION","CLOSE_POSITION","COLLECT_FEES","WRAP","UNWRAP","LP_MANAGER_TRANSACTION"}
+    out=[]
+    for row in classified:
+        if str(row.get("review_status") or "")!="UNRESOLVED":
+            out.append(row)
+            continue
+        kind=context.get(str(row.get("tx_hash") or "").lower(),"")
+        if kind in bridge_kinds:
+            out.append({**row,"review_status":INTERNAL_TRANSFER})
+        elif kind in protocol_kinds:
+            out.append({**row,"review_status":INTERNAL_PROTOCOL})
+        else:
+            out.append(row)
+    return out
+
+
 def _rpc_transactions_from_transfer_hashes(cfg: ChainConfig, transfers: list[dict[str,Any]], known_events: dict[str,str]) -> list[dict[str,Any]]:
     url=cfg.rpc_url()
     if not url:
@@ -430,47 +595,66 @@ def scan_wallet_audit(settings, store, *, chains: list[str] | None = None) -> di
     imported=0
     transaction_count=0
     known_events=_known_event_types(store)
+
     for key in selected:
         cfg=CHAINS[key]
         transfer_rows=[]
+        tx_rows=[]
         transfer_provider="NONE"
+        tx_provider="NONE"
         transfer_error=""
-        try:
-            if _alchemy_url(cfg):
-                transfer_rows=_alchemy_transfers(cfg,wallet)
-                transfer_provider="ALCHEMY_ASSET_TRANSFERS"
-            elif _blockscout_available(cfg):
-                transfer_rows=_blockscout_transfers(cfg,wallet)
-                transfer_provider="BLOCKSCOUT"
-        except Exception as exc:
-            transfer_error=str(exc)[:240]
+        tx_error=""
+        full_history=False
 
-        transfer_rows=_classify_scan_rows(store,transfer_rows)
+        # Robinhood Chain has a public, unauthenticated indexed-history API at
+        # robinscan.io. Prefer it over Alchemy/Blockscout so approvals, contract
+        # calls, token movements and exact transaction fees are all available
+        # without requiring the user to provision another API key.
+        if key=="ROBINHOOD_CHAIN":
+            try:
+                tx_rows=_robinscan_transactions(cfg,wallet,known_events)
+                tx_provider="ROBINSCAN_PUBLIC_API"
+                full_history=True
+            except Exception as exc:
+                tx_error=str(exc)[:240]
+            try:
+                transfer_rows=_robinscan_transfers(cfg,wallet)
+                transfer_rows.extend(_native_transfer_rows_from_transactions(cfg,tx_rows))
+                transfer_provider="ROBINSCAN_PUBLIC_API"
+            except Exception as exc:
+                transfer_error=str(exc)[:240]
+        else:
+            try:
+                if _alchemy_url(cfg):
+                    transfer_rows=_alchemy_transfers(cfg,wallet)
+                    transfer_provider="ALCHEMY_ASSET_TRANSFERS"
+                elif _blockscout_available(cfg):
+                    transfer_rows=_blockscout_transfers(cfg,wallet)
+                    transfer_provider="BLOCKSCOUT"
+            except Exception as exc:
+                transfer_error=str(exc)[:240]
+
+            try:
+                if _blockscout_available(cfg):
+                    tx_rows=_blockscout_transactions(cfg,wallet,known_events)
+                    tx_provider="BLOCKSCOUT_FULL_HISTORY"
+                    full_history=True
+                elif transfer_rows:
+                    tx_rows=_rpc_transactions_from_transfer_hashes(cfg,transfer_rows,known_events)
+                    tx_provider="RPC_KNOWN_TRANSFER_TXS"
+            except Exception as exc:
+                tx_error=str(exc)[:240]
+                if transfer_rows:
+                    try:
+                        tx_rows=_rpc_transactions_from_transfer_hashes(cfg,transfer_rows,known_events)
+                        tx_provider="RPC_KNOWN_TRANSFER_TXS"
+                    except Exception:
+                        tx_rows=[]
+
+        transfer_rows=_classify_with_transaction_context(store,transfer_rows,tx_rows)
         for row in transfer_rows:
             store.upsert_wallet_audit_event(row)
             imported+=1
-
-        tx_rows=[]
-        tx_provider="NONE"
-        tx_error=""
-        full_history=False
-        try:
-            if _blockscout_available(cfg):
-                tx_rows=_blockscout_transactions(cfg,wallet,known_events)
-                tx_provider="BLOCKSCOUT_FULL_HISTORY"
-                full_history=True
-            elif transfer_rows:
-                tx_rows=_rpc_transactions_from_transfer_hashes(cfg,transfer_rows,known_events)
-                tx_provider="RPC_KNOWN_TRANSFER_TXS"
-        except Exception as exc:
-            tx_error=str(exc)[:240]
-            if transfer_rows:
-                try:
-                    tx_rows=_rpc_transactions_from_transfer_hashes(cfg,transfer_rows,known_events)
-                    tx_provider="RPC_KNOWN_TRANSFER_TXS"
-                except Exception:
-                    tx_rows=[]
-
         for row in tx_rows:
             store.upsert_wallet_audit_transaction(row)
             transaction_count+=1
@@ -492,16 +676,16 @@ def scan_wallet_audit(settings, store, *, chains: list[str] | None = None) -> di
             "transaction_error":tx_error,
         })
 
+    active=[x for x in chain_results if x.get("transfers") or x.get("transactions")]
     scan={
         "read_at":time.time(),
         "chains":chain_results,
         "imported":imported,
         "transactions":transaction_count,
-        "coverage_complete":all((not x.get("transfers") and not x.get("transactions")) or x.get("full_transaction_history") for x in chain_results),
+        "coverage_complete":bool(active) and all(x.get("full_transaction_history") for x in active),
     }
     store.set_setting("wallet_audit:last_scan",scan)
     return {"ok":any(x.get("ok") for x in chain_results),"wallet":wallet,**scan}
-
 
 def _decorate_transfer_transactions(transfers: list[dict[str,Any]], transactions: list[dict[str,Any]]) -> list[dict[str,Any]]:
     tx_map={(str(t.get("chain") or ""),str(t.get("tx_hash") or "").lower()):t for t in transactions}
@@ -589,8 +773,10 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
         bucket["gas_native"]=round(bucket["gas_native"],12)
 
     last_scan=store.get_setting("wallet_audit:last_scan",None)
-    full_chains=sum(1 for x in ((last_scan or {}).get("chains") or []) if x.get("full_transaction_history"))
-    active_chains=sum(1 for x in ((last_scan or {}).get("chains") or []) if x.get("transfers") or x.get("transactions"))
+    coverage_rows=list((last_scan or {}).get("chains") or [])
+    active_rows=[x for x in coverage_rows if x.get("transfers") or x.get("transactions")]
+    active_chains=len(active_rows)
+    full_chains=sum(1 for x in active_rows if x.get("full_transaction_history"))
     return {
         "wallet":str(settings.wallet_address or ""),
         "currency":currency,
@@ -609,7 +795,7 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
             "active_chains":active_chains,
         },
         "gas_by_chain":sorted(gas_by_chain.values(),key=lambda x:x["chain"]),
-        "coverage":list((last_scan or {}).get("chains") or []),
+        "coverage":coverage_rows,
         "unresolved":unresolved[:250],
         "events":rows[:500],
         "activity":_full_activity(raw_rows,tx_rows),
