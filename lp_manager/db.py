@@ -165,6 +165,14 @@ CREATE TABLE IF NOT EXISTS financial_events (
     status TEXT NOT NULL DEFAULT 'CONFIRMED',
     payload_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS daily_performance (
+    day_key TEXT PRIMARY KEY,
+    first_sample_at REAL NOT NULL,
+    last_sample_at REAL NOT NULL,
+    samples INTEGER NOT NULL DEFAULT 1,
+    opening_json TEXT NOT NULL,
+    closing_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,
     chain TEXT NOT NULL,
@@ -713,6 +721,60 @@ class Store:
         with self.connect() as con:
             cur=con.execute(sql, [*payload.values(), position_id])
         return self.get_position(position_id) if cur.rowcount else None
+
+    def upsert_performance_day(self, day_key: str, sampled_at: float, snapshot: dict[str, Any]) -> dict[str, Any]:
+        payload=json.dumps(snapshot,sort_keys=True)
+        with self.connect() as con:
+            existing=con.execute(
+                "SELECT first_sample_at,samples,opening_json FROM daily_performance WHERE day_key=?",
+                (day_key,),
+            ).fetchone()
+            if existing:
+                con.execute(
+                    """UPDATE daily_performance
+                       SET last_sample_at=?,samples=?,closing_json=?
+                       WHERE day_key=?""",
+                    (float(sampled_at),int(existing[1] or 0)+1,payload,day_key),
+                )
+            else:
+                con.execute(
+                    """INSERT INTO daily_performance(
+                        day_key,first_sample_at,last_sample_at,samples,opening_json,closing_json
+                    ) VALUES (?,?,?,?,?,?)""",
+                    (day_key,float(sampled_at),float(sampled_at),1,payload,payload),
+                )
+        return self.get_performance_day(day_key) or {}
+
+    def get_performance_day(self, day_key: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row=con.execute(
+                "SELECT * FROM daily_performance WHERE day_key=?",
+                (day_key,),
+            ).fetchone()
+        if not row:
+            return None
+        out=dict(row)
+        try: out["opening"]=json.loads(out.pop("opening_json") or "{}")
+        except Exception: out["opening"]={}
+        try: out["closing"]=json.loads(out.pop("closing_json") or "{}")
+        except Exception: out["closing"]={}
+        return out
+
+    def list_performance_days(self, limit: int = 120) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows=con.execute(
+                "SELECT * FROM daily_performance ORDER BY day_key DESC LIMIT ?",
+                (max(1,int(limit)),),
+            ).fetchall()
+        out=[]
+        for raw in rows:
+            row=dict(raw)
+            try: row["opening"]=json.loads(row.pop("opening_json") or "{}")
+            except Exception: row["opening"]={}
+            try: row["closing"]=json.loads(row.pop("closing_json") or "{}")
+            except Exception: row["closing"]={}
+            out.append(row)
+        return out
 
     def save_wallet_snapshot(self, snapshot: dict[str, Any]) -> None:
         with self.connect() as con:
