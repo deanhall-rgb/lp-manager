@@ -103,7 +103,14 @@ def _alchemy_direction(cfg: ChainConfig, wallet: str, direction: str, *, max_pag
         r.raise_for_status()
         payload=r.json()
         if payload.get("error"):
-            raise RuntimeError(str((payload.get("error") or {}).get("message") or "Alchemy asset-transfer error"))
+            message=str((payload.get("error") or {}).get("message") or "Alchemy asset-transfer error")
+            if "internal" in message.lower() and "not supported" in message.lower():
+                params["category"]=["external","erc20"]
+                r=requests.post(url,json={"jsonrpc":"2.0","id":1,"method":"alchemy_getAssetTransfers","params":[params]},timeout=35)
+                r.raise_for_status()
+                payload=r.json()
+            if payload.get("error"):
+                raise RuntimeError(str((payload.get("error") or {}).get("message") or message))
         result=payload.get("result") or {}
         rows.extend(result.get("transfers") or [])
         page_key=result.get("pageKey")
@@ -352,34 +359,61 @@ def _blockscout_transactions(cfg: ChainConfig, wallet: str, known_events: dict[s
 
 def _robinscan_pages(path: str, *, max_pages: int = 100) -> list[dict[str,Any]]:
     base="https://robinscan.io"
-    cursor=None
     rows=[]
+    page=1
+    page_size=50
     for _ in range(max_pages):
-        params={"cursor":cursor} if cursor else {}
+        params={"page":page,"pageSize":page_size}
         r=requests.get(
             base+path,
             params=params,
             timeout=35,
-            headers={"Accept":"application/json","User-Agent":"LP-Manager/0.9.5"},
+            headers={"Accept":"application/json","User-Agent":"Mozilla/5.0 LP-Manager/0.9.5"},
         )
         r.raise_for_status()
         payload=r.json()
+        if isinstance(payload,list):
+            items=payload
+            rows.extend(items)
+            break
         if not isinstance(payload,dict):
             raise RuntimeError("Robinscan returned an unexpected response")
-        rows.extend(payload.get("items") or [])
-        cursor=payload.get("next")
-        if not cursor:
+        items=payload.get("items") or payload.get("results") or []
+        rows.extend(items)
+        if payload.get("next"):
+            # Newer Robinscan payloads may expose a cursor; preserve it if present.
+            next_url=str(payload.get("next") or "")
+            if "cursor=" in next_url:
+                cursor=next_url.split("cursor=",1)[1].split("&",1)[0]
+                r=requests.get(
+                    base+path,
+                    params={"cursor":cursor},
+                    timeout=35,
+                    headers={"Accept":"application/json","User-Agent":"Mozilla/5.0 LP-Manager/0.9.5"},
+                )
+                r.raise_for_status()
+                payload=r.json()
+                rows.extend((payload or {}).get("items") or [])
+                if not (payload or {}).get("next"):
+                    break
+                continue
+        total=_int_any(payload.get("total"),0)
+        current=_int_any(payload.get("page"),page)
+        size=max(1,_int_any(payload.get("pageSize"),page_size))
+        if not items or (total and current*size>=total) or (not total and len(items)<size):
             break
+        page=current+1
     return rows
 
 
 def _robinscan_transactions(cfg: ChainConfig, wallet: str, known_events: dict[str,str]) -> list[dict[str,Any]]:
-    rows=_robinscan_pages(f"/api/address/{wallet}/txs")
+    # Current Robinscan address-history route is plural: /api/addresses/{address}/txs.
+    rows=_robinscan_pages(f"/api/addresses/{wallet}/txs")
     wallet_l=_norm_address(wallet)
     out=[]
     seen=set()
     for row in rows:
-        tx=str(row.get("hash") or "").strip()
+        tx=str(row.get("hash") or row.get("txHash") or "").strip()
         if not tx or tx.lower() in seen:
             continue
         seen.add(tx.lower())
@@ -409,7 +443,7 @@ def _robinscan_transactions(cfg: ChainConfig, wallet: str, known_events: dict[st
             "success":status not in {"error","failed","reverted","0"},
             "source":"ROBINSCAN_PUBLIC_API",
             "payload":{
-                "block":row.get("blockNumber"),
+                "block":row.get("blockNumber") or row.get("block_number"),
                 "fee_wei":fee_wei,
                 "known_lp_manager_event":known,
             },
@@ -417,55 +451,108 @@ def _robinscan_transactions(cfg: ChainConfig, wallet: str, known_events: dict[st
     return out
 
 
-def _robinscan_transfers(cfg: ChainConfig, wallet: str) -> list[dict[str,Any]]:
-    rows=_robinscan_pages(f"/api/address/{wallet}/transfers")
+def _robinscan_tx_detail(tx_hash: str) -> dict[str,Any]:
+    r=requests.get(
+        "https://robinscan.io/api/txs/"+str(tx_hash),
+        timeout=35,
+        headers={"Accept":"application/json","User-Agent":"Mozilla/5.0 LP-Manager/0.9.5"},
+    )
+    r.raise_for_status()
+    payload=r.json()
+    return payload if isinstance(payload,dict) else {}
+
+
+def _robinscan_transfers_from_details(cfg: ChainConfig, wallet: str, tx_rows: list[dict[str,Any]]) -> list[dict[str,Any]]:
     wallet_l=_norm_address(wallet)
     out=[]
     seen=set()
-    for idx,row in enumerate(rows):
-        tx=str(row.get("txHash") or "").strip()
-        frm,frm_name=_addr_value(row.get("from"))
-        to,to_name=_addr_value(row.get("to"))
-        frm_l=_norm_address(frm);to_l=_norm_address(to)
-        direction="SELF" if frm_l==wallet_l and to_l==wallet_l else "IN" if to_l==wallet_l else "OUT" if frm_l==wallet_l else ""
-        if not direction:
+    for tx in tx_rows[:500]:
+        tx_hash=str(tx.get("tx_hash") or "")
+        if not tx_hash:
             continue
-        token=row.get("token") or {}
-        symbol=str(token.get("symbol") or token.get("name") or "TOKEN").strip() or "TOKEN"
-        if _SUSPICIOUS.search(symbol):
-            continue
-        decimals=max(0,_int_any(row.get("decimals"),18))
-        raw_amount=row.get("amount")
         try:
-            amount=max(0.0,int(str(raw_amount or "0"))/(10**decimals))
+            detail=_robinscan_tx_detail(tx_hash)
         except Exception:
-            amount=max(0.0,_f(raw_amount))
-        if amount<=0:
             continue
-        token_address=str(token.get("address_hash") or "")
-        unique=str(row.get("logIndex") if row.get("logIndex") is not None else f"transfer:{idx}:{token_address}")
-        key=(tx.lower(),unique,direction)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({
-            "id":_event_id(cfg.key,tx,unique,direction,symbol,amount),
-            "chain":cfg.key,
-            "tx_hash":tx,
-            "transfer_key":unique,
-            "occurred_at":_iso_ts(row.get("timestamp")),
-            "direction":direction,
-            "category":"erc20",
-            "asset":symbol,
-            "token_address":token_address,
-            "amount":amount,
-            "from_address":frm,
-            "to_address":to,
-            "source":"ROBINSCAN_PUBLIC_API",
-            "payload":{"method":row.get("method"),"from_name":frm_name,"to_name":to_name},
-        })
+        transfers=detail.get("tokenTransfers") or detail.get("token_transfers") or []
+        for idx,row in enumerate(transfers):
+            frm,frm_name=_addr_value(row.get("from"))
+            to,to_name=_addr_value(row.get("to"))
+            frm_l=_norm_address(frm);to_l=_norm_address(to)
+            direction="SELF" if frm_l==wallet_l and to_l==wallet_l else "IN" if to_l==wallet_l else "OUT" if frm_l==wallet_l else ""
+            if not direction:
+                continue
+            token=row.get("token") or {}
+            symbol=str(
+                token.get("symbol") if isinstance(token,dict) else ""
+                or row.get("symbol")
+                or row.get("tokenSymbol")
+                or "TOKEN"
+            ).strip() or "TOKEN"
+            if _SUSPICIOUS.search(symbol):
+                continue
+            decimals=_int_any(
+                row.get("decimals")
+                or (token.get("decimals") if isinstance(token,dict) else None),
+                18,
+            )
+            raw=row.get("value")
+            if raw is None:
+                raw=row.get("amount")
+            try:
+                raw_i=int(str(raw or "0"))
+                amount=max(0.0,raw_i/(10**max(0,decimals)))
+            except Exception:
+                amount=max(0.0,_f(raw))
+            if amount<=0:
+                continue
+            token_address=str(
+                (token.get("address_hash") or token.get("address") if isinstance(token,dict) else "")
+                or row.get("tokenAddress")
+                or ""
+            )
+            unique=str(row.get("logIndex") if row.get("logIndex") is not None else row.get("log_index") if row.get("log_index") is not None else f"detail:{idx}:{token_address}")
+            key=(tx_hash.lower(),unique,direction)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "id":_event_id(cfg.key,tx_hash,unique,direction,symbol,amount),
+                "chain":cfg.key,
+                "tx_hash":tx_hash,
+                "transfer_key":unique,
+                "occurred_at":_f(tx.get("occurred_at")),
+                "direction":direction,
+                "category":"erc20",
+                "asset":symbol,
+                "token_address":token_address,
+                "amount":amount,
+                "from_address":frm,
+                "to_address":to,
+                "source":"ROBINSCAN_TX_DETAIL",
+                "payload":{"method":detail.get("method") or row.get("method"),"from_name":frm_name,"to_name":to_name},
+            })
     return out
 
+
+def _merge_transfer_rows(*groups: list[dict[str,Any]]) -> list[dict[str,Any]]:
+    out=[]
+    seen=set()
+    for group in groups:
+        for row in group or []:
+            key=(
+                str(row.get("chain") or ""),
+                str(row.get("tx_hash") or "").lower(),
+                str(row.get("transfer_key") or ""),
+                str(row.get("direction") or ""),
+                str(row.get("asset") or ""),
+                round(_f(row.get("amount")),12),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+    return out
 
 def _native_transfer_rows_from_transactions(cfg: ChainConfig, rows: list[dict[str,Any]]) -> list[dict[str,Any]]:
     out=[]
@@ -617,12 +704,27 @@ def scan_wallet_audit(settings, store, *, chains: list[str] | None = None) -> di
                 full_history=True
             except Exception as exc:
                 tx_error=str(exc)[:240]
+
+            alchemy_rows=[]
+            alchemy_error=""
             try:
-                transfer_rows=_robinscan_transfers(cfg,wallet)
-                transfer_rows.extend(_native_transfer_rows_from_transactions(cfg,tx_rows))
-                transfer_provider="ROBINSCAN_PUBLIC_API"
+                if _alchemy_url(cfg):
+                    alchemy_rows=_alchemy_transfers(cfg,wallet)
             except Exception as exc:
-                transfer_error=str(exc)[:240]
+                alchemy_error=str(exc)[:240]
+
+            detail_rows=[]
+            if tx_rows:
+                detail_rows=_robinscan_transfers_from_details(cfg,wallet,tx_rows)
+            transfer_rows=_merge_transfer_rows(
+                alchemy_rows,
+                detail_rows,
+                _native_transfer_rows_from_transactions(cfg,tx_rows),
+            )
+            if transfer_rows:
+                transfer_provider="ALCHEMY+ROBINSCAN" if alchemy_rows and detail_rows else "ALCHEMY_ASSET_TRANSFERS" if alchemy_rows else "ROBINSCAN_TX_DETAIL"
+            if alchemy_error and not transfer_rows:
+                transfer_error=alchemy_error
         else:
             try:
                 if _alchemy_url(cfg):
@@ -774,9 +876,21 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
 
     last_scan=store.get_setting("wallet_audit:last_scan",None)
     coverage_rows=list((last_scan or {}).get("chains") or [])
-    active_rows=[x for x in coverage_rows if x.get("transfers") or x.get("transactions")]
-    active_chains=len(active_rows)
-    full_chains=sum(1 for x in active_rows if x.get("full_transaction_history"))
+    position_chains={
+        str(p.get("chain") or "").upper()
+        for p in store.list_positions(None)
+        if str(p.get("chain") or "").strip()
+        and str(p.get("monitoring_class") or "").upper()!="ARCHIVED_SUPERSEDED"
+    }
+    observed_chains={
+        str(x.get("chain") or "").upper()
+        for x in coverage_rows
+        if x.get("transfers") or x.get("transactions")
+    }
+    expected_active_chains=observed_chains|position_chains
+    active_chains=len(expected_active_chains)
+    full_by_chain={str(x.get("chain") or "").upper():bool(x.get("full_transaction_history")) for x in coverage_rows}
+    full_chains=sum(1 for key in expected_active_chains if full_by_chain.get(key))
     return {
         "wallet":str(settings.wallet_address or ""),
         "currency":currency,
