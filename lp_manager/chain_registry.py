@@ -75,6 +75,7 @@ CHAINS: dict[str, ChainConfig] = {
         public_rpc_url="https://cloudflare-eth.com",
         wrapped_native="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
         alchemy_slug="eth-mainnet",
+        explorer_api_base="https://eth.blockscout.com/api/v2",
     ),
     "BASE": ChainConfig(
         "BASE", "Base", 8453, "BASE_RPC_URL", "base",
@@ -83,6 +84,7 @@ CHAINS: dict[str, ChainConfig] = {
         public_rpc_url="https://mainnet.base.org",
         wrapped_native="0x4200000000000000000000000000000000000006",
         alchemy_slug="base-mainnet",
+        explorer_api_base="https://base.blockscout.com/api/v2",
     ),
     "ARBITRUM": ChainConfig(
         "ARBITRUM", "Arbitrum", 42161, "ARBITRUM_RPC_URL", "arbitrum",
@@ -108,6 +110,7 @@ CHAINS: dict[str, ChainConfig] = {
         native_symbol="POL",
         wrapped_native="0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
         alchemy_slug="polygon-mainnet",
+        explorer_api_base="https://polygon.blockscout.com/api/v2",
     ),
     "ROBINHOOD_CHAIN": ChainConfig(
         "ROBINHOOD_CHAIN", "Robinhood Chain", 4663, "RH_RPC_URL", "robinhood",
