@@ -59,12 +59,21 @@
       <div id="wallet-audit-note" class="notice"></div>
       <div id="wallet-audit-metrics" class="metric-grid"></div>
       <div class="panel lower">
+        <div class="panel-head"><div><h2>Scan coverage & transaction costs</h2><p>Full-history chains include zero-value contract calls and approvals as well as asset transfers. Gas is retained in the native asset until historical GBP valuation is added.</p></div></div>
+        <div id="wallet-audit-coverage"></div>
+      </div>
+      <div class="panel lower">
         <div class="panel-head"><div><h2>Funding gaps to review</h2><p>One-sided wallet transfers are deliberately not guessed. Tell LP Manager whether each is new money, an internal wallet/bridge transfer, a withdrawal, or irrelevant.</p></div></div>
         <div id="wallet-audit-gaps"></div>
       </div>
+      <details class="panel lower" open>
+        <summary>Full on-chain activity</summary>
+        <p class="meta lower-tight">Chronological wallet transactions including contract calls, approvals, bridge activity, swaps/LP actions where identifiable, exact native gas paid, and related token/native transfers.</p>
+        <div id="wallet-audit-activity" class="lower"></div>
+      </details>
       <details class="panel lower">
         <summary>Reviewed wallet movement</summary>
-        <p class="meta lower-tight">All discovered transfers remain in the audit trail after classification.</p>
+        <p class="meta lower-tight">All discovered funding transfers remain in the audit trail after classification.</p>
         <div id="wallet-audit-history" class="lower"></div>
       </details>
     </section>
