@@ -206,6 +206,28 @@ CREATE TABLE IF NOT EXISTS wallet_audit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_wallet_audit_time ON wallet_audit_events(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_wallet_audit_status ON wallet_audit_events(review_status, occurred_at DESC);
+CREATE TABLE IF NOT EXISTS wallet_audit_transactions (
+    id TEXT PRIMARY KEY,
+    chain TEXT NOT NULL,
+    tx_hash TEXT NOT NULL,
+    occurred_at REAL NOT NULL DEFAULT 0,
+    direction TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'TRANSACTION',
+    method TEXT NOT NULL DEFAULT '',
+    from_address TEXT NOT NULL DEFAULT '',
+    to_address TEXT NOT NULL DEFAULT '',
+    to_name TEXT NOT NULL DEFAULT '',
+    native_symbol TEXT NOT NULL DEFAULT 'ETH',
+    value_native REAL NOT NULL DEFAULT 0,
+    gas_native REAL NOT NULL DEFAULT 0,
+    success INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_audit_tx_hash_chain ON wallet_audit_transactions(chain, tx_hash);
+CREATE INDEX IF NOT EXISTS idx_wallet_audit_tx_time ON wallet_audit_transactions(occurred_at DESC);
 CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,
     chain TEXT NOT NULL,
@@ -952,6 +974,75 @@ class Store:
                 (str(review_status),None if fiat_amount is None else float(fiat_amount),str(fiat_currency or "GBP"),str(note or ""),time.time(),str(event_id)),
             )
         return self.get_wallet_audit_event(event_id)
+
+    def upsert_wallet_audit_transaction(self, event: dict[str, Any]) -> dict[str, Any]:
+        now=time.time()
+        row={
+            "id":str(event.get("id") or uuid.uuid4().hex),
+            "chain":str(event.get("chain") or ""),
+            "tx_hash":str(event.get("tx_hash") or ""),
+            "occurred_at":float(event.get("occurred_at") or 0),
+            "direction":str(event.get("direction") or ""),
+            "kind":str(event.get("kind") or "TRANSACTION"),
+            "method":str(event.get("method") or ""),
+            "from_address":str(event.get("from_address") or ""),
+            "to_address":str(event.get("to_address") or ""),
+            "to_name":str(event.get("to_name") or ""),
+            "native_symbol":str(event.get("native_symbol") or "ETH"),
+            "value_native":float(event.get("value_native") or 0),
+            "gas_native":float(event.get("gas_native") or 0),
+            "success":1 if bool(event.get("success",True)) else 0,
+            "source":str(event.get("source") or ""),
+            "payload_json":json.dumps(event.get("payload") or {},sort_keys=True),
+            "created_at":float(event.get("created_at") or now),
+            "updated_at":now,
+        }
+        with self.connect() as con:
+            existing=con.execute("SELECT created_at FROM wallet_audit_transactions WHERE id=?",(row["id"],)).fetchone()
+            if existing:
+                row["created_at"]=float(existing[0] or now)
+            con.execute(
+                """INSERT INTO wallet_audit_transactions(
+                    id,chain,tx_hash,occurred_at,direction,kind,method,from_address,to_address,to_name,native_symbol,
+                    value_native,gas_native,success,source,payload_json,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    chain=excluded.chain,tx_hash=excluded.tx_hash,occurred_at=excluded.occurred_at,
+                    direction=excluded.direction,kind=excluded.kind,method=excluded.method,
+                    from_address=excluded.from_address,to_address=excluded.to_address,to_name=excluded.to_name,
+                    native_symbol=excluded.native_symbol,value_native=excluded.value_native,gas_native=excluded.gas_native,
+                    success=excluded.success,source=excluded.source,payload_json=excluded.payload_json,updated_at=excluded.updated_at""",
+                tuple(row[k] for k in (
+                    "id","chain","tx_hash","occurred_at","direction","kind","method","from_address","to_address",
+                    "to_name","native_symbol","value_native","gas_native","success","source","payload_json","created_at","updated_at"
+                )),
+            )
+        return self.get_wallet_audit_transaction(row["id"]) or {}
+
+    def get_wallet_audit_transaction(self, event_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            raw=con.execute("SELECT * FROM wallet_audit_transactions WHERE id=?",(str(event_id),)).fetchone()
+        if not raw: return None
+        row=dict(raw)
+        row["success"]=bool(row.get("success"))
+        try: row["payload"]=json.loads(row.pop("payload_json") or "{}")
+        except Exception: row["payload"]={}
+        return row
+
+    def list_wallet_audit_transactions(self, limit: int = 5000) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows=con.execute(
+                "SELECT * FROM wallet_audit_transactions ORDER BY occurred_at DESC LIMIT ?",
+                (max(1,int(limit)),),
+            ).fetchall()
+        out=[]
+        for raw in rows:
+            row=dict(raw)
+            row["success"]=bool(row.get("success"))
+            try: row["payload"]=json.loads(row.pop("payload_json") or "{}")
+            except Exception: row["payload"]={}
+            out.append(row)
+        return out
 
     def save_wallet_snapshot(self, snapshot: dict[str, Any]) -> None:
         with self.connect() as con:
