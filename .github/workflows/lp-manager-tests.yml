@@ -51,10 +51,10 @@ jobs:
           mkdir -p dist
           zip -r dist/LP_Manager_v0.9.4.zip . \
             -x '.git/*' 'dist/*' '__pycache__/*' '*.pyc' '.venv/*' 'data/*' '.env'
-      - name: Upload V0.9.3 release artifact
+      - name: Upload V0.9.4 release artifact
         uses: actions/upload-artifact@v4
         with:
           name: LP_Manager_v0.9.4
-          path: dist/LP_Manager_v0.9.3.zip
+          path: dist/LP_Manager_v0.9.4.zip
           if-no-files-found: error
           retention-days: 30
