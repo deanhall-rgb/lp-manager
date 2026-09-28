@@ -778,13 +778,26 @@ def scan_wallet_audit(settings, store, *, chains: list[str] | None = None) -> di
             "transaction_error":tx_error,
         })
 
-    active=[x for x in chain_results if x.get("transfers") or x.get("transactions")]
+    observed_active={
+        str(x.get("chain") or "").upper()
+        for x in chain_results
+        if x.get("transfers") or x.get("transactions")
+    }
+    position_active={
+        str(p.get("chain") or "").upper()
+        for p in store.list_positions(None)
+        if str(p.get("chain") or "").strip()
+        and str(p.get("monitoring_class") or "").upper()!="ARCHIVED_SUPERSEDED"
+    }
+    expected_active=observed_active|position_active
+    full_by_chain={str(x.get("chain") or "").upper():bool(x.get("full_transaction_history")) for x in chain_results}
     scan={
         "read_at":time.time(),
         "chains":chain_results,
         "imported":imported,
         "transactions":transaction_count,
-        "coverage_complete":bool(active) and all(x.get("full_transaction_history") for x in active),
+        "coverage_complete":bool(expected_active) and all(full_by_chain.get(key,False) for key in expected_active),
+        "expected_active_chains":sorted(expected_active),
     }
     store.set_setting("wallet_audit:last_scan",scan)
     return {"ok":any(x.get("ok") for x in chain_results),"wallet":wallet,**scan}
