@@ -16,13 +16,19 @@ def _f(v: Any, default: float = 0.0) -> float:
 
 
 def infer_fee_tier_bps(pool: dict[str, Any]) -> tuple[float, str]:
-    for key in ("fee_tier_bps", "fee_bps", "fee_tier"):
+    # Explicit *_bps fields are already expressed in basis points and must not
+    # be converted again. Only raw Uniswap V3 fee-tier values use hundredths of
+    # a basis point (for example 10000 = 100 bps = 1%).
+    for key in ("fee_tier_bps", "fee_bps"):
         value = _f(pool.get(key))
         if value > 0:
-            # Uniswap V3 fee() returns hundredths of a basis point: 500=5 bps.
-            if value >= 100:
-                return value / 100.0, "POOL_METADATA"
             return value, "POOL_METADATA"
+
+    value = _f(pool.get("fee_tier"))
+    if value > 0:
+        if value >= 100:
+            return value / 100.0, "POOL_METADATA"
+        return value, "POOL_METADATA"
     text = " ".join(str(pool.get(k) or "") for k in ("name", "pair", "dex_id"))
     for token, bps in (("0.01%", 1.0), ("0.05%", 5.0), ("0.3%", 30.0), ("0.30%", 30.0), ("1%", 100.0), ("1.00%", 100.0)):
         if token in text:
