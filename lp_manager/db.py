@@ -173,6 +173,15 @@ CREATE TABLE IF NOT EXISTS daily_performance (
     opening_json TEXT NOT NULL,
     closing_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS performance_hourly (
+    hour_key TEXT PRIMARY KEY,
+    day_key TEXT NOT NULL,
+    first_sample_at REAL NOT NULL,
+    last_sample_at REAL NOT NULL,
+    samples INTEGER NOT NULL DEFAULT 1,
+    opening_json TEXT NOT NULL,
+    closing_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,
     chain TEXT NOT NULL,
@@ -707,6 +716,22 @@ class Store:
             return default
 
 
+    def list_settings_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        pattern=str(prefix or "") + "%"
+        with self.connect() as con:
+            rows=con.execute(
+                "SELECT key,value_json,updated_at FROM settings WHERE key LIKE ? ORDER BY key",
+                (pattern,),
+            ).fetchall()
+        out=[]
+        for raw in rows:
+            row=dict(raw)
+            try: row["value"]=json.loads(row.pop("value_json") or "{}")
+            except Exception: row["value"]={}
+            out.append(row)
+        return out
+
+
     def find_position_by_token(self, chain: str, token_id: str) -> dict[str, Any] | None:
         with self.connect() as con:
             row = con.execute("SELECT * FROM positions WHERE chain=? AND token_id=? ORDER BY CASE source WHEN 'live_chain' THEN 0 WHEN 'historical_pool_reconstruction' THEN 1 WHEN 'legacy_campaign_ledger' THEN 2 ELSE 3 END LIMIT 1", (chain, str(token_id))).fetchone()
@@ -765,6 +790,47 @@ class Store:
             rows=con.execute(
                 "SELECT * FROM daily_performance ORDER BY day_key DESC LIMIT ?",
                 (max(1,int(limit)),),
+            ).fetchall()
+        out=[]
+        for raw in rows:
+            row=dict(raw)
+            try: row["opening"]=json.loads(row.pop("opening_json") or "{}")
+            except Exception: row["opening"]={}
+            try: row["closing"]=json.loads(row.pop("closing_json") or "{}")
+            except Exception: row["closing"]={}
+            out.append(row)
+        return out
+
+    def upsert_performance_hour(self, hour_key: str, day_key: str, sampled_at: float, snapshot: dict[str, Any]) -> dict[str, Any]:
+        payload=json.dumps(snapshot,sort_keys=True)
+        with self.connect() as con:
+            existing=con.execute(
+                "SELECT first_sample_at,samples,opening_json FROM performance_hourly WHERE hour_key=?",
+                (hour_key,),
+            ).fetchone()
+            if existing:
+                con.execute(
+                    """UPDATE performance_hourly
+                       SET last_sample_at=?,samples=?,closing_json=?
+                       WHERE hour_key=?""",
+                    (float(sampled_at),int(existing[1] or 0)+1,payload,hour_key),
+                )
+            else:
+                con.execute(
+                    """INSERT INTO performance_hourly(
+                        hour_key,day_key,first_sample_at,last_sample_at,samples,opening_json,closing_json
+                    ) VALUES (?,?,?,?,?,?,?)""",
+                    (hour_key,day_key,float(sampled_at),float(sampled_at),1,payload,payload),
+                )
+        rows=self.list_performance_hours(day_key)
+        return next((row for row in rows if row.get("hour_key")==hour_key),{})
+
+    def list_performance_hours(self, day_key: str, limit: int = 48) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows=con.execute(
+                """SELECT * FROM performance_hourly
+                   WHERE day_key=? ORDER BY hour_key ASC LIMIT ?""",
+                (str(day_key),max(1,int(limit))),
             ).fetchall()
         out=[]
         for raw in rows:
