@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from .financial_truth import portfolio_financial_truth
@@ -28,8 +28,9 @@ def _local_day_key(timestamp: float | None = None) -> str:
 def _local_day_window(day_key: str) -> tuple[float, float]:
     day = datetime.fromisoformat(str(day_key)).date()
     tz = datetime.now().astimezone().tzinfo
-    start = datetime.combine(day, datetime.min.time(), tzinfo=tz).timestamp()
-    return start, start + 86400.0
+    start_dt = datetime.combine(day, datetime.min.time(), tzinfo=tz)
+    end_dt = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=tz)
+    return start_dt.timestamp(), end_dt.timestamp()
 
 
 def _portfolio_snapshot(store, sampled_at: float | None = None) -> dict[str, Any]:
@@ -40,7 +41,16 @@ def _portfolio_snapshot(store, sampled_at: float | None = None) -> dict[str, Any
 
     liquid = _f(wallet.get("wallet_liquid_value_usd"))
     lp_value = _f(truth.get("current_open_lp_value_usd"))
-    wealth = liquid + lp_value
+    canonical_open = [
+        p for p in store.list_positions()
+        if str(p.get("status") or "").upper() == "OPEN"
+        and str(p.get("monitoring_class") or "").upper() != "ARCHIVED_SUPERSEDED"
+        and str(p.get("source") or "") != "legacy_campaign_ledger"
+    ]
+    unclaimed = sum(max(0.0, _f(p.get("unclaimed_fees"))) for p in canonical_open)
+    # Accounting wealth must include currently unclaimed LP fees but must not add
+    # cumulative/collected fees again because collected fees already sit in the wallet.
+    wealth = liquid + lp_value + unclaimed
 
     return {
         "sampled_at": now,
@@ -48,6 +58,7 @@ def _portfolio_snapshot(store, sampled_at: float | None = None) -> dict[str, Any
         "tracked_wealth_usd": round(wealth, 4),
         "liquid_wallet_usd": round(liquid, 4),
         "open_lp_value_usd": round(lp_value, 4),
+        "unclaimed_fees_usd": round(unclaimed, 4),
         "all_time_fees_usd": round(_f(truth.get("all_time_known_fees_usd")), 4),
         "realised_gain_loss_usd": round(_f(truth.get("realised_gain_loss_usd")), 4),
         "transaction_costs_usd": round(_f(truth.get("transaction_costs_usd")), 4),
@@ -214,11 +225,16 @@ def performance_log(store, *, capture: bool = False, limit: int = 120) -> dict[s
             "current_realised_gain_loss_usd": current.get("realised_gain_loss_usd"),
             "current_transaction_costs_usd": current.get("transaction_costs_usd"),
             "current_lp_vs_hodl_usd": current.get("lp_vs_hodl_usd"),
+            "current_fees_24h_usd": current.get("fees_24h_usd"),
+            "current_fee_run_rate_month_usd": current.get("fee_run_rate_month_usd"),
+            "current_capital_earning_pct": current.get("capital_earning_pct"),
+            "current_unclaimed_fees_usd": current.get("unclaimed_fees_usd"),
         },
         "days": days,
         "note": (
             "The Performance Log starts from the first v0.9.4 observation and does not invent earlier daily P/L. "
-            "Performance P/L equals tracked-wealth change minus recorded external deposits/withdrawals. "
+            "Performance P/L equals accounting-wealth change minus recorded external deposits/withdrawals. "
+            "Accounting wealth is liquid wallet + open LP principal + currently unclaimed fees, so collecting fees does not create fake profit. "
             "LP opens, closes, swaps and fee collections remain internal portfolio activity and are not treated as external cash flow."
         ),
     }
