@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
 
 from lp_manager.db import Store
@@ -67,6 +68,59 @@ def test_fee_collection_does_not_create_fake_portfolio_profit(tmp_path):
     assert day["performance_pnl_usd"] == 0.0
 
 
+def test_pre_v094_fee_tracker_days_are_backfilled_without_inventing_pnl(tmp_path):
+    store=Store(tmp_path/"history.sqlite3")
+    position=_position(unclaimed=3.0,realised=0.0)
+    position.opened_at=time.time()-4*86400
+    store.upsert_position(position)
+
+    target=time.time()-2*86400
+    dt=datetime.fromtimestamp(target).astimezone().replace(hour=12,minute=0,second=0,microsecond=0)
+    t1=dt.timestamp()
+    t2=t1+6*3600
+    store.set_setting("fees:tracker:"+position.id,{
+        "opened_at":position.opened_at,
+        "cumulative_earned_usd":3.0,
+        "observations":[
+            {"timestamp":t1,"cumulative_earned_usd":1.0},
+            {"timestamp":t2,"cumulative_earned_usd":3.0},
+        ],
+    })
+    store.record_action(
+        position_id=position.id,action_type="REVIEW_POSITION",mode="READ_ONLY",
+        status="RECORDED",payload={"note":"history evidence"},
+    )
+
+    log=performance_log(store,capture=False)
+    day_key=dt.date().isoformat()
+    day=next(x for x in log["days"] if x["day_key"]==day_key)
+    assert day["evidence_quality"] == "PARTIAL"
+    assert day["performance_pnl_usd"] is None
+    assert day["opening_wealth_usd"] is None
+    assert day["fees_earned_usd"] == 2.0
+    assert day["historical_positions"][0]["fees_earned_usd"] == 2.0
+
+    detail=performance_day(store,day_key)
+    assert detail is not None
+    assert detail["performance_pnl_usd"] is None
+    assert detail["historical_positions"][0]["quality"] == "PARTIAL"
+
+
+def test_v094_capture_retains_hourly_checkpoints(tmp_path):
+    store=Store(tmp_path/"hourly.sqlite3")
+    store.save_wallet_snapshot({"wallet_liquid_value_usd":1000.0})
+    base=datetime.now().astimezone().replace(minute=5,second=0,microsecond=0).timestamp()
+    capture_performance_sample(store,base)
+    capture_performance_sample(store,base+60)
+
+    day_key=datetime.fromtimestamp(base).astimezone().date().isoformat()
+    detail=performance_day(store,day_key)
+    assert detail is not None
+    assert detail["evidence_quality"] == "RECORDED"
+    assert len(detail["hourly"]) == 1
+    assert detail["hourly"][0]["samples"] == 2
+
+
 def test_v094_ui_has_separate_performance_log_workspace():
     root=Path(__file__).parents[1]
     html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
@@ -81,5 +135,8 @@ def test_v094_ui_has_separate_performance_log_workspace():
     assert "Monthly fee run-rate" in js
     assert "data-performance-day" in js
     assert "$('[data-performance-day]').forEach" in js
-    assert " $('[data-performance-day]').forEach" not in js
+    assert "Evidence boundary:" in js
+    assert "Historical fee evidence" in js
+    assert "Not captured" in js
+    assert "Hourly checkpoints" in js
     assert "Record external cash flow" in js
