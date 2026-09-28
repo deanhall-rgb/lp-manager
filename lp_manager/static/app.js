@@ -101,7 +101,7 @@ function renderWalletAudit(){
   gaps.innerHTML=rows.length?'<table class="table"><thead><tr><th>Date</th><th>Movement</th><th>Network</th><th>Other wallet / contract</th><th></th></tr></thead><tbody>'+
    rows.map(e=>{const other=String(e.direction)==='IN'?e.from_address:e.to_address;return '<tr><td>'+when(e.occurred_at)+'</td><td><b>'+walletAuditTransferText(e)+'</b><div class="meta">'+esc(String(e.category||'transfer'))+' · '+short(e.tx_hash||'')+'</div></td><td>'+esc(e.chain||'')+'</td><td>'+short(other||'unknown')+'</td><td><button class="btn small" data-wallet-audit-review="'+esc(e.id)+'">Review</button></td></tr>'}).join('')+
    '</tbody></table>':'<div class="empty-state">No unresolved transfer gaps. The cash-capital baseline is fully classified for the transfers discovered so far.</div>';
-  $('[data-wallet-audit-review]').forEach(b=>b.onclick=()=>openWalletAuditReview(b.dataset.walletAuditReview));
+  $$('[data-wallet-audit-review]').forEach(b=>b.onclick=()=>openWalletAuditReview(b.dataset.walletAuditReview));
  }
  if(history){
   const rows=(a.events||[]).filter(e=>String(e.review_status||'')!=='UNRESOLVED').slice(0,200);
