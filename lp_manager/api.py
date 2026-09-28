@@ -64,6 +64,8 @@ from .performance_log import (
     performance_log as build_performance_log,
     performance_day as build_performance_day,
     capture_performance_sample,
+    performance_fee_target_pct,
+    set_performance_fee_target_pct,
     EXTERNAL_DEPOSIT,
     EXTERNAL_WITHDRAWAL,
 )
@@ -245,6 +247,10 @@ class PerformanceCashFlowIntent(BaseModel):
     amount: float
     note: str = ""
     tx_hash: str = ""
+
+
+class PerformanceTargetIntent(BaseModel):
+    target_monthly_pct: float = 10.0
 
 
 class ProfitSearchIntent(BaseModel):
@@ -1693,6 +1699,16 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     @app.get("/api/performance")
     def performance_view(limit: int = 120):
         return build_performance_log(store, capture=True, limit=max(1,min(366,int(limit))))
+
+    @app.post("/api/performance/target")
+    def performance_target(intent: PerformanceTargetIntent):
+        target=set_performance_fee_target_pct(store,intent.target_monthly_pct)
+        return {
+            "ok":True,
+            "target_monthly_pct":target,
+            "performance":build_performance_log(store,capture=False),
+            "guardrail":"REPORTING_ONLY_DO_NOT_INCREASE_RISK_TO_HIT_TARGET",
+        }
 
     @app.post("/api/performance/cash-flow")
     def performance_cash_flow(intent: PerformanceCashFlowIntent):
