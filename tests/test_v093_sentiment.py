@@ -11,6 +11,7 @@ from lp_manager.campaign_sentiment import (
 from lp_manager.db import Store
 from lp_manager.models import Position
 from lp_manager.profit_engine import _compatible_fee_tier_spot
+from lp_manager.economics_engine import infer_fee_tier_bps
 
 
 def _position(pid: str, current: float = 130.0) -> Position:
@@ -118,6 +119,13 @@ def test_strong_uncomfortable_thesis_can_override_positive_rerange(tmp_path):
     exit_row=next(x for x in out["options"] if x["action"]=="EXIT")
     assert exit_row["recommended"] is True
     assert exit_row["status"] == "THESIS_CAUTION"
+
+
+def test_explicit_fee_tier_bps_is_not_converted_twice():
+    assert infer_fee_tier_bps({"fee_tier_bps":100.0}) == (100.0, "POOL_METADATA")
+    assert infer_fee_tier_bps({"fee_bps":100.0}) == (100.0, "POOL_METADATA")
+    assert infer_fee_tier_bps({"fee_tier":10000}) == (100.0, "POOL_METADATA")
+    assert infer_fee_tier_bps({"fee_tier_bps":1.0}) == (1.0, "POOL_METADATA")
 
 
 def test_fee_tier_cross_pool_guard_rejects_hookr_scale_anomaly():
