@@ -284,6 +284,13 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
     rate=_f(ctx.get("usd_to_display_rate"),1.0)
     snapshot=store.get_wallet_snapshot() or {}
     current_usd=_f(snapshot.get("total_tracked_value_usd"))
+    unclaimed_usd=sum(
+        max(0.0,_f(p.get("unclaimed_fees")))
+        for p in store.list_positions("OPEN")
+        if str(p.get("monitoring_class") or "").upper()!="ARCHIVED_SUPERSEDED"
+        and str(p.get("source") or "")!="legacy_campaign_ledger"
+    )
+    current_usd+=unclaimed_usd
     current_display=current_usd*rate
     true_pnl=current_display+withdrawals-contributions
     return {
