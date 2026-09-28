@@ -6,7 +6,12 @@ from pathlib import Path
 
 from lp_manager.db import Store
 from lp_manager.models import Position
-from lp_manager.performance_log import capture_performance_sample, performance_day, performance_log
+from lp_manager.performance_log import (
+    capture_performance_sample,
+    performance_day,
+    performance_log,
+    set_performance_fee_target_pct,
+)
 
 
 def _position(*, unclaimed: float, realised: float) -> Position:
@@ -99,11 +104,54 @@ def test_pre_v094_fee_tracker_days_are_backfilled_without_inventing_pnl(tmp_path
     assert day["opening_wealth_usd"] is None
     assert day["fees_earned_usd"] == 2.0
     assert day["historical_positions"][0]["fees_earned_usd"] == 2.0
+    assert day["fee_actual_usd"] == 2.0
+    assert day["fee_target_usd"] is not None
+    assert day["fee_target_usd"] > 0
+    assert day["target_time_weighted_lp_capital_usd"] == 100.0
+    assert day["fee_attainment_pct"] > 100
 
     detail=performance_day(store,day_key)
     assert detail is not None
     assert detail["performance_pnl_usd"] is None
     assert detail["historical_positions"][0]["quality"] == "PARTIAL"
+
+
+def test_fee_target_is_movable_and_recalculates_same_evidence_window(tmp_path):
+    store=Store(tmp_path/"target.sqlite3")
+    position=_position(unclaimed=4.0,realised=0.0)
+    position.opened_at=time.time()-3*86400
+    store.upsert_position(position)
+
+    target=time.time()-86400
+    dt=datetime.fromtimestamp(target).astimezone().replace(hour=6,minute=0,second=0,microsecond=0)
+    t1=dt.timestamp()
+    t2=t1+12*3600
+    store.set_setting("fees:tracker:"+position.id,{
+        "opened_at":position.opened_at,
+        "cumulative_earned_usd":4.0,
+        "observations":[
+            {"timestamp":t1,"cumulative_earned_usd":1.0},
+            {"timestamp":t2,"cumulative_earned_usd":4.0},
+        ],
+    })
+
+    set_performance_fee_target_pct(store,10.0)
+    first=performance_log(store,capture=False)
+    day_key=dt.date().isoformat()
+    day10=next(x for x in first["days"] if x["day_key"]==day_key)
+    target10=day10["fee_target_usd"]
+    assert day10["fee_actual_usd"] == 3.0
+    assert day10["target_window_hours"] == 12.0
+    assert day10["target_time_weighted_lp_capital_usd"] == 100.0
+    assert first["monthly_fee_target_pct"] == 10.0
+
+    set_performance_fee_target_pct(store,20.0)
+    second=performance_log(store,capture=False)
+    day20=next(x for x in second["days"] if x["day_key"]==day_key)
+    assert second["monthly_fee_target_pct"] == 20.0
+    assert day20["fee_actual_usd"] == day10["fee_actual_usd"]
+    assert abs(day20["fee_target_usd"] - target10*2) < 0.0002
+    assert day20["fee_attainment_pct"] < day10["fee_attainment_pct"]
 
 
 def test_v094_capture_retains_hourly_checkpoints(tmp_path):
@@ -129,14 +177,19 @@ def test_v094_ui_has_separate_performance_log_workspace():
     assert 'data-section="performance"' in html
     assert 'id="performance-section"' in html
     assert 'id="performance-cashflow-btn"' in html
+    assert 'id="performance-target-rate"' in html
+    assert 'id="performance-target-btn"' in html
+    assert 'id="performance-fee-summary"' in html
     assert "v0.9.4 · performance log" in html
+    assert "Daily fee performance" in html
+    assert "Accounting & audit detail" in html
     assert "function renderPerformance()" in js
-    assert "Accounting wealth" in js
-    assert "Monthly fee run-rate" in js
+    assert "function updatePerformanceTarget" in js
+    assert "Fees earned" in js
+    assert "Fee target" in js
+    assert "Target attainment" in js
+    assert "time-weighted committed LP" in js
     assert "data-performance-day" in js
     assert "$('[data-performance-day]').forEach" in js
-    assert "Evidence boundary:" in js
-    assert "Historical fee evidence" in js
-    assert "Not captured" in js
     assert "Hourly checkpoints" in js
     assert "Record external cash flow" in js
