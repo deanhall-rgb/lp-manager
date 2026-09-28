@@ -112,3 +112,5 @@ def test_v095_wallet_audit_ui_is_separate_and_manual_review_is_explicit():
     assert "enter what it actually cost you in cash" in js
     assert "/api/wallet-audit/scan" in js
     assert "/api/wallet-audit/resolve" in js
+    assert "$('[data-wallet-audit-review]').forEach" in js
+    assert " $('[data-wallet-audit-review]').forEach" not in js
