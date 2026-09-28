@@ -9,10 +9,11 @@
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.9.4 · performance log</div></div></div>
+    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.9.5 · wallet audit</div></div></div>
     <nav>
       <button class="nav active" data-section="overview"><span>⌂</span> Overview</button>
       <button class="nav" data-section="wallet"><span>◈</span> Wallet</button>
+      <button class="nav" data-section="walletaudit"><span>≡</span> Wallet Audit</button>
       <button class="nav" data-section="positions"><span>▦</span> Positions</button>
       <button class="nav" data-section="campaigns"><span>◎</span> Campaigns</button>
       <button class="nav" data-section="performance"><span>↗</span> Performance Log</button>
@@ -51,6 +52,21 @@
       <div class="section-hero"><div><h2>Wallet</h2><p>Liquid assets, LP capital and chain connectivity from your configured public wallet.</p></div><button id="wallet-refresh-btn" class="btn">Refresh wallet</button></div>
       <div id="wallet-metrics" class="metric-grid"></div>
       <div class="panel lower"><div class="panel-head"><div><h2>Assets</h2><p>Live balances and prices. Obvious spam/claim tokens and sub-£1-equivalent dust are hidden by default.</p></div><button id="wallet-hidden-btn" class="btn secondary small">Show hidden</button></div><div id="wallet-assets"></div><div id="wallet-hidden" class="hidden lower"></div></div>
+    </section>
+
+    <section id="walletaudit-section" class="section">
+      <div class="section-hero"><div><h2>Wallet Audit & Capital Ledger</h2><p>Reconstruct the journey from real cash into crypto, separate internal wallet movement from new money, and build a true investor P/L baseline.</p></div><button id="wallet-audit-scan-btn" class="btn">Scan wallet history</button></div>
+      <div id="wallet-audit-note" class="notice"></div>
+      <div id="wallet-audit-metrics" class="metric-grid"></div>
+      <div class="panel lower">
+        <div class="panel-head"><div><h2>Funding gaps to review</h2><p>One-sided wallet transfers are deliberately not guessed. Tell LP Manager whether each is new money, an internal wallet/bridge transfer, a withdrawal, or irrelevant.</p></div></div>
+        <div id="wallet-audit-gaps"></div>
+      </div>
+      <details class="panel lower">
+        <summary>Reviewed wallet movement</summary>
+        <p class="meta lower-tight">All discovered transfers remain in the audit trail after classification.</p>
+        <div id="wallet-audit-history" class="lower"></div>
+      </details>
     </section>
 
     <section id="positions-section" class="section">
