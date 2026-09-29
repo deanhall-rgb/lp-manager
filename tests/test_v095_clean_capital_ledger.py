@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from lp_manager.capital_ledger import clean_capital_ledger, import_reviewed_baseline
+from lp_manager.wallet_audit import wallet_audit_summary
 from lp_manager.db import Store
 
 
@@ -169,3 +170,33 @@ def test_campaign_capital_uses_open_position_basis_plus_traced_wallet_basis(tmp_
     assert row["capital_invested_gbp"]==100.0
     assert row["marked_exposure_gbp"]==200.0
     assert row["exposure_pnl_gbp"]==100.0
+
+
+def test_advanced_wallet_audit_uses_clean_capital_ledger_cash_boundary(tmp_path):
+    store=Store(tmp_path/"audit_boundary.sqlite3")
+    store.set_setting("fx:USD:GBP",{"rate":0.8,"read_at":time.time(),"source":"TEST"})
+    store.save_wallet_snapshot({"total_tracked_value_usd":1000.0})
+    store.set_setting("wallet_audit:last_scan",{
+        "read_at":time.time(),
+        "coverage_complete":True,
+        "chains":[{"chain":"ROBINHOOD_CHAIN","transfers":1,"transactions":1,"full_transaction_history":True}],
+    })
+    # A transfer-confirmed £100 plus £50 manual legacy capital: the advanced view
+    # must use £150 from the clean ledger, not only the transfer row.
+    store.upsert_wallet_audit_event({
+        "id":"fund","chain":"ROBINHOOD_CHAIN","tx_hash":"0xfund","transfer_key":"fund",
+        "occurred_at":1_790_000_000.0,"direction":"IN","category":"external","asset":"ETH",
+        "token_address":"","amount":0.05,"from_address":"0xprovider","to_address":"0xabc",
+        "source":"TEST","payload":{},"review_status":"CONFIRMED_FUNDING","fiat_amount":100.0,"fiat_currency":"GBP",
+    })
+    import_reviewed_baseline(store,{
+        "currency":"GBP","entries":[
+            {"id":"cash","occurred_at":1_790_000_000,"event_type":"EXTERNAL_FUNDING","amount_gbp":100.0,"asset":"ETH","asset_amount":0.05},
+            {"id":"legacy","occurred_at":1_790_000_100,"event_type":"LEGACY_BROUGHT_FORWARD","amount_gbp":50.0,"metadata":{"allocations_gbp":{"ETH":50.0}}},
+        ],"audit_rules":{},
+    })
+    summary=wallet_audit_summary(_settings(),store)
+    assert summary["metrics"]["confirmed_contributions"]==150.0
+    assert summary["metrics"]["current_portfolio_value"]==800.0
+    assert summary["metrics"]["provisional_true_pnl"]==650.0
+    assert summary["metrics"]["cash_boundary_source"]=="CAPITAL_LEDGER"
