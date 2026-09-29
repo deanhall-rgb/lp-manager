@@ -1109,14 +1109,11 @@ def resolve_wallet_audit_event(settings, store, event_id: str, *, classification
         amount=max(0.0,_f(fiat_amount))
         if amount<=0:
             raise ValueError("Enter the real cash amount including provider/on-ramp/off-ramp fees")
-        if currency.upper()!="GBP":
-            raise ValueError("The clean investor ledger currently requires cash confirmation in GBP")
-
     resolved=store.resolve_wallet_audit_event(
         event_id,review_status=status,fiat_amount=amount,fiat_currency=currency,note=note,
     ) or {}
 
-    if status in {RESOLVED_FUNDING,RESOLVED_WITHDRAWAL} and amount is not None:
+    if status in {RESOLVED_FUNDING,RESOLVED_WITHDRAWAL} and amount is not None and currency.upper()=="GBP":
         ledger_type="EXTERNAL_FUNDING" if status==RESOLVED_FUNDING else "EXTERNAL_WITHDRAWAL"
         label="Confirmed wallet funding" if status==RESOLVED_FUNDING else "Confirmed cash withdrawal"
         store.upsert_capital_ledger_entry({
