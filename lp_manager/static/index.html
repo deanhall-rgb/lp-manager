@@ -55,26 +55,41 @@
     </section>
 
     <section id="walletaudit-section" class="section">
-      <div class="section-hero"><div><h2>Wallet Audit & Capital Ledger</h2><p>Reconstruct the journey from real cash into crypto, separate internal wallet movement from new money, and build a true investor P/L baseline.</p></div><button id="wallet-audit-scan-btn" class="btn">Scan wallet history</button></div>
-      <div id="wallet-audit-note" class="notice"></div>
-      <div id="wallet-audit-metrics" class="metric-grid"></div>
+      <div class="section-hero"><div><h2>Investor Ledger</h2><p>Clean investor accounting: real cash in, cash out, current wealth and lifetime P/L. Internal blockchain mechanics stay out of the journal.</p></div><div class="top-actions"><input id="capital-ledger-file" type="file" accept=".json,application/json" class="hidden"><button id="capital-ledger-import-btn" class="btn secondary">Import reviewed baseline</button><button id="wallet-audit-scan-btn" class="btn">Scan wallet history</button></div></div>
+      <div id="capital-ledger-note" class="notice"></div>
+      <div id="capital-ledger-metrics" class="metric-grid"></div>
       <div class="panel lower">
-        <div class="panel-head"><div><h2>Scan coverage & transaction costs</h2><p>Full-history chains include zero-value contract calls and approvals as well as asset transfers. Gas is retained in the native asset until historical GBP valuation is added.</p></div></div>
-        <div id="wallet-audit-coverage"></div>
+        <div class="panel-head"><div><h2>Clean capital journal</h2><p>Only investor-level cash events appear here. Swaps, bridges, approvals and LP mechanics are reconciled in the background.</p></div></div>
+        <div id="capital-ledger-journal"></div>
       </div>
       <div class="panel lower">
-        <div class="panel-head"><div><h2>Funding gaps to review</h2><p>One-sided wallet transfers are deliberately not guessed. Tell LP Manager whether each is new money, an internal wallet/bridge transfer, a withdrawal, or irrelevant.</p></div></div>
-        <div id="wallet-audit-gaps"></div>
+        <div class="panel-head"><div><h2>Campaign performance</h2><p>Current marked exposure and evidenced LP strategy P/L, alongside the reviewed legacy opening basis where one was supplied.</p></div></div>
+        <div id="capital-ledger-campaigns"></div>
       </div>
-      <details class="panel lower" open>
-        <summary>Full on-chain activity</summary>
-        <p class="meta lower-tight">Chronological wallet transactions including contract calls, approvals, bridge activity, swaps/LP actions where identifiable, exact native gas paid, and related token/native transfers.</p>
-        <div id="wallet-audit-activity" class="lower"></div>
-      </details>
+
       <details class="panel lower">
-        <summary>Reviewed wallet movement</summary>
-        <p class="meta lower-tight">All discovered funding transfers remain in the audit trail after classification.</p>
-        <div id="wallet-audit-history" class="lower"></div>
+        <summary>Advanced wallet audit evidence</summary>
+        <p class="meta lower-tight">Raw chain history remains available for reconciliation and future automatic tagging, but does not clutter the investor ledger.</p>
+        <div id="wallet-audit-note" class="notice lower"></div>
+        <div id="wallet-audit-metrics" class="metric-grid lower"></div>
+        <div class="panel lower">
+          <div class="panel-head"><div><h2>Scan coverage & transaction costs</h2><p>Full-history chains include zero-value contract calls and approvals as well as asset transfers. Gas is retained in the native asset until historical GBP valuation is added.</p></div></div>
+          <div id="wallet-audit-coverage"></div>
+        </div>
+        <div class="panel lower">
+          <div class="panel-head"><div><h2>Funding gaps to review</h2><p>Anything not resolved by the reviewed baseline remains here for audit follow-up.</p></div></div>
+          <div id="wallet-audit-gaps"></div>
+        </div>
+        <details class="panel lower">
+          <summary>Full on-chain activity</summary>
+          <p class="meta lower-tight">Chronological wallet transactions including contract calls, approvals, bridge activity, swaps/LP actions where identifiable, exact native gas paid, and related token/native transfers.</p>
+          <div id="wallet-audit-activity" class="lower"></div>
+        </details>
+        <details class="panel lower">
+          <summary>Reviewed wallet movement</summary>
+          <p class="meta lower-tight">All classified transfers remain available as audit evidence.</p>
+          <div id="wallet-audit-history" class="lower"></div>
+        </details>
       </details>
     </section>
 
