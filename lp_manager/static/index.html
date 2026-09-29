@@ -58,6 +58,7 @@
       <div class="section-hero"><div><h2>Investor Ledger</h2><p>Clean investor accounting: real cash in, cash out, current wealth and lifetime P/L. Internal blockchain mechanics stay out of the journal.</p></div><div class="top-actions"><input id="capital-ledger-file" type="file" accept=".json,application/json" class="hidden"><button id="capital-ledger-import-btn" class="btn secondary">Import reviewed baseline</button><button id="wallet-audit-scan-btn" class="btn">Scan wallet history</button></div></div>
       <div id="capital-ledger-note" class="notice"></div>
       <div id="capital-ledger-metrics" class="metric-grid"></div>
+      <div id="capital-ledger-review" class="panel lower"></div>
       <div class="panel lower">
         <div class="panel-head"><div><h2>Clean capital journal</h2><p>Only investor-level cash events appear here. Swaps, bridges, approvals and LP mechanics are reconciled in the background.</p></div></div>
         <div id="capital-ledger-journal"></div>
@@ -77,7 +78,7 @@
           <div id="wallet-audit-coverage"></div>
         </div>
         <div class="panel lower">
-          <div class="panel-head"><div><h2>Funding gaps to review</h2><p>Anything not resolved by the reviewed baseline remains here for audit follow-up.</p></div></div>
+          <div class="panel-head"><div><h2>Review queue</h2><p>Only genuinely ambiguous external movements remain here; swaps, bridges and LP/protocol activity are classified automatically.</p></div></div>
           <div id="wallet-audit-gaps"></div>
         </div>
         <details class="panel lower">
