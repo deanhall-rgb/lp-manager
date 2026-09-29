@@ -48,7 +48,12 @@ def test_reviewed_baseline_produces_clean_lifetime_pnl_and_legacy_allocations(tm
     assert m["lifetime_pnl_gbp"]==348.38
     assert m["lifetime_return_pct"]==26.2
     assert m["estimated_onramp_friction_gbp"]==43.35
-    assert ledger["legacy_campaign_basis_gbp"]=={"DELTA":67.33,"ETH":80.0,"HOOKR":67.33}
+    legacy=next(x for x in ledger["entries"] if x["id"]=="legacy")
+    assert legacy["display_label"]=="MoonPay funding"
+    assert legacy["display_note"]==""
+    assert legacy["display_asset"]=="ETH"
+    assert legacy["display_asset_amount"]>0
+    assert legacy["display_reference"]=="Manual"
 
 
 def test_reviewed_baseline_bulk_reconciles_funding_internal_protocol_bridge_and_noise(tmp_path):
@@ -105,3 +110,62 @@ def test_clean_ledger_ui_hides_raw_audit_behind_advanced_details():
     assert "function renderCapitalLedger()" in js
     assert "/api/capital-ledger/import" in js
     assert "renderCapitalLedger();renderWalletAudit()" in js
+    assert "Capital invested" in js
+    assert "Exposure P/L" in js
+    assert "Reviewed legacy basis" not in js
+
+
+def test_campaign_capital_uses_open_position_basis_plus_traced_wallet_basis(tmp_path, monkeypatch):
+    import lp_manager.capital_ledger as capital_ledger
+
+    store=Store(tmp_path/"campaign_basis.sqlite3")
+    store.set_setting("fx:USD:GBP",{"rate":0.8,"read_at":time.time(),"source":"TEST"})
+    store.save_wallet_snapshot({"total_tracked_value_usd":500.0})
+
+    payload={
+        "currency":"GBP",
+        "entries":[
+            {"id":"cash","occurred_at":"2026-09-01T10:00:00+01:00","event_type":"EXTERNAL_FUNDING","amount_gbp":200.0,"asset":"ETH","asset_amount":0.1},
+        ],
+        "audit_rules":{},
+    }
+    import_reviewed_baseline(store,payload)
+
+    wallet="0xabc"
+    store.upsert_wallet_audit_event({
+        "id":"swap-in","chain":"ROBINHOOD_CHAIN","tx_hash":"0xswap","transfer_key":"1",
+        "occurred_at":1_788_000_000.0,"direction":"OUT","category":"external","asset":"ETH",
+        "token_address":"","amount":0.02,"from_address":wallet,"to_address":"0xrouter",
+        "source":"TEST","payload":{},"review_status":"INTERNAL_CONVERSION",
+    })
+    store.upsert_wallet_audit_event({
+        "id":"swap-out","chain":"ROBINHOOD_CHAIN","tx_hash":"0xswap","transfer_key":"2",
+        "occurred_at":1_788_000_000.0,"direction":"IN","category":"erc20","asset":"DELTA",
+        "token_address":"0xdelta","amount":1000.0,"from_address":"0xrouter","to_address":wallet,
+        "source":"TEST","payload":{},"review_status":"INTERNAL_CONVERSION",
+    })
+    store.upsert_wallet_audit_transaction({
+        "id":"wat:swap","chain":"ROBINHOOD_CHAIN","tx_hash":"0xswap","occurred_at":1_788_000_000.0,
+        "direction":"OUT","kind":"SWAP","method":"swap","from_address":wallet,"to_address":"0xrouter",
+        "native_symbol":"ETH","value_native":0.02,"gas_native":0.0,"success":True,"source":"TEST","payload":{},
+    })
+
+    monkeypatch.setattr(capital_ledger,"build_campaigns",lambda store:[{
+        "id":"campaign:ROBINHOOD_CHAIN:DELTA","asset_symbol":"DELTA","label":"DELTA","status":"ACTIVE",
+        "marked_exposure_usd":250.0,"known_campaign_pnl_usd":10.0,"lifetime_fees_usd":12.0,
+        "transaction_costs_usd":1.0,
+        "wallet_inventory":{"balance":500.0,"value_usd":100.0},
+        "positions":[{"status":"OPEN","opening_capital_usd":100.0}],
+        "open_positions":1,"closed_positions":0,
+    }])
+
+    ledger=clean_capital_ledger(_settings(),store)
+    row=ledger["campaigns"][0]
+    # ETH cash basis is £2,000/ETH, so 0.02 ETH -> £40 of DELTA acquisition basis.
+    # Half the acquired DELTA remains in the wallet -> £20 wallet basis.
+    # Open LP basis is $100 * 0.8 = £80.
+    assert row["wallet_inventory_basis_gbp"]==20.0
+    assert row["open_position_basis_gbp"]==80.0
+    assert row["capital_invested_gbp"]==100.0
+    assert row["marked_exposure_gbp"]==200.0
+    assert row["exposure_pnl_gbp"]==100.0
