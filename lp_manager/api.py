@@ -74,6 +74,10 @@ from .wallet_audit import (
     wallet_audit_summary,
     resolve_wallet_audit_event,
 )
+from .capital_ledger import (
+    clean_capital_ledger,
+    import_reviewed_baseline,
+)
 
 
 class ScoutIntent(BaseModel):
@@ -267,6 +271,16 @@ class WalletAuditResolveIntent(BaseModel):
     classification: str
     fiat_amount: float | None = None
     note: str = ""
+
+
+class CapitalLedgerImportIntent(BaseModel):
+    version: str = "v0.9.5"
+    currency: str = "GBP"
+    replace: bool = True
+    reviewed_by: str = "operator"
+    note: str = ""
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    audit_rules: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProfitSearchIntent(BaseModel):
@@ -623,6 +637,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "profit_scorecard": portfolio_profit_scorecard(store),
             "performance_log": build_performance_log(store, capture=True),
             "wallet_audit": wallet_audit_summary(settings, store),
+            "capital_ledger": clean_capital_ledger(settings, store),
             "profit_last_recommendation": store.get_setting("profit:last_recommendation", None),
         }
 
@@ -1740,6 +1755,22 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(400,str(exc))
         return {"ok":True,"event":row,"audit":wallet_audit_summary(settings,store)}
+
+    @app.get("/api/capital-ledger")
+    def capital_ledger_view():
+        return clean_capital_ledger(settings,store)
+
+    @app.post("/api/capital-ledger/import")
+    def capital_ledger_import(intent: CapitalLedgerImportIntent):
+        try:
+            result=import_reviewed_baseline(store,intent.model_dump())
+        except ValueError as exc:
+            raise HTTPException(400,str(exc))
+        return {
+            **result,
+            "ledger":clean_capital_ledger(settings,store),
+            "audit":wallet_audit_summary(settings,store),
+        }
 
     @app.post("/api/performance/target")
     def performance_target(intent: PerformanceTargetIntent):
