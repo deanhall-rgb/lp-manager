@@ -228,6 +228,26 @@ CREATE TABLE IF NOT EXISTS wallet_audit_transactions (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_audit_tx_hash_chain ON wallet_audit_transactions(chain, tx_hash);
 CREATE INDEX IF NOT EXISTS idx_wallet_audit_tx_time ON wallet_audit_transactions(occurred_at DESC);
+CREATE TABLE IF NOT EXISTS capital_ledger (
+    id TEXT PRIMARY KEY,
+    occurred_at REAL NOT NULL DEFAULT 0,
+    event_type TEXT NOT NULL,
+    amount_gbp REAL NOT NULL DEFAULT 0,
+    asset TEXT NOT NULL DEFAULT '',
+    asset_amount REAL NOT NULL DEFAULT 0,
+    chain TEXT NOT NULL DEFAULT '',
+    tx_hash TEXT NOT NULL DEFAULT '',
+    campaign_symbol TEXT NOT NULL DEFAULT '',
+    estimated_friction_gbp REAL NOT NULL DEFAULT 0,
+    label TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'REVIEWED_BASELINE',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_capital_ledger_time ON capital_ledger(occurred_at ASC);
+CREATE INDEX IF NOT EXISTS idx_capital_ledger_type ON capital_ledger(event_type, occurred_at ASC);
 CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,
     chain TEXT NOT NULL,
@@ -1043,6 +1063,79 @@ class Store:
             except Exception: row["payload"]={}
             out.append(row)
         return out
+
+    def upsert_capital_ledger_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        now=time.time()
+        row={
+            "id":str(entry.get("id") or uuid.uuid4().hex),
+            "occurred_at":float(entry.get("occurred_at") or 0),
+            "event_type":str(entry.get("event_type") or "ADJUSTMENT").upper(),
+            "amount_gbp":float(entry.get("amount_gbp") or 0),
+            "asset":str(entry.get("asset") or ""),
+            "asset_amount":float(entry.get("asset_amount") or 0),
+            "chain":str(entry.get("chain") or ""),
+            "tx_hash":str(entry.get("tx_hash") or ""),
+            "campaign_symbol":str(entry.get("campaign_symbol") or "").upper(),
+            "estimated_friction_gbp":float(entry.get("estimated_friction_gbp") or 0),
+            "label":str(entry.get("label") or ""),
+            "note":str(entry.get("note") or ""),
+            "source":str(entry.get("source") or "REVIEWED_BASELINE"),
+            "metadata_json":json.dumps(entry.get("metadata") or {},sort_keys=True),
+            "created_at":float(entry.get("created_at") or now),
+            "updated_at":now,
+        }
+        with self.connect() as con:
+            existing=con.execute("SELECT created_at FROM capital_ledger WHERE id=?",(row["id"],)).fetchone()
+            if existing:
+                row["created_at"]=float(existing[0] or now)
+            con.execute(
+                """INSERT INTO capital_ledger(
+                    id,occurred_at,event_type,amount_gbp,asset,asset_amount,chain,tx_hash,campaign_symbol,
+                    estimated_friction_gbp,label,note,source,metadata_json,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    occurred_at=excluded.occurred_at,event_type=excluded.event_type,amount_gbp=excluded.amount_gbp,
+                    asset=excluded.asset,asset_amount=excluded.asset_amount,chain=excluded.chain,tx_hash=excluded.tx_hash,
+                    campaign_symbol=excluded.campaign_symbol,estimated_friction_gbp=excluded.estimated_friction_gbp,
+                    label=excluded.label,note=excluded.note,source=excluded.source,metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at""",
+                tuple(row[k] for k in (
+                    "id","occurred_at","event_type","amount_gbp","asset","asset_amount","chain","tx_hash",
+                    "campaign_symbol","estimated_friction_gbp","label","note","source","metadata_json","created_at","updated_at"
+                )),
+            )
+        return self.get_capital_ledger_entry(row["id"]) or {}
+
+    def get_capital_ledger_entry(self, entry_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            raw=con.execute("SELECT * FROM capital_ledger WHERE id=?",(str(entry_id),)).fetchone()
+        if not raw: return None
+        row=dict(raw)
+        try: row["metadata"]=json.loads(row.pop("metadata_json") or "{}")
+        except Exception: row["metadata"]={}
+        return row
+
+    def list_capital_ledger(self, limit: int = 1000) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows=con.execute(
+                "SELECT * FROM capital_ledger ORDER BY occurred_at ASC,id ASC LIMIT ?",
+                (max(1,int(limit)),),
+            ).fetchall()
+        out=[]
+        for raw in rows:
+            row=dict(raw)
+            try: row["metadata"]=json.loads(row.pop("metadata_json") or "{}")
+            except Exception: row["metadata"]={}
+            out.append(row)
+        return out
+
+    def clear_capital_ledger(self, source_prefix: str | None = None) -> int:
+        with self.connect() as con:
+            if source_prefix:
+                cur=con.execute("DELETE FROM capital_ledger WHERE source LIKE ?",(str(source_prefix)+"%",))
+            else:
+                cur=con.execute("DELETE FROM capital_ledger")
+        return int(cur.rowcount or 0)
 
     def save_wallet_snapshot(self, snapshot: dict[str, Any]) -> None:
         with self.connect() as con:
