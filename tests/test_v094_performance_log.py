@@ -237,7 +237,7 @@ def test_v094_ui_has_separate_performance_log_workspace():
     assert 'id="performance-target-rate"' in html
     assert 'id="performance-target-btn"' in html
     assert 'id="performance-fee-summary"' in html
-    assert "v0.9.5 · investor ledger" in html
+    assert "v0.9.6.1 · discovery lab" in html
     assert "Daily fee performance" in html
     assert "Accounting & audit detail" in html
     assert "function renderPerformance()" in js
