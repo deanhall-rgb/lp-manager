@@ -58,6 +58,8 @@ DEFAULT_SUBGRAPH_IDS = {
     "ETHEREUM": "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
     "BASE": "VmwKeqb22QsuM4AcCp8qTFg2dW7EXZNg16kGgXu6bBu",
     "ARBITRUM": "FQ6JYszEKApsBpAmiHesRsd9Ygc6mzmpNRANeVQFYoVX",
+    "OPTIMISM": "EgnS9YE1avupkvCNj9fHnJxppfEmNNywYJtghqiu2pd9",
+    "POLYGON": "EsLGwxyeMMeJuhqWvuLmJEiDKXJ4Z6YsoJreUnyeozco",
 }
 
 
@@ -110,6 +112,10 @@ def _normalise_dex_pair(pair: dict[str, Any], chain_key: str) -> dict[str, Any]:
 def _normalise_graph_pool(row: dict[str, Any], chain_key: str) -> dict[str, Any]:
     t0=row.get("token0") or {}
     t1=row.get("token1") or {}
+    day_rows=row.get("poolDayData") or row.get("poolDayDatas") or []
+    recent_day=day_rows[0] if isinstance(day_rows,list) and day_rows else {}
+    recent_volume=_f(recent_day.get("volumeUSD")) if recent_day else None
+    recent_fees=_f(recent_day.get("feesUSD")) if recent_day else None
     return {
         "chain":chain_key,
         "pool_address":row.get("id"),
@@ -117,13 +123,17 @@ def _normalise_graph_pool(row: dict[str, Any], chain_key: str) -> dict[str, Any]
         "base_token":{"address":t0.get("id"),"symbol":t0.get("symbol"),"name":t0.get("name")},
         "quote_token":{"address":t1.get("id"),"symbol":t1.get("symbol"),"name":t1.get("name")},
         "tvl_usd":_f(row.get("totalValueLockedUSD")),
-        "volume_24h_usd":0.0,
+        "volume_24h_usd":recent_volume,
+        "fees_24h_usd":recent_fees,
+        "activity_day_ts":int(_f(recent_day.get("date"))) if recent_day else None,
+        "activity_day_tx_count":int(_f(recent_day.get("txCount"))) if recent_day else None,
         "total_volume_usd":_f(row.get("volumeUSD")),
         "fee_tier":int(_f(row.get("feeTier"))),
         "protocol_guess":"UNISWAP_V3",
         "version":"V3",
         "source":"THEGRAPH",
         "source_updated_at":time.time(),
+        "economic_validation":"UNVERIFIED",
     }
 
 
@@ -242,6 +252,13 @@ class DiscoveryLab:
             volumeUSD
             token0 { id symbol name decimals }
             token1 { id symbol name decimals }
+            poolDayData(first: 2, orderBy: date, orderDirection: desc) {
+              date
+              volumeUSD
+              feesUSD
+              tvlUSD
+              txCount
+            }
           }
         }"""
         try:
@@ -274,30 +291,96 @@ class DiscoveryLab:
 
     @staticmethod
     def _union(providers: list[dict[str,Any]]) -> dict[str,Any]:
-        merged={}
-        sources={}
+        grouped: dict[str,list[tuple[str,dict[str,Any]]]]={}
         for provider in providers:
             name=str(provider.get("provider") or "")
             for row in provider.get("candidates") or []:
                 address=_addr(row.get("pool_address"))
-                if not address:
-                    continue
-                sources.setdefault(address,set()).add(name)
-                current=merged.get(address)
-                if current is None or _f(row.get("tvl_usd"))>_f(current.get("tvl_usd")):
-                    merged[address]=dict(row)
+                if address:
+                    grouped.setdefault(address,[]).append((name,dict(row)))
+
         out=[]
-        for address,row in merged.items():
-            row=dict(row)
-            row["providers"]=sorted(sources.get(address) or [])
-            row["provider_count"]=len(row["providers"])
+        mismatch_count=0
+        live_validated=0
+        graph_only=0
+        for address,items in grouped.items():
+            by_name={name:row for name,row in items}
+            providers_here=sorted(by_name)
+            graph=by_name.get("THEGRAPH")
+            live=[by_name[x] for x in ("DEXSCREENER","GECKOTERMINAL") if x in by_name]
+
+            # Prefer independently live market values for economics. The Graph is
+            # excellent for broad discovery, but obscure-token USD pricing can be
+            # nonsensical and must not outrank live-validated values.
+            chosen=(
+                by_name.get("DEXSCREENER")
+                or by_name.get("GECKOTERMINAL")
+                or graph
+                or items[0][1]
+            )
+            row=dict(chosen)
+            if graph:
+                for key in ("fee_tier","protocol_guess","version","total_volume_usd","activity_day_ts","activity_day_tx_count","fees_24h_usd"):
+                    if row.get(key) in (None,"",0) and graph.get(key) not in (None,""):
+                        row[key]=graph.get(key)
+
+            live_tvl=max((_f(x.get("tvl_usd")) for x in live),default=0.0)
+            graph_tvl=_f(graph.get("tvl_usd")) if graph else 0.0
+            mismatch=False
+            if live_tvl>0 and graph_tvl>0:
+                ratio=max(live_tvl,graph_tvl)/max(min(live_tvl,graph_tvl),1e-9)
+                mismatch=ratio>=5.0
+
+            if live:
+                live_validated+=1
+                if mismatch:
+                    validation="TVL_MISMATCH"
+                    mismatch_count+=1
+                    reason="Graph TVL differs materially from a live provider; live-provider economics are displayed."
+                elif len(providers_here)>=2:
+                    validation="CROSS_VALIDATED"
+                    reason="Pool identity is seen by multiple providers; live-provider economics are preferred."
+                else:
+                    validation="LIVE_VALIDATED"
+                    reason="Live market provider supplied the displayed economics."
+            else:
+                graph_only+=1
+                validation="UNVERIFIED"
+                reason="Discovered by The Graph only; economics need live-provider validation before ranking."
+
+            row["pool_address"]=row.get("pool_address") or address
+            row["providers"]=providers_here
+            row["provider_count"]=len(providers_here)
+            row["economic_validation"]=validation
+            row["economic_validation_reason"]=reason
+            row["graph_tvl_usd"]=graph_tvl if graph else None
+            row["live_tvl_usd"]=live_tvl if live else None
             out.append(row)
-        out.sort(key=lambda x:(_f(x.get("tvl_usd")),_f(x.get("volume_24h_usd"))),reverse=True)
+
+        # This remains a diagnostic sample, not a ranking. Sort validated rows
+        # ahead of graph-only rows so implausible Graph USD values do not dominate
+        # the screen merely because they are numerically enormous.
+        status_order={"CROSS_VALIDATED":0,"LIVE_VALIDATED":1,"TVL_MISMATCH":2,"UNVERIFIED":3}
+        out.sort(
+            key=lambda x:(
+                status_order.get(str(x.get("economic_validation")),9),
+                -_f(x.get("volume_24h_usd")),
+                -_f(x.get("tvl_usd")),
+            )
+        )
         overlaps=sum(1 for x in out if int(x.get("provider_count") or 0)>1)
-        v3=sum(1 for x in out if str(x.get("version") or "").upper()=="V3" or str(x.get("protocol") or "").upper()=="UNISWAP_V3" or str(x.get("protocol_guess") or "").upper()=="UNISWAP_V3")
+        v3=sum(
+            1 for x in out
+            if str(x.get("version") or "").upper()=="V3"
+            or str(x.get("protocol") or "").upper()=="UNISWAP_V3"
+            or str(x.get("protocol_guess") or "").upper()=="UNISWAP_V3"
+        )
         return {
             "unique_candidates":len(out),
             "multi_provider_matches":overlaps,
+            "live_validated_candidates":live_validated,
+            "graph_only_candidates":graph_only,
+            "tvl_mismatch_count":mismatch_count,
             "v3_identified":v3,
             "top_candidates":out[:25],
         }
