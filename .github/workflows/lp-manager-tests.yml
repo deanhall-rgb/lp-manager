@@ -17,6 +17,7 @@ on:
       - "v0.9.4"
       - "v0.9.5"
       - "v0.9.6.1"
+      - "v0.9.6.2"
   pull_request:
 
 jobs:
@@ -44,19 +45,20 @@ jobs:
 
   package:
     needs: test
-    if: github.ref == 'refs/heads/v0.9.5' || github.ref == 'refs/heads/v0.9.6.1'
+    if: github.ref == 'refs/heads/v0.9.5' || github.ref == 'refs/heads/v0.9.6.1' || github.ref == 'refs/heads/v0.9.6.2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build clean release ZIP
         run: |
           mkdir -p dist
-          zip -r dist/LP_Manager_v0.9.6.1.zip . \
+          VERSION="${GITHUB_REF_NAME}"
+          zip -r "dist/LP_Manager_${VERSION}.zip" . \
             -x '.git/*' 'dist/*' '__pycache__/*' '*.pyc' '.venv/*' 'data/*' '.env'
-      - name: Upload V0.9.6.1 release artifact
+      - name: Upload branch release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LP_Manager_v0.9.6.1
-          path: dist/LP_Manager_v0.9.6.1.zip
+          name: LP_Manager_${{ github.ref_name }}
+          path: dist/LP_Manager_${{ github.ref_name }}.zip
           if-no-files-found: error
           retention-days: 30
