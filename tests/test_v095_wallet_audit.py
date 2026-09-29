@@ -9,6 +9,7 @@ from lp_manager.chain_registry import chain_config
 from lp_manager.wallet_audit import (
     _blockscout_transactions,
     _classify_scan_rows,
+    _classify_with_transaction_context,
     resolve_wallet_audit_event,
     wallet_audit_summary,
 )
@@ -16,6 +17,10 @@ from lp_manager.wallet_audit import (
 
 def _settings():
     return SimpleNamespace(wallet_address="0x1111111111111111111111111111111111111111", currency="USD")
+
+
+def _settings_gbp():
+    return SimpleNamespace(wallet_address="0x1111111111111111111111111111111111111111", currency="GBP")
 
 
 def _event(event_id: str, tx_hash: str, direction: str, amount: float = 1.0):
@@ -269,4 +274,113 @@ def test_v095_wallet_audit_ui_is_separate_and_manual_review_is_explicit():
     assert "$('[data-wallet-audit-review]').forEach" in js
     assert "$('[data-wallet-audit-activity]').forEach" in js
     assert "function showWalletAuditActivity" in js
-    assert "Scanning full history" in js
+    assert "Scanning wallet" in js
+
+
+def test_deterministic_wallet_classifier_auto_tags_protocol_swaps_bridges_and_known_internal(tmp_path):
+    store=Store(tmp_path/"auto.sqlite3")
+    wallet=_settings_gbp().wallet_address
+    internal="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    # Teach the classifier one human-confirmed internal wallet.
+    historical=_event("old","0xold","IN",0.1)
+    historical["from_address"]=internal
+    historical["to_address"]=wallet
+    store.upsert_wallet_audit_event(historical)
+    store.resolve_wallet_audit_event("old",review_status="INTERNAL_TRANSFER",note="My other wallet")
+
+    rows=[]
+    for event_id,tx_hash,direction,asset,frm,to in [
+        ("swap-in","0xswap","IN","DELTA","0xrouter",wallet),
+        ("swap-out","0xswap","OUT","ETH",wallet,"0xrouter"),
+        ("bridge","0xbridge","OUT","ETH",wallet,"0xbridgecontract"),
+        ("lp","0xlp","OUT","DELTA",wallet,"0xpositionmanager"),
+        ("internal","0xinternal","IN","ETH",internal,wallet),
+        ("fund","0xfund","IN","ETH","0xprovider",wallet),
+    ]:
+        row=_event(event_id,tx_hash,direction,1.0)
+        row["asset"]=asset
+        row["from_address"]=frm
+        row["to_address"]=to
+        rows.append(row)
+
+    txs=[
+        {"tx_hash":"0xswap","kind":"SWAP"},
+        {"tx_hash":"0xbridge","kind":"BRIDGE"},
+        {"tx_hash":"0xlp","kind":"LP_ACTION"},
+        {"tx_hash":"0xinternal","kind":"NATIVE_TRANSFER"},
+        {"tx_hash":"0xfund","kind":"NATIVE_TRANSFER"},
+    ]
+    classified={x["id"]:x for x in _classify_with_transaction_context(store,rows,txs)}
+
+    assert classified["swap-in"]["review_status"]=="INTERNAL_CONVERSION"
+    assert classified["swap-out"]["review_status"]=="INTERNAL_CONVERSION"
+    assert classified["bridge"]["review_status"]=="INTERNAL_TRANSFER"
+    assert classified["lp"]["review_status"]=="INTERNAL_PROTOCOL"
+    assert classified["internal"]["review_status"]=="INTERNAL_TRANSFER"
+
+    # Direct inbound native value is not guessed as cash. It is surfaced to the user.
+    assert classified["fund"]["review_status"]=="UNRESOLVED"
+    automation=classified["fund"]["payload"]["automation"]
+    assert automation["suggestion"]=="CONFIRMED_FUNDING"
+    assert automation["confidence"]=="REVIEW"
+
+
+def test_confirmed_gbp_funding_appends_clean_ledger_and_performance_cash_flow_once(tmp_path):
+    store=Store(tmp_path/"rolling.sqlite3")
+    store.set_setting("fx:USD:GBP",{"rate":0.8,"read_at":1_790_000_000.0,"source":"TEST"})
+    row=_event("fund","0xfund","IN",0.02)
+    store.upsert_wallet_audit_event(row)
+
+    resolve_wallet_audit_event(
+        _settings_gbp(),store,"fund",
+        classification="CONFIRMED_FUNDING",
+        fiat_amount=50.0,
+        note="Transak £50 including fees",
+    )
+    ledger=store.list_capital_ledger(20)
+    assert len(ledger)==1
+    assert ledger[0]["event_type"]=="EXTERNAL_FUNDING"
+    assert ledger[0]["amount_gbp"]==50.0
+    assert ledger[0]["asset"]=="ETH"
+    assert ledger[0]["asset_amount"]==0.02
+    assert ledger[0]["tx_hash"]=="0xfund"
+    assert ledger[0]["source"]=="WALLET_AUDIT_CONFIRMED"
+
+    flows=[
+        x for x in store.list_financial_events(100)
+        if x["event_type"]=="EXTERNAL_DEPOSIT"
+    ]
+    assert len(flows)==1
+    assert abs(flows[0]["amount_usd"]-62.5)<1e-9
+    assert flows[0]["payload"]["wallet_audit_event_id"]=="fund"
+
+    # Re-saving the same review is idempotent for both ledgers.
+    resolve_wallet_audit_event(
+        _settings_gbp(),store,"fund",
+        classification="CONFIRMED_FUNDING",
+        fiat_amount=50.0,
+        note="Transak £50 including fees",
+    )
+    assert len(store.list_capital_ledger(20))==1
+    flows=[
+        x for x in store.list_financial_events(100)
+        if x["event_type"]=="EXTERNAL_DEPOSIT"
+    ]
+    assert len(flows)==1
+
+
+def test_v095_final_ui_surfaces_review_queue_campaign_movements_and_automatic_scan():
+    root=Path(__file__).parents[1]
+    html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
+    js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
+
+    assert 'id="capital-ledger-review"' in html
+    assert "Review queue" in html
+    assert "Automatic reconciliation clear" in js
+    assert "data-ledger-campaign-movements" in js
+    assert "Confirm & update ledger" in js
+    assert "automatic wallet reconciliation is ON" in js
+    assert "15*60*1000" in js
+    assert "scanWalletAudit(true)" in js
+    assert "auto-classified" in js
