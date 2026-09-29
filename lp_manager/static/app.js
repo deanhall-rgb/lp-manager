@@ -282,24 +282,26 @@ function renderSentiment(){
 
 function campaignPnl(v){const n=Number(v||0);return `${n>=0?'+':''}${money(n)}`}
 function campaignCard(c){
- const inv=c.wallet_inventory||{},quality=String(c.accounting_quality||'UNKNOWN'),tone=quality==='POSITION_LEDGER_COMPLETE'?'good':'watch',t=c.thesis||null;
- const inventory=Number(inv.balance||0)>0?`${num(inv.balance,6)} ${esc(c.asset_symbol)} · ${money(inv.value_usd||0)}`:'None visible';
+ const inv=c.wallet_inventory||{},quality=String(c.accounting_quality||'UNKNOWN'),tone=['CAMPAIGN_CAPITAL_TRACED','POSITION_LEDGER_COMPLETE'].includes(quality)?'good':'watch',t=c.thesis||null;
+ const returnText=c.exposure_return_pct==null?'—':pct(c.exposure_return_pct,1);
  return `<article class="position-card">
    <div class="card-head"><div><div class="card-title">${esc(c.label||c.asset_symbol)}</div><div class="meta">${esc(c.chain)} · ${c.position_count||0} position leg${Number(c.position_count||0)===1?'':'s'} · ${c.open_positions||0} open / ${c.closed_positions||0} closed</div></div>${badge(c.status,c.status==='ACTIVE'?'good':c.status==='HOLDING'?'watch':'')}</div>
-   <div class="tag-row">${badge(quality,tone)}${badge(c.identity_quality||'DERIVED')}${t?badge(t.stance||'UNKNOWN',thesisTone(t)):badge('THESIS NOT RESEARCHED','watch')}${t?badge('HOLD '+String(t.hold_comfort||'UNKNOWN'),String(t.hold_comfort)==='COMFORTABLE'?'good':String(t.hold_comfort)==='UNCOMFORTABLE'?'bad':'watch'):''}</div>
+   <div class="tag-row">${badge(quality.replaceAll('_',' '),tone)}${badge(c.identity_quality||'DERIVED')}${t?badge(t.stance||'UNKNOWN',thesisTone(t)):badge('THESIS NOT RESEARCHED','watch')}${t?badge('HOLD '+String(t.hold_comfort||'UNKNOWN'),String(t.hold_comfort)==='COMFORTABLE'?'good':String(t.hold_comfort)==='UNCOMFORTABLE'?'bad':'watch'):''}</div>
    <div class="card-stats">
-     <div class="card-stat"><b>${campaignPnl(c.known_campaign_pnl_usd)}</b><span>Known campaign P/L</span></div>
+     <div class="card-stat"><b>${money(c.capital_invested_usd||0)}</b><span>Capital invested</span></div>
+     <div class="card-stat"><b>${money(c.marked_exposure_usd||0)}</b><span>Marked exposure</span></div>
+     <div class="card-stat"><b>${campaignPnl(c.exposure_pnl_usd||0)} · ${returnText}</b><span>Exposure P/L</span></div>
      <div class="card-stat"><b>${money(c.lifetime_fees_usd||0)}</b><span>Lifetime LP fees</span></div>
-     <div class="card-stat"><b>${money(c.current_lp_value_usd||0)}</b><span>Current LP value</span></div>
-     <div class="card-stat"><b>${inventory}</b><span>Wallet inventory</span></div>
    </div>
-   <div class="actions"><button class="btn secondary small" data-campaign-open="${esc(c.id)}">Open campaign</button><button class="btn secondary small" data-campaign-thesis="${esc(c.id)}">${t?'Refresh thesis':'Research thesis'}</button></div>
+   <div class="actions"><button class="btn secondary small" data-campaign-open="${esc(c.id)}">Open campaign</button><button class="btn secondary small" data-campaign-movements="${esc(c.id)}">Movements</button><button class="btn secondary small" data-campaign-thesis="${esc(c.id)}">${t?'Refresh thesis':'Research thesis'}</button></div>
  </article>`;
 }
+
 function renderCampaigns(){
  const box=$('#campaign-grid');if(!box)return;const rows=state.campaigns||[];
  box.innerHTML=rows.length?rows.map(campaignCard).join(''):'<div class="empty-state">No campaigns yet. Campaigns are created automatically from canonical LP positions.</div>';
  $$('[data-campaign-open]').forEach(b=>b.onclick=()=>showCampaign(b.dataset.campaignOpen));
+ $$('[data-campaign-movements]').forEach(b=>b.onclick=()=>showCampaignMovements(b.dataset.campaignMovements));
  $$('[data-campaign-thesis]').forEach(b=>b.onclick=()=>researchCampaignThesis(b.dataset.campaignThesis,true));
 }
 function campaignDecisionOption(o){
@@ -317,10 +319,22 @@ function renderCampaignDecision(r){
  const cur=r.current_position||{},summary=r.campaign_summary||{},prefill=r.profit_lab_prefill||{},options=r.options||[],t=r.thesis||null;
  const stateLabel=String(cur.range_state||'NO OPEN LP').replaceAll('_',' ');
  const profitWarning=r.profit_error?`<div class="warning-box lower"><b>Fresh range forecast unavailable:</b> ${esc(r.profit_error)}. The KEEP/HODL decision still uses current campaign state without inventing a forecast.</div>`:'';
+ const exposureReturn=summary.exposure_return_pct==null?'—':pct(summary.exposure_return_pct,1);
+ const capitalState=String(summary.capital_state||'').replaceAll('_',' ');
  modal(`<div class="card-head"><div><h2>${esc(r.campaign_label)} · next move</h2><p class="meta">Campaign-level decision; child-position P/L remains unchanged.</p></div>${badge(r.recommended_action,r.recommended_action==='KEEP'?'good':r.recommended_action==='RE_RANGE'?'watch':'')}</div>
  <div class="notice lower"><b>${esc(r.headline||'')}</b><br>${esc(r.rationale||'')}</div>
  ${cur.id?`<div class="modal-grid lower">${info('Current leg',esc(cur.display_name||cur.id))}${info('Range state',esc(stateLabel))}${info('Current LP value',money(cur.current_lp_value_usd||0))}${info('Tracked fees',money(cur.tracked_fees_usd||0))}${info('Current leg P/L',cur.net_pnl_after_costs_usd==null?'Pending basis':campaignPnl(cur.net_pnl_after_costs_usd))}${info('Nearest edge',cur.nearest_edge_pct==null?'—':pct(cur.nearest_edge_pct,2))}</div>`:''}
- <div class="modal-grid lower">${info('Known campaign P/L',campaignPnl(summary.known_campaign_pnl_usd||0))}${info('Campaign lifetime fees',money(summary.lifetime_fees_usd||0))}${info('Rebalance capital',money(r.rebalance_capital_usd||0))}${info('Wallet campaign inventory',money(r.wallet_campaign_inventory_usd||0))}${info('Decision horizon',num(r.horizon_days||0,2)+' days')}${info('Fresh-range confidence',esc(r.decision_confidence||'LIMITED'))}</div>
+ <div class="panel lower"><div class="panel-head"><div><h2>Campaign capital context</h2><p>Transaction-traced capital is advisory context for protecting gains or avoiding loss-chasing; it does not override fee/range/thesis guardrails by itself.</p></div>${capitalState?badge(capitalState,Number(summary.exposure_pnl_usd||0)>=0?'good':'watch'):''}</div><div class="modal-grid">
+   ${info('Capital invested',summary.capital_invested_usd==null?'—':money(summary.capital_invested_usd))}
+   ${info('Marked exposure',summary.marked_exposure_usd==null?'—':money(summary.marked_exposure_usd))}
+   ${info('Exposure P/L',summary.exposure_pnl_usd==null?'—':campaignPnl(summary.exposure_pnl_usd)+' · '+exposureReturn)}
+   ${info('Profit cushion',money(summary.profit_cushion_usd||0))}
+   ${info('LP strategy P/L',campaignPnl(summary.known_campaign_pnl_usd||0))}
+   ${info('Campaign lifetime fees',money(summary.lifetime_fees_usd||0))}
+   ${info('Transaction costs',money(summary.transaction_costs_usd||0))}
+   ${info('Audited movements',String(summary.movement_count||0))}
+ </div></div>
+ <div class="modal-grid lower">${info('Rebalance capital',money(r.rebalance_capital_usd||0))}${info('Wallet campaign inventory',money(r.wallet_campaign_inventory_usd||0))}${info('Decision horizon',num(r.horizon_days||0,2)+' days')}${info('Fresh-range confidence',esc(r.decision_confidence||'LIMITED'))}</div>
  <div class="panel lower"><div class="panel-head"><div><h2>Campaign thesis</h2><p>Directional evidence is separate from fee economics and can become stale.</p></div>${t?badge(t.stance||'UNKNOWN',thesisTone(t)):badge('NOT RESEARCHED','watch')}</div>${t?`<div class="modal-grid">${info('Stance',esc(t.stance||'UNKNOWN'))}${info('Thesis confidence',pct(t.confidence||0,0))}${info('Holding comfort',esc(t.hold_comfort||'UNKNOWN'))}${info('Hold score',pct(t.hold_comfort_score||0,0))}${info('Research age',thesisAge(t))}</div>${thesisHoldingHtml(t)}<details class="lower"><summary>Thesis research summary</summary><p>${esc(t.research_summary||'No summary supplied.')}</p></details>`:'<div class="empty-state">No fresh asset thesis exists yet. Fee economics can still be compared, but HODL/EXIT conviction remains deliberately limited.</div>'}</div>
  <div class="panel lower"><div class="panel-head"><div><h2>Compare next moves</h2><p>Fee economics remain primary; fresh thesis evidence changes holding/exit preference and can apply only a bounded range skew.</p></div></div><div class="card-list compact">${options.map(campaignDecisionOption).join('')}</div></div>
  ${profitWarning}
@@ -359,35 +373,52 @@ function openCampaignProfitLab(r){
  runProfitLab();
 }
 
+function campaignMovementText(e){
+ const rows=e.transfers||[];
+ if(rows.length)return rows.map(x=>(String(x.direction||'').toUpperCase()==='IN'?'+':'-')+num(x.amount||0,8)+' '+esc(x.asset||'TOKEN')).join(' · ');
+ if(Number(e.amount_usd||0))return 'Recorded value '+money(e.amount_usd);
+ return 'Lifecycle evidence';
+}
+function campaignMovementTable(c){
+ const rows=c.movement_history||[];
+ if(!rows.length)return '<div class="empty-state">No decoded campaign movements are available yet.</div>';
+ return `<table class="table"><thead><tr><th>Date</th><th>Movement</th><th>Assets</th><th>Gas / cost</th><th>Transaction</th></tr></thead><tbody>${rows.map(e=>`<tr><td>${when(e.time)}</td><td><b>${esc(String(e.type||'').replaceAll('_',' '))}</b><div class="meta">${esc(e.method||e.transaction_kind||e.source||'')}</div></td><td>${campaignMovementText(e)}</td><td>${Number(e.gas_usd||0)>0?money(e.gas_usd):Number(e.gas_native||0)>0?num(e.gas_native,9)+' '+esc(e.native_symbol||'ETH'):'—'}</td><td>${e.tx_hash?short(e.tx_hash):esc(e.position_name||e.position_id||'Evidence')}</td></tr>`).join('')}</tbody></table>`;
+}
+function showCampaignMovements(id){
+ const c=(state.campaigns||[]).find(x=>String(x.id)===String(id));if(!c)return;
+ modal(`<div class="card-head"><div><h2>${esc(c.label)} · movements</h2><p class="meta">One canonical history from wallet audit + LP lifecycle evidence. Internal duplicates and ignored spam are removed.</p></div>${badge(String(c.accounting_quality||'').replaceAll('_',' '),String(c.accounting_quality)==='CAMPAIGN_CAPITAL_TRACED'?'good':'watch')}</div>
+ <div class="modal-grid lower">${info('Capital invested',money(c.capital_invested_usd||0))}${info('Marked exposure',money(c.marked_exposure_usd||0))}${info('Exposure P/L',campaignPnl(c.exposure_pnl_usd||0))}${info('Movements',String((c.movement_history||[]).length))}</div>
+ <div class="panel lower">${campaignMovementTable(c)}</div>`);
+}
 function showCampaign(id){
  const c=(state.campaigns||[]).find(x=>String(x.id)===String(id));if(!c)return;
- const inv=c.wallet_inventory||{},prov=c.provenance||{},positions=c.positions||[],timeline=c.timeline||[];
- const walletWarning=String(inv.quality||'').includes('UNATTRIBUTED')?`<div class="warning-box lower"><b>Wallet inventory basis is not yet proven.</b> The live ${esc(c.asset_symbol)} balance is visible as campaign exposure but is deliberately excluded from Known campaign P/L. This prevents wallet tokens from creating fictitious profit or loss.</div>`:'';
+ const inv=c.wallet_inventory||{},prov=c.provenance||{},positions=c.positions||[];
+ const basisWarning=String(c.accounting_quality||'').includes('PARTIAL')?`<div class="warning-box lower"><b>Campaign basis is still partial.</b> The system will keep the missing portion visible rather than treating unproven inventory as profit.</div>`:'';
  const positionRows=positions.length?`<table class="table"><thead><tr><th>Leg</th><th>Status</th><th>Opening basis</th><th>Fees</th><th>Net P/L</th><th></th></tr></thead><tbody>${positions.map(p=>`<tr><td><b>${esc(p.display_name||p.pair)}</b><div class="meta">${esc(p.pair||'')} · ${p.token_id?'NFT '+esc(p.token_id):esc(p.source||'')}</div></td><td>${badge(p.status,p.status==='OPEN'?'good':'')}</td><td>${money(p.opening_capital_usd||0)}</td><td>${money(p.fees_usd||0)}</td><td>${p.net_pnl_usd==null?'Pending evidence':campaignPnl(p.net_pnl_usd)}</td><td><button class="btn secondary small" data-campaign-position="${esc(p.id)}">Open</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty-state">No linked positions.</div>';
- const timelineRows=timeline.length?`<div class="card-list compact">${timeline.map(e=>`<div class="list-card"><div class="card-head"><div><b>${esc(String(e.type||'').replaceAll('_',' '))}</b><div class="meta">${when(e.time)} · ${esc(e.position_name||e.position_id||'Campaign')}</div></div>${badge(e.quality||e.source||'EVIDENCE')}</div><div class="meta">${e.tx_hash?'Tx '+short(e.tx_hash):'No transaction hash'}${Number(e.amount_usd||0)?' · value '+money(e.amount_usd):''}${Number(e.gas_usd||0)?' · cost '+money(e.gas_usd):''}</div></div>`).join('')}</div>`:'<div class="empty-state">No lifecycle events recorded yet.</div>';
+ const returnText=c.exposure_return_pct==null?'—':pct(c.exposure_return_pct,1);
  modal(`<div class="card-head"><div><h2>${esc(c.label)}</h2><p class="meta">${esc(c.chain)} · campaign asset ${esc(c.asset_symbol)}${c.asset_address?' · '+short(c.asset_address):''}</p></div>${badge(c.status,c.status==='ACTIVE'?'good':'watch')}</div>
  <div class="modal-grid lower">
-   ${info('Known campaign P/L',campaignPnl(c.known_campaign_pnl_usd))}
-   ${info('Realised position P/L',campaignPnl(c.realised_position_pnl_usd))}
-   ${info('Open position P/L',campaignPnl(c.open_position_pnl_usd))}
+   ${info('Capital invested',money(c.capital_invested_usd||0))}
+   ${info('Marked exposure',money(c.marked_exposure_usd||0))}
+   ${info('Exposure P/L',campaignPnl(c.exposure_pnl_usd||0)+' · '+returnText)}
+   ${info('LP strategy P/L',campaignPnl(c.known_campaign_pnl_usd||0))}
    ${info('Lifetime fees',money(c.lifetime_fees_usd||0))}
    ${info('Transaction costs',money(c.transaction_costs_usd||0))}
    ${info('Current LP value',money(c.current_lp_value_usd||0))}
    ${info('Wallet '+c.asset_symbol,Number(inv.balance||0)>0?`${num(inv.balance,6)} · ${money(inv.value_usd||0)}`:'None visible')}
-   ${info('Marked exposure',money(c.marked_exposure_usd||0))}
  </div>
- <div class="notice lower"><b>Campaign accounting:</b> child-position results are never rewritten. Known campaign P/L is the sum of evidenced closed results plus current after-cost P/L on open legs. Wallet inventory is only added to P/L when acquisition provenance becomes auditable.</div>
- ${walletWarning}
- <div class="actions lower"><button class="btn" id="campaign-decision-btn">Review next move</button><button class="btn secondary" id="campaign-research-btn">${c.thesis?'Refresh sentiment / thesis':'Research sentiment / thesis'}</button>${c.thesis?'<button class="btn secondary" id="campaign-view-thesis-btn">View thesis</button>':''}</div>
- <div class="panel lower"><div class="panel-head"><div><h2>Position legs</h2><p>Every LP leg remains independently auditable inside the campaign.</p></div>${badge(c.accounting_quality,String(c.accounting_quality)==='POSITION_LEDGER_COMPLETE'?'good':'watch')}</div>${positionRows}</div>
- <div class="panel lower"><div class="panel-head"><div><h2>Provenance</h2><p>${esc(prov.note||'')}</p></div></div><div class="modal-grid">${info('Linked positions',String(prov.linked_positions||0))}${info('Verified bases',String(prov.verified_position_bases||0))}${info('Financial events',String(prov.financial_events||0))}${info('Wallet basis',esc(prov.wallet_inventory_quality||'UNKNOWN'))}</div></div>
- <div class="panel lower"><div class="panel-head"><div><h2>Campaign timeline</h2><p>Source events are shown; inferred position records fill gaps without pretending to be transactions.</p></div></div>${timelineRows}</div>`);
+ <div class="notice lower"><b>Campaign accounting:</b> transaction-traced wallet acquisition basis and independently evidenced LP results are combined at campaign level. Child LP results remain untouched, and the raw wallet audit remains the source evidence.</div>
+ ${basisWarning}
+ <div class="actions lower"><button class="btn" id="campaign-decision-btn">Review next move</button><button class="btn secondary" id="campaign-movements-btn">Movement history</button><button class="btn secondary" id="campaign-research-btn">${c.thesis?'Refresh sentiment / thesis':'Research sentiment / thesis'}</button>${c.thesis?'<button class="btn secondary" id="campaign-view-thesis-btn">View thesis</button>':''}</div>
+ <div class="panel lower"><div class="panel-head"><div><h2>Movement history</h2><p>Buys, sells, transfers, LP movements and fee collections involving this campaign asset.</p></div>${badge(String((c.movement_history||[]).length)+' movements','good')}</div>${campaignMovementTable(c)}</div>
+ <div class="panel lower"><div class="panel-head"><div><h2>Position legs</h2><p>Every LP leg remains independently auditable inside the campaign.</p></div>${badge(String(c.accounting_quality||'').replaceAll('_',' '),String(c.accounting_quality)==='CAMPAIGN_CAPITAL_TRACED'?'good':'watch')}</div>${positionRows}</div>
+ <div class="panel lower"><div class="panel-head"><div><h2>Provenance</h2><p>${esc(prov.note||'')}</p></div></div><div class="modal-grid">${info('Linked positions',String(prov.linked_positions||0))}${info('Verified bases',String(prov.verified_position_bases||0))}${info('Financial events',String(prov.financial_events||0))}${info('Wallet audit movements',String(prov.wallet_audit_movements||0))}${info('Wallet basis',esc(prov.wallet_inventory_quality||'UNKNOWN'))}</div></div>`);
  $$('[data-campaign-position]').forEach(b=>b.onclick=()=>{const pid=b.dataset.campaignPosition;closeModal();showPosition(pid).catch(e=>toast(e.message))});
  const decisionBtn=$('#campaign-decision-btn');if(decisionBtn)decisionBtn.onclick=()=>reviewCampaignDecision(c.id);
+ const movementBtn=$('#campaign-movements-btn');if(movementBtn)movementBtn.onclick=()=>showCampaignMovements(c.id);
  const researchBtn=$('#campaign-research-btn');if(researchBtn)researchBtn.onclick=()=>researchCampaignThesis(c.id,true);
  const viewThesisBtn=$('#campaign-view-thesis-btn');if(viewThesisBtn)viewThesisBtn.onclick=()=>showThesis(c.thesis,c.label+' · thesis');
 }
-
 function renderPositions(){const all=state.positions||[];const rows=positionFilter==='ALL'?all:all.filter(p=>p.status===positionFilter);$('#positions-grid').innerHTML=rows.length?rows.map(positionCard).join(''):'<div class="empty-state">No positions in this view.</div>';const lr=state.live?.last_refresh||{},rh=(lr.chains||[]).find(x=>x.chain==='ROBINHOOD_CHAIN');const ds=$('#position-discovery-status');if(ds){ds.textContent=rh?.ok?`Last LP scan: ${rh.positions||0} records refreshed · ${((rh.owned_nft_api_ids||0)+(rh.alchemy_nft_api_ids||0))} ownership-index IDs · ${rh.transfer_log_ids||0} transfer-log IDs · ${(rh.discovery_sources||[]).join(' + ')||'RPC ownership'} · auto refresh ${num(state.live?.refresh_seconds||60,0)}s`:'Owned V3 NFTs are auto-discovered from wallet ownership + transfer logs and verified on-chain.'}bindPositionCards()}
 function bindPositionCards(){$$('[data-position]').forEach(x=>x.onclick=()=>showPosition(x.dataset.position).catch(e=>toast(e.message)))}
 function positionForecastHtml(p,opened,acct,fm,ft){
