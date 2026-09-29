@@ -54,8 +54,9 @@ def build_campaign_decision(
     horizon_days: float | None = None,
     monthly_target_pct: float = 10.0,
     profit_error: str = "",
+    campaign_context: dict[str,Any] | None = None,
 ) -> dict[str,Any]:
-    campaign=campaign_by_id(store,campaign_id)
+    campaign=dict(campaign_context or campaign_by_id(store,campaign_id) or {})
     if not campaign:
         raise ValueError("Campaign not found")
     thesis=store.get_setting(f"campaign:thesis:{campaign_id}",None)
@@ -77,6 +78,7 @@ def build_campaign_decision(
 
     position=raw_positions.get(active_id) if active_id else None
     wallet=dict(campaign.get("wallet_inventory") or {})
+    capital_context=dict(campaign.get("capital_accounting") or {})
 
     if not position:
         action="HODL_WAIT" if _f(wallet.get("balance"))>0 else "NO_ACTIVE_CAPITAL"
@@ -97,6 +99,20 @@ def build_campaign_decision(
                 else "No open LP can be re-ranged. Research the campaign thesis before treating HODL or EXIT as a directional conclusion."
             ),
             "campaign":campaign,
+            "campaign_summary":{
+                "capital_invested_usd":capital_context.get("capital_invested_usd"),
+                "marked_exposure_usd":capital_context.get("marked_exposure_usd"),
+                "exposure_pnl_usd":capital_context.get("exposure_pnl_usd"),
+                "exposure_return_pct":capital_context.get("exposure_return_pct"),
+                "profit_cushion_usd":capital_context.get("profit_cushion_usd"),
+                "capital_shortfall_usd":capital_context.get("capital_shortfall_usd"),
+                "capital_state":capital_context.get("state"),
+                "movement_count":capital_context.get("movement_count"),
+                "known_campaign_pnl_usd":campaign.get("known_campaign_pnl_usd"),
+                "lifetime_fees_usd":campaign.get("lifetime_fees_usd"),
+                "transaction_costs_usd":campaign.get("transaction_costs_usd"),
+                "wallet_inventory":wallet,
+            },
             "thesis":thesis,
             "thesis_flags":thesis_flags,
             "options":[{
@@ -197,6 +213,26 @@ def build_campaign_decision(
         else:
             headline=f"{campaign.get('label')}: bullish/acceptable holding thesis supports waiting rather than forcing a weak rebalance."
             rationale="The fresh thesis supports retaining the asset, while the available re-range economics do not yet justify another close/open cycle."
+
+    # The transaction-traced campaign ledger is decision context, not a new
+    # trading trigger. It makes capital preservation visible without allowing
+    # sunk-cost or "house money" thinking to override the proven fee/range/thesis
+    # guardrails.
+    traced_capital=max(0.0,_f(capital_context.get("capital_invested_usd")))
+    exposure_pnl=_f(capital_context.get("exposure_pnl_usd"))
+    exposure_return=capital_context.get("exposure_return_pct")
+    if traced_capital>0 and exposure_pnl>0.01:
+        rationale += (
+            f" Campaign accounting is {exposure_pnl:.2f} USD above its traced capital basis"
+            + (f" ({_f(exposure_return):.1f}%)" if exposure_return is not None else "")
+            + "; preserving or banking gains becomes more relevant if the fee/thesis case weakens, but profit alone does not force an exit."
+        )
+    elif traced_capital>0 and exposure_pnl<-0.01:
+        rationale += (
+            f" Campaign accounting is {abs(exposure_pnl):.2f} USD below its traced capital basis"
+            + (f" ({abs(_f(exposure_return)):.1f}%)" if exposure_return is not None else "")
+            + "; the manager must not take extra risk merely to recover prior losses."
+        )
 
     options=[
         {
@@ -301,16 +337,25 @@ def build_campaign_decision(
         },
         "profit_result":profit_result,
         "campaign_summary":{
+            "capital_invested_usd":capital_context.get("capital_invested_usd"),
+            "marked_exposure_usd":capital_context.get("marked_exposure_usd",campaign.get("marked_exposure_usd")),
+            "exposure_pnl_usd":capital_context.get("exposure_pnl_usd"),
+            "exposure_return_pct":capital_context.get("exposure_return_pct"),
+            "profit_cushion_usd":capital_context.get("profit_cushion_usd"),
+            "capital_shortfall_usd":capital_context.get("capital_shortfall_usd"),
+            "capital_state":capital_context.get("state"),
+            "movement_count":capital_context.get("movement_count"),
             "known_campaign_pnl_usd":campaign.get("known_campaign_pnl_usd"),
             "realised_position_pnl_usd":campaign.get("realised_position_pnl_usd"),
             "open_position_pnl_usd":campaign.get("open_position_pnl_usd"),
             "lifetime_fees_usd":campaign.get("lifetime_fees_usd"),
-            "marked_exposure_usd":campaign.get("marked_exposure_usd"),
+            "transaction_costs_usd":campaign.get("transaction_costs_usd"),
             "wallet_inventory":wallet,
         },
         "limitations":[
             "v0.9.3 combines fee/redeployment economics with fresh campaign thesis evidence; sentiment never invents fee income.",
             "Directional return remains uncertain: bullish/bearish thesis changes management preference and range skew, not guaranteed P/L.",
+            "Transaction-traced campaign capital and exposure P/L are context for capital preservation; they do not by themselves override fee/range/thesis evidence.",
             "Wallet campaign inventory is shown but is not automatically added to rebalance capital.",
             "Re-range remains an explicit close-then-open workflow requiring browser-wallet approval.",
         ],
