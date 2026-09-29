@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import lp_manager.discovery_lab as discovery
-from lp_manager.discovery_lab import DiscoveryLab
+from lp_manager.discovery_lab import DEFAULT_SUBGRAPH_IDS, DiscoveryLab
 
 
 class FakeResponse:
@@ -104,6 +104,7 @@ def test_thegraph_sample_can_return_large_candidate_page_without_strategy_side_e
                     "liquidity":"1",
                     "totalValueLockedUSD":"12000000",
                     "volumeUSD":"500000000",
+                    "poolDayData":[{"date":1790630400,"volumeUSD":"4200000","feesUSD":"12600","tvlUSD":"11900000","txCount":"1234"}],
                     "token0":{"id":"0x1","symbol":"WETH","name":"Wrapped Ether","decimals":"18"},
                     "token1":{"id":"0x2","symbol":"USDC","name":"USD Coin","decimals":"6"},
                 },
@@ -113,6 +114,7 @@ def test_thegraph_sample_can_return_large_candidate_page_without_strategy_side_e
                     "liquidity":"1",
                     "totalValueLockedUSD":"8000000",
                     "volumeUSD":"300000000",
+                    "poolDayData":[{"date":1790630400,"volumeUSD":"2100000","feesUSD":"1050","tvlUSD":"7900000","txCount":"456"}],
                     "token0":{"id":"0x3","symbol":"WBTC","name":"Wrapped BTC","decimals":"8"},
                     "token1":{"id":"0x1","symbol":"WETH","name":"Wrapped Ether","decimals":"18"},
                 },
@@ -129,6 +131,8 @@ def test_thegraph_sample_can_return_large_candidate_page_without_strategy_side_e
     assert result["candidate_count"]==2
     assert result["candidates"][0]["protocol_guess"]=="UNISWAP_V3"
     assert result["candidates"][0]["fee_tier"]==3000
+    assert result["candidates"][0]["volume_24h_usd"]==4_200_000
+    assert result["candidates"][0]["fees_24h_usd"]==12_600
     assert session.post_calls
     assert session.post_calls[0][1]["json"]["variables"]["first"]==250
     assert session.post_calls[0][1]["headers"]["Authorization"]=="Bearer graph-key"
@@ -203,3 +207,70 @@ def test_discovery_lab_ui_is_explicitly_non_strategy_and_has_exact_pool_resolver
     assert "function resolveDiscoveryPool()" in js
     assert "/api/discovery-lab/" in js
     assert "This run did not save opportunities" in js
+
+
+def test_optimism_and_polygon_have_known_graph_defaults():
+    assert DEFAULT_SUBGRAPH_IDS["OPTIMISM"]=="EgnS9YE1avupkvCNj9fHnJxppfEmNNywYJtghqiu2pd9"
+    assert DEFAULT_SUBGRAPH_IDS["POLYGON"]=="EsLGwxyeMMeJuhqWvuLmJEiDKXJ4Z6YsoJreUnyeozco"
+
+
+def test_union_prefers_live_economics_and_flags_absurd_graph_tvl():
+    address="0x0000000000000000000000000000000000000c01"
+    graph={
+        "provider":"THEGRAPH","status":"OK",
+        "candidates":[{
+            "pool_address":address,"pair":"ODD/WETH","version":"V3",
+            "protocol_guess":"UNISWAP_V3","tvl_usd":1_000_000_000_000,
+            "volume_24h_usd":5_000_000,
+        }],
+    }
+    dex={
+        "provider":"DEXSCREENER","status":"OK",
+        "candidates":[{
+            "pool_address":address,"pair":"ODD/WETH","version":"V3",
+            "tvl_usd":2_000_000,"volume_24h_usd":900_000,
+        }],
+    }
+
+    result=DiscoveryLab._union([graph,dex])
+    row=result["top_candidates"][0]
+
+    assert result["unique_candidates"]==1
+    assert result["live_validated_candidates"]==1
+    assert result["tvl_mismatch_count"]==1
+    assert row["economic_validation"]=="TVL_MISMATCH"
+    assert row["tvl_usd"]==2_000_000
+    assert row["graph_tvl_usd"]==1_000_000_000_000
+    assert row["live_tvl_usd"]==2_000_000
+
+
+def test_graph_only_pool_is_unverified_not_rank_ready():
+    address="0x0000000000000000000000000000000000000c02"
+    graph={
+        "provider":"THEGRAPH","status":"OK",
+        "candidates":[{
+            "pool_address":address,"pair":"GRAPH/ONLY","version":"V3",
+            "protocol_guess":"UNISWAP_V3","tvl_usd":900_000_000_000,
+            "volume_24h_usd":1_000,
+        }],
+    }
+
+    result=DiscoveryLab._union([graph])
+    row=result["top_candidates"][0]
+
+    assert result["graph_only_candidates"]==1
+    assert result["live_validated_candidates"]==0
+    assert row["economic_validation"]=="UNVERIFIED"
+    assert "live-provider validation" in row["economic_validation_reason"]
+
+
+def test_v0961_patch_ui_shows_validation_funnel_and_recent_daily_volume():
+    root=Path(__file__).parents[1]
+    js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
+
+    assert "discovered →" in js
+    assert "Live validated" in js
+    assert "Graph-only / unverified" in js
+    assert "TVL mismatches" in js
+    assert "Recent daily volume" in js
+    assert "Graph-only rows are explicitly unverified" in js
