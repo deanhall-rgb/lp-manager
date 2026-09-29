@@ -860,6 +860,22 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
     withdrawals=sum(_f(r.get("fiat_amount")) for r in rows if r.get("review_status")==RESOLVED_WITHDRAWAL)
     ctx=money_context(settings,store)
     currency=str(ctx.get("display_currency") or "USD")
+
+    # Once the reviewed investor ledger exists it is the authoritative external
+    # cash boundary. The raw transfer audit must not drop manual/legacy funding
+    # simply because it did not arrive as a directly classifiable transfer.
+    capital_rows=store.list_capital_ledger(1000)
+    if capital_rows and currency.upper()=="GBP":
+        contributions=sum(
+            max(0.0,_f(x.get("amount_gbp")))
+            for x in capital_rows
+            if str(x.get("event_type") or "").upper() in {"EXTERNAL_FUNDING","LEGACY_BROUGHT_FORWARD"}
+        )
+        withdrawals=sum(
+            max(0.0,_f(x.get("amount_gbp")))
+            for x in capital_rows
+            if str(x.get("event_type") or "").upper()=="EXTERNAL_WITHDRAWAL"
+        )
     rate=_f(ctx.get("usd_to_display_rate"),1.0)
     snapshot=store.get_wallet_snapshot() or {}
     current_usd=_f(snapshot.get("total_tracked_value_usd"))
@@ -914,6 +930,7 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
             "current_portfolio_value":round(current_display,2),
             "provisional_true_pnl":round(true_pnl,2),
             "pnl_complete":len(unresolved)==0 and contributions>0 and bool(last_scan and last_scan.get("coverage_complete")),
+            "cash_boundary_source":"CAPITAL_LEDGER" if capital_rows and currency.upper()=="GBP" else "TRANSFER_AUDIT",
             "unresolved_count":len(unresolved),
             "reviewed_count":sum(1 for r in rows if str(r.get("review_status") or "")!="UNRESOLVED"),
             "observed_transfers":len(rows),
