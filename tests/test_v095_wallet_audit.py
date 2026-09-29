@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
 from lp_manager.db import Store
@@ -268,7 +269,7 @@ def test_v095_wallet_audit_ui_is_separate_and_manual_review_is_explicit():
     assert "function renderWalletAudit()" in js
     assert "New money / funding" in js
     assert "Transfer from/to one of my wallets or a bridge" in js
-    assert "enter what it actually cost you in cash" in js
+    assert "enter the real bank/card amount" in js
     assert "/api/wallet-audit/scan" in js
     assert "/api/wallet-audit/resolve" in js
     assert "$('[data-wallet-audit-review]').forEach" in js
@@ -328,7 +329,7 @@ def test_deterministic_wallet_classifier_auto_tags_protocol_swaps_bridges_and_kn
 
 def test_confirmed_gbp_funding_appends_clean_ledger_and_performance_cash_flow_once(tmp_path):
     store=Store(tmp_path/"rolling.sqlite3")
-    store.set_setting("fx:USD:GBP",{"rate":0.8,"read_at":1_790_000_000.0,"source":"TEST"})
+    store.set_setting("fx:USD:GBP",{"rate":0.8,"read_at":time.time(),"source":"TEST"})
     row=_event("fund","0xfund","IN",0.02)
     store.upsert_wallet_audit_event(row)
 
