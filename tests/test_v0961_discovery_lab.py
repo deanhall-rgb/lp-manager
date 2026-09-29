@@ -279,11 +279,11 @@ def test_v0961_patch_ui_shows_validation_funnel_and_recent_daily_volume():
     js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
 
     assert "discovered →" in js
-    assert "Live validated" in js
-    assert "Graph-only / unverified" in js
+    assert "V3 live validated" in js
+    assert "V3 awaiting live validation" in js
     assert "TVL mismatches" in js
     assert "Recent daily volume" in js
-    assert "Graph-only rows are explicitly unverified" in js
+    assert "Graph-only candidates remain unverified" in js
 
 
 def test_graph_sample_falls_back_when_preferred_schema_has_no_pools(monkeypatch):
