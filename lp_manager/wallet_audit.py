@@ -582,24 +582,143 @@ def _native_transfer_rows_from_transactions(cfg: ChainConfig, rows: list[dict[st
     return out
 
 
+def _review_counterparty(row: dict[str,Any]) -> str:
+    direction=str(row.get("direction") or "").upper()
+    return _norm_address(row.get("from_address") if direction=="IN" else row.get("to_address"))
+
+
+def _automation_profile(store) -> dict[str,Any]:
+    internal_addresses=set()
+    funding_sources=set()
+    withdrawal_destinations=set()
+    ignored_tokens=set()
+    ignored_pairs=set()
+    for row in store.list_wallet_audit_events(10000):
+        status=str(row.get("review_status") or "").upper()
+        other=_review_counterparty(row)
+        token=_norm_address(row.get("token_address"))
+        asset=str(row.get("asset") or "").upper()
+        if status==INTERNAL_TRANSFER and other:
+            internal_addresses.add(other)
+        elif status==RESOLVED_FUNDING and str(row.get("direction") or "").upper()=="IN" and other:
+            funding_sources.add(other)
+        elif status==RESOLVED_WITHDRAWAL and str(row.get("direction") or "").upper()=="OUT" and other:
+            withdrawal_destinations.add(other)
+        elif status==IGNORED:
+            if token:
+                ignored_tokens.add(token)
+            elif other and asset:
+                ignored_pairs.add((other,asset))
+    return {
+        "internal_addresses":internal_addresses,
+        "funding_sources":funding_sources,
+        "withdrawal_destinations":withdrawal_destinations,
+        "ignored_tokens":ignored_tokens,
+        "ignored_pairs":ignored_pairs,
+    }
+
+
+def _automation_payload(row: dict[str,Any], *, status: str, suggestion: str = "", reason: str = "") -> dict[str,Any]:
+    payload=dict(row.get("payload") or {})
+    payload["automation"]={
+        "classification":status,
+        "suggestion":str(suggestion or ""),
+        "reason":str(reason or ""),
+        "confidence":"HIGH" if status!="UNRESOLVED" else "REVIEW",
+        "classified_at":time.time(),
+    }
+    return payload
+
+
 def _classify_with_transaction_context(store, rows: list[dict[str,Any]], tx_rows: list[dict[str,Any]]) -> list[dict[str,Any]]:
     classified=_classify_scan_rows(store,rows)
     context={str(x.get("tx_hash") or "").lower():str(x.get("kind") or "").upper() for x in tx_rows}
+    profile=_automation_profile(store)
+    conversion_kinds={"SWAP","WRAP","UNWRAP"}
     bridge_kinds={"BRIDGE"}
-    protocol_kinds={"LP_ACTION","APPROVAL","SWAP","OPEN_POSITION","CLOSE_POSITION","COLLECT_FEES","WRAP","UNWRAP","LP_MANAGER_TRANSACTION"}
+    protocol_kinds={"LP_ACTION","APPROVAL","OPEN_POSITION","CLOSE_POSITION","COLLECT_FEES","LP_MANAGER_TRANSACTION"}
     out=[]
     for row in classified:
-        if str(row.get("review_status") or "")!="UNRESOLVED":
-            out.append(row)
+        status=str(row.get("review_status") or "")
+        if status!="UNRESOLVED":
+            out.append({**row,"payload":_automation_payload(row,status=status,reason="Deterministic transaction structure")})
             continue
-        kind=context.get(str(row.get("tx_hash") or "").lower(),"")
+
+        tx=str(row.get("tx_hash") or "").lower()
+        kind=context.get(tx,"")
+        other=_review_counterparty(row)
+        token=_norm_address(row.get("token_address"))
+        asset=str(row.get("asset") or "").upper()
+        direction=str(row.get("direction") or "").upper()
+        auto_status="UNRESOLVED"
+        suggestion=""
+        reason="External one-sided transfer requires confirmation"
+
         if kind in bridge_kinds:
-            out.append({**row,"review_status":INTERNAL_TRANSFER})
+            auto_status=INTERNAL_TRANSFER
+            reason="Bridge transaction"
+        elif kind in conversion_kinds:
+            auto_status=INTERNAL_CONVERSION
+            reason="Swap/wrap conversion"
         elif kind in protocol_kinds:
-            out.append({**row,"review_status":INTERNAL_PROTOCOL})
-        else:
-            out.append(row)
+            auto_status=INTERNAL_PROTOCOL
+            reason="Known protocol / LP transaction"
+        elif other and other in profile["internal_addresses"]:
+            auto_status=INTERNAL_TRANSFER
+            reason="Counterparty was previously confirmed as an internal wallet/bridge"
+        elif token and token in profile["ignored_tokens"]:
+            auto_status=IGNORED
+            reason="Token contract was previously confirmed irrelevant"
+        elif other and (other,asset) in profile["ignored_pairs"]:
+            auto_status=IGNORED
+            reason="Counterparty/asset pair was previously confirmed irrelevant"
+        elif direction=="IN" and other and other in profile["funding_sources"]:
+            suggestion=RESOLVED_FUNDING
+            reason="Same source as prior confirmed cash funding; cash amount still needs confirmation"
+        elif direction=="OUT" and other and other in profile["withdrawal_destinations"]:
+            suggestion=RESOLVED_WITHDRAWAL
+            reason="Same destination as prior confirmed withdrawal; returned cash still needs confirmation"
+        elif direction=="IN" and kind=="NATIVE_TRANSFER":
+            suggestion=RESOLVED_FUNDING
+            reason="Direct inbound native asset could be new money or another wallet"
+        elif direction=="OUT" and kind=="NATIVE_TRANSFER":
+            suggestion=INTERNAL_TRANSFER
+            reason="Direct outbound native asset could be another wallet or a withdrawal"
+
+        out.append({
+            **row,
+            "review_status":auto_status,
+            "payload":_automation_payload(row,status=auto_status,suggestion=suggestion,reason=reason),
+        })
     return out
+
+
+def _auto_reconcile_unresolved(store) -> dict[str,int]:
+    tx_rows=store.list_wallet_audit_transactions(10000)
+    unresolved=store.list_wallet_audit_events(10000,"UNRESOLVED")
+    if not unresolved:
+        return {"auto_classified":0,"needs_review":0}
+    classified=_classify_with_transaction_context(store,unresolved,tx_rows)
+    auto=0
+    for row in classified:
+        status=str(row.get("review_status") or "UNRESOLVED")
+        if status=="UNRESOLVED":
+            # Refresh suggestion/reason without changing the human-review state.
+            existing=store.get_wallet_audit_event(str(row.get("id") or ""))
+            if existing:
+                merged={**existing,"payload":row.get("payload") or existing.get("payload") or {}}
+                store.upsert_wallet_audit_event(merged)
+            continue
+        store.resolve_wallet_audit_event(
+            str(row.get("id") or ""),
+            review_status=status,
+            fiat_amount=None,
+            fiat_currency="GBP",
+            note=str(((row.get("payload") or {}).get("automation") or {}).get("reason") or "Automatically classified"),
+        )
+        auto+=1
+    remaining=len(store.list_wallet_audit_events(10000,"UNRESOLVED"))
+    return {"auto_classified":auto,"needs_review":remaining}
 
 
 def _rpc_transactions_from_transfer_hashes(cfg: ChainConfig, transfers: list[dict[str,Any]], known_events: dict[str,str]) -> list[dict[str,Any]]:
@@ -677,10 +796,20 @@ def scan_wallet_audit(settings, store, *, chains: list[str] | None = None) -> di
     wallet=str(settings.wallet_address or "").strip()
     if not wallet:
         return {"ok":False,"error":"WALLET_ADDRESS is not configured","chains":[],"imported":0,"transactions":0}
+    existing_events=store.list_wallet_audit_events(10000)
+    existing_transactions=store.list_wallet_audit_transactions(10000)
+    existing_event_ids={str(x.get("id") or "") for x in existing_events}
+    existing_tx_ids={str(x.get("id") or "") for x in existing_transactions}
+    existing_transfer_hashes={
+        (str(x.get("chain") or "").upper(),str(x.get("tx_hash") or "").lower())
+        for x in existing_events if str(x.get("tx_hash") or "")
+    }
     selected=[str(c).upper() for c in (chains or list(CHAINS)) if str(c).upper() in CHAINS and CHAINS[str(c).upper()].enabled()]
     chain_results=[]
     imported=0
     transaction_count=0
+    new_transfers=0
+    new_transactions=0
     known_events=_known_event_types(store)
 
     for key in selected:
@@ -715,7 +844,15 @@ def scan_wallet_audit(settings, store, *, chains: list[str] | None = None) -> di
 
             detail_rows=[]
             if tx_rows:
-                detail_rows=_robinscan_transfers_from_details(cfg,wallet,tx_rows)
+                # Full transaction history is still listed every scan, but token
+                # detail calls are only needed for transactions that have never
+                # produced stored transfer evidence. This keeps the rolling
+                # monitor cheap enough to run automatically.
+                detail_candidates=[
+                    x for x in tx_rows
+                    if (key,str(x.get("tx_hash") or "").lower()) not in existing_transfer_hashes
+                ]
+                detail_rows=_robinscan_transfers_from_details(cfg,wallet,detail_candidates)
             transfer_rows=_merge_transfer_rows(
                 alchemy_rows,
                 detail_rows,
@@ -755,9 +892,13 @@ def scan_wallet_audit(settings, store, *, chains: list[str] | None = None) -> di
 
         transfer_rows=_classify_with_transaction_context(store,transfer_rows,tx_rows)
         for row in transfer_rows:
+            if str(row.get("id") or "") not in existing_event_ids:
+                new_transfers+=1
             store.upsert_wallet_audit_event(row)
             imported+=1
         for row in tx_rows:
+            if str(row.get("id") or "") not in existing_tx_ids:
+                new_transactions+=1
             store.upsert_wallet_audit_transaction(row)
             transaction_count+=1
 
@@ -791,11 +932,17 @@ def scan_wallet_audit(settings, store, *, chains: list[str] | None = None) -> di
     }
     expected_active=observed_active|position_active
     full_by_chain={str(x.get("chain") or "").upper():bool(x.get("full_transaction_history")) for x in chain_results}
+    reconciliation=_auto_reconcile_unresolved(store)
     scan={
         "read_at":time.time(),
         "chains":chain_results,
         "imported":imported,
         "transactions":transaction_count,
+        "new_transfers":new_transfers,
+        "new_transactions":new_transactions,
+        "auto_classified":int(reconciliation.get("auto_classified") or 0),
+        "needs_review":int(reconciliation.get("needs_review") or 0),
+        "automation_mode":"DETERMINISTIC_AUTO_CLASSIFY_WITH_HUMAN_CASH_CONFIRMATION",
         "coverage_complete":bool(expected_active) and all(full_by_chain.get(key,False) for key in expected_active),
         "expected_active_chains":sorted(expected_active),
     }
@@ -955,12 +1102,66 @@ def resolve_wallet_audit_event(settings, store, event_id: str, *, classification
     row=store.get_wallet_audit_event(event_id)
     if not row:
         raise KeyError("Wallet audit event not found")
-    currency=str(money_context(settings,store).get("display_currency") or "GBP")
+    ctx=money_context(settings,store)
+    currency=str(ctx.get("display_currency") or "GBP")
     amount=None
     if status in {RESOLVED_FUNDING,RESOLVED_WITHDRAWAL}:
         amount=max(0.0,_f(fiat_amount))
         if amount<=0:
             raise ValueError("Enter the real cash amount including provider/on-ramp/off-ramp fees")
-    return store.resolve_wallet_audit_event(
+        if currency.upper()!="GBP":
+            raise ValueError("The clean investor ledger currently requires cash confirmation in GBP")
+
+    resolved=store.resolve_wallet_audit_event(
         event_id,review_status=status,fiat_amount=amount,fiat_currency=currency,note=note,
     ) or {}
+
+    if status in {RESOLVED_FUNDING,RESOLVED_WITHDRAWAL} and amount is not None:
+        ledger_type="EXTERNAL_FUNDING" if status==RESOLVED_FUNDING else "EXTERNAL_WITHDRAWAL"
+        label="Confirmed wallet funding" if status==RESOLVED_FUNDING else "Confirmed cash withdrawal"
+        store.upsert_capital_ledger_entry({
+            "id":"wallet-audit:"+str(event_id),
+            "occurred_at":_f(row.get("occurred_at")) or time.time(),
+            "event_type":ledger_type,
+            "amount_gbp":amount,
+            "asset":str(row.get("asset") or ""),
+            "asset_amount":max(0.0,_f(row.get("amount"))),
+            "chain":str(row.get("chain") or ""),
+            "tx_hash":str(row.get("tx_hash") or ""),
+            "campaign_symbol":"",
+            "estimated_friction_gbp":0.0,
+            "label":label,
+            "note":str(note or ""),
+            "source":"WALLET_AUDIT_CONFIRMED",
+            "metadata":{
+                "wallet_audit_event_id":str(event_id),
+                "classification":status,
+                "automation_suggestion":str((((row.get("payload") or {}).get("automation") or {}).get("suggestion") or "")),
+            },
+        })
+
+        # Keep the day-by-day performance log cash-flow neutral when capital is
+        # added or removed. Guard by tx/type so re-saving the review is idempotent.
+        financial_type="EXTERNAL_DEPOSIT" if status==RESOLVED_FUNDING else "EXTERNAL_WITHDRAWAL"
+        existing=[
+            e for e in store.list_financial_events(5000)
+            if str(e.get("event_type") or "").upper()==financial_type
+            and str(e.get("tx_hash") or "").lower()==str(row.get("tx_hash") or "").lower()
+            and str((e.get("payload") or {}).get("wallet_audit_event_id") or "")==str(event_id)
+        ]
+        if not existing:
+            rate=max(1e-12,_f(ctx.get("usd_to_display_rate"),1.0))
+            store.record_financial_event(
+                position_id=None,campaign_id=None,event_type=financial_type,
+                chain=str(row.get("chain") or "PORTFOLIO"),tx_hash=str(row.get("tx_hash") or ""),
+                occurred_at=_f(row.get("occurred_at")) or time.time(),
+                amount_usd=amount/rate,status="CONFIRMED",
+                payload={
+                    "note":str(note or label),
+                    "display_amount":amount,
+                    "display_currency":"GBP",
+                    "wallet_audit_event_id":str(event_id),
+                    "source":"WALLET_AUDIT_CONFIRMED",
+                },
+            )
+    return resolved
