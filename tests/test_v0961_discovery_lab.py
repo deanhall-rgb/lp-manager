@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import lp_manager.discovery_lab as discovery
-from lp_manager.discovery_lab import DEFAULT_SUBGRAPH_IDS, DiscoveryLab
+from lp_manager.discovery_lab import DEFAULT_SUBGRAPH_IDS, SUBGRAPH_CANDIDATES, DiscoveryLab
 
 
 class FakeResponse:
@@ -21,9 +21,10 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, *, get_map=None, post_payload=None):
+    def __init__(self, *, get_map=None, post_payload=None, post_map=None):
         self.get_map=get_map or {}
         self.post_payload=post_payload or {}
+        self.post_map=post_map or {}
         self.get_calls=[]
         self.post_calls=[]
         self.headers={}
@@ -39,6 +40,13 @@ class FakeSession:
 
     def post(self, url, **kwargs):
         self.post_calls.append((url,kwargs))
+        for key,value in self.post_map.items():
+            if key in url:
+                if callable(value):
+                    value=value(url,kwargs)
+                if isinstance(value,FakeResponse):
+                    return value
+                return FakeResponse(value)
         return FakeResponse(self.post_payload)
 
 
@@ -212,6 +220,8 @@ def test_discovery_lab_ui_is_explicitly_non_strategy_and_has_exact_pool_resolver
 def test_optimism_and_polygon_have_known_graph_defaults():
     assert DEFAULT_SUBGRAPH_IDS["OPTIMISM"]=="EgnS9YE1avupkvCNj9fHnJxppfEmNNywYJtghqiu2pd9"
     assert DEFAULT_SUBGRAPH_IDS["POLYGON"]=="EsLGwxyeMMeJuhqWvuLmJEiDKXJ4Z6YsoJreUnyeozco"
+    assert len(SUBGRAPH_CANDIDATES["OPTIMISM"])>=2
+    assert len(SUBGRAPH_CANDIDATES["ARBITRUM"])>=2
 
 
 def test_union_prefers_live_economics_and_flags_absurd_graph_tvl():
@@ -274,3 +284,96 @@ def test_v0961_patch_ui_shows_validation_funnel_and_recent_daily_volume():
     assert "TVL mismatches" in js
     assert "Recent daily volume" in js
     assert "Graph-only rows are explicitly unverified" in js
+
+
+def test_graph_sample_falls_back_when_preferred_schema_has_no_pools(monkeypatch):
+    bad=SUBGRAPH_CANDIDATES["ARBITRUM"][0]
+    good=SUBGRAPH_CANDIDATES["ARBITRUM"][1]
+    good_payload={
+        "data":{
+            "pools":[{
+                "id":"0x0000000000000000000000000000000000000d01",
+                "feeTier":"3000",
+                "liquidity":"1",
+                "totalValueLockedUSD":"2500000",
+                "volumeUSD":"100000000",
+                "poolDayData":[{"date":1790630400,"volumeUSD":"1500000","feesUSD":"4500","tvlUSD":"2500000","txCount":"500"}],
+                "token0":{"id":"0x1","symbol":"WETH","name":"Wrapped Ether","decimals":"18"},
+                "token1":{"id":"0x2","symbol":"USDC","name":"USD Coin","decimals":"6"},
+            }]
+        }
+    }
+    session=FakeSession(post_map={
+        bad:{"errors":[{"message":"Type 'Query' has no field 'pools'"}]},
+        good:good_payload,
+    })
+    lab=DiscoveryLab(settings("graph-key"),FakeMarket(),session)
+
+    result=lab.graph_sample("ARBITRUM",limit=500)
+
+    assert result["status"]=="OK"
+    assert result["fallback_used"] is True
+    assert result["requests"]==2
+    assert result["subgraph_id"]==good
+    assert result["candidate_count"]==1
+    assert result["candidates"][0]["volume_24h_usd"]==1_500_000
+
+
+def test_union_promotes_graph_v3_identity_when_live_provider_version_is_unknown():
+    address="0x0000000000000000000000000000000000000d02"
+    graph={
+        "provider":"THEGRAPH","status":"OK",
+        "candidates":[{
+            "pool_address":address,"pair":"WETH/USDC","version":"V3",
+            "protocol_guess":"UNISWAP_V3","tvl_usd":900_000,
+            "volume_24h_usd":400_000,
+        }],
+    }
+    dex={
+        "provider":"DEXSCREENER","status":"OK",
+        "candidates":[{
+            "pool_address":address,"pair":"WETH/USDC","version":"UNKNOWN",
+            "protocol_guess":"UNISWAP","tvl_usd":850_000,
+            "volume_24h_usd":450_000,
+        }],
+    }
+
+    result=DiscoveryLab._union([graph,dex])
+    row=result["top_candidates"][0]
+
+    assert row["version"]=="V3"
+    assert row["protocol_guess"]=="UNISWAP_V3"
+    assert result["v3_eligible_candidates"]==1
+    assert result["live_validated_v3_candidates"]==1
+    assert result["unknown_version_candidates"]==0
+
+
+def test_union_excludes_v2_v4_and_unknown_from_v3_candidate_sample():
+    rows=[
+        {"pool_address":"0x0000000000000000000000000000000000000e01","pair":"A/B","version":"V3","tvl_usd":10,"volume_24h_usd":10},
+        {"pool_address":"0x0000000000000000000000000000000000000e02","pair":"C/D","version":"V4","tvl_usd":20,"volume_24h_usd":20},
+        {"pool_address":"0x0000000000000000000000000000000000000e03","pair":"E/F","version":"V2","tvl_usd":30,"volume_24h_usd":30},
+        {"pool_address":"0x0000000000000000000000000000000000000e04","pair":"G/H","version":"UNKNOWN","tvl_usd":40,"volume_24h_usd":40},
+    ]
+    result=DiscoveryLab._union([{"provider":"DEXSCREENER","status":"OK","candidates":rows}])
+
+    assert result["unique_candidates"]==4
+    assert result["v3_eligible_candidates"]==1
+    assert result["unsupported_version_candidates"]==2
+    assert result["unknown_version_candidates"]==1
+    assert len(result["top_candidates"])==1
+    assert result["top_candidates"][0]["pair"]=="A/B"
+
+
+def test_v0961_final_patch_ui_is_compact_and_v3_gated():
+    root=Path(__file__).parents[1]
+    js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
+
+    assert "V3 eligible →" in js
+    assert "V2/V4 excluded" in js
+    assert "Unknown version excluded" in js
+    assert "V3 candidate sample" in js
+    assert "Only V3-eligible pools are shown here" in js
+    assert "Pool identity is seen by multiple providers; live-provider economics are preferred." not in js
+    assert "Live economics used" in js
+    assert "Needs live validation" in js
