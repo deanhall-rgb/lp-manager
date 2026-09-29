@@ -62,6 +62,23 @@ DEFAULT_SUBGRAPH_IDS = {
     "POLYGON": "EsLGwxyeMMeJuhqWvuLmJEiDKXJ4Z6YsoJreUnyeozco",
 }
 
+# Some published Uniswap V3 subgraphs on the decentralized network expose
+# different schemas/deployments over time. v0.9.6.1 stays read-only and will
+# fall through these known candidates only when the preferred endpoint cannot
+# answer the V3 `pools` query. An explicit .env ID is always tried first.
+SUBGRAPH_CANDIDATES = {
+    "ARBITRUM": [
+        "FQ6JYszEKApsBpAmiHesRsd9Ygc6mzmpNRANeVQFYoVX",
+        "Fo8QBLpEGfXHWkGMD3jSM4vVLk4JxvxxQD3v3U4fsrbh",
+        "DG2sRfpuAZNrDbN1JqovLMtaNVRgJ8HNMXoMgcwC52gh",
+    ],
+    "OPTIMISM": [
+        "EgnS9YE1avupkvCNj9fHnJxppfEmNNywYJtghqiu2pd9",
+        "Cghf4LfVqPiFw6fp6Y5X5Ubc8UpmUhSfJL82zwiBFLaj",
+        "49LkWjoVKd3bM9ZrMdFgYkjaCuVj4ExZttQi6XfbcPpG",
+    ],
+}
+
 
 def _f(value: Any) -> float:
     try:
@@ -151,9 +168,18 @@ class DiscoveryLab:
         self.session=session or requests.Session()
         self.session.headers.update({"User-Agent":"LP-Manager/0.9.6.1","Accept":"application/json"})
 
-    def _graph_id(self, chain_key: str) -> str:
+    def _graph_ids(self, chain_key: str) -> list[str]:
         env=f"THEGRAPH_UNISWAP_V3_{chain_key}_SUBGRAPH_ID"
-        return os.getenv(env,"").strip() or DEFAULT_SUBGRAPH_IDS.get(chain_key,"")
+        configured=os.getenv(env,"").strip()
+        ids=[]
+        if configured:
+            ids.append(configured)
+        ids.extend(SUBGRAPH_CANDIDATES.get(chain_key,[]))
+        default=DEFAULT_SUBGRAPH_IDS.get(chain_key,"")
+        if default:
+            ids.append(default)
+        # Preserve order while removing duplicates.
+        return list(dict.fromkeys(x for x in ids if x))
 
     def _graph_key(self) -> str:
         return str(getattr(self.settings,"thegraph_api_key","") or os.getenv("THEGRAPH_API_KEY","")).strip()
@@ -229,19 +255,21 @@ class DiscoveryLab:
     def graph_sample(self, chain_key: str, limit: int = 250) -> dict[str,Any]:
         started=time.perf_counter()
         key=self._graph_key()
-        subgraph=self._graph_id(chain_key)
+        subgraphs=self._graph_ids(chain_key)
         if not key:
             return {
                 "provider":"THEGRAPH","status":"NOT_CONFIGURED","requests":0,"candidates":[],
                 "candidate_count":0,"elapsed_ms":0,
                 "error":"Add THEGRAPH_API_KEY to .env to run this provider test.",
-                "subgraph_id":subgraph or None,
+                "subgraph_id":subgraphs[0] if subgraphs else None,
+                "attempted_subgraph_ids":[],
             }
-        if not subgraph:
+        if not subgraphs:
             return {
                 "provider":"THEGRAPH","status":"NO_SUBGRAPH","requests":0,"candidates":[],
                 "candidate_count":0,"elapsed_ms":0,
-                "error":f"Set THEGRAPH_UNISWAP_V3_{chain_key}_SUBGRAPH_ID in .env for this chain.",
+                "error":f"No known Uniswap V3 subgraph is configured for {chain_key}.",
+                "attempted_subgraph_ids":[],
             }
         query="""query DiscoveryPools($first: Int!) {
           pools(first: $first, orderBy: totalValueLockedUSD, orderDirection: desc) {
@@ -261,33 +289,49 @@ class DiscoveryLab:
             }
           }
         }"""
-        try:
-            url=f"{THEGRAPH_BASE}/{subgraph}"
-            r=self.session.post(
-                url,
-                json={"query":query,"variables":{"first":max(1,min(1000,int(limit)))}},
-                headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"},
-                timeout=25,
-            )
-            r.raise_for_status()
-            payload=r.json()
-            if payload.get("errors"):
-                raise RuntimeError("; ".join(str(x.get("message") or x) for x in payload["errors"][:3]))
-            rows=[_normalise_graph_pool(x,chain_key) for x in ((payload.get("data") or {}).get("pools") or [])]
-            return {
-                "provider":"THEGRAPH","status":"OK" if rows else "EMPTY","requests":1,
-                "rate_budget":"indexed query / API-key plan",
-                "candidate_count":len(rows),"candidates":rows,
-                "elapsed_ms":round((time.perf_counter()-started)*1000,1),
-                "subgraph_id":subgraph,
-                "error":None,
-            }
-        except Exception as exc:
-            return {
-                "provider":"THEGRAPH","status":"ERROR","requests":1,"candidate_count":0,"candidates":[],
-                "elapsed_ms":round((time.perf_counter()-started)*1000,1),
-                "subgraph_id":subgraph,"error":str(exc)[:500],
-            }
+        attempts=[]
+        errors=[]
+        requested=max(1,min(1000,int(limit)))
+        for subgraph in subgraphs:
+            attempts.append(subgraph)
+            try:
+                url=f"{THEGRAPH_BASE}/{subgraph}"
+                r=self.session.post(
+                    url,
+                    json={"query":query,"variables":{"first":requested}},
+                    headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"},
+                    timeout=25,
+                )
+                r.raise_for_status()
+                payload=r.json()
+                if payload.get("errors"):
+                    errors.append(f"{subgraph[:8]}…: "+"; ".join(str(x.get("message") or x) for x in payload["errors"][:2]))
+                    continue
+                rows=[_normalise_graph_pool(x,chain_key) for x in ((payload.get("data") or {}).get("pools") or [])]
+                if not rows:
+                    errors.append(f"{subgraph[:8]}…: valid query returned no pools")
+                    continue
+                return {
+                    "provider":"THEGRAPH","status":"OK","requests":len(attempts),
+                    "rate_budget":"indexed query / API-key plan",
+                    "candidate_count":len(rows),"candidates":rows,
+                    "elapsed_ms":round((time.perf_counter()-started)*1000,1),
+                    "subgraph_id":subgraph,
+                    "attempted_subgraph_ids":attempts,
+                    "fallback_used":len(attempts)>1,
+                    "error":None,
+                }
+            except Exception as exc:
+                errors.append(f"{subgraph[:8]}…: {str(exc)[:220]}")
+        return {
+            "provider":"THEGRAPH","status":"ERROR","requests":len(attempts),
+            "candidate_count":0,"candidates":[],
+            "elapsed_ms":round((time.perf_counter()-started)*1000,1),
+            "subgraph_id":None,
+            "attempted_subgraph_ids":attempts,
+            "fallback_used":len(attempts)>1,
+            "error":" | ".join(errors)[:700],
+        }
 
     @staticmethod
     def _union(providers: list[dict[str,Any]]) -> dict[str,Any]:
@@ -321,7 +365,13 @@ class DiscoveryLab:
             row=dict(chosen)
             if graph:
                 for key in ("fee_tier","protocol_guess","version","total_volume_usd","activity_day_ts","activity_day_tx_count","fees_24h_usd"):
-                    if row.get(key) in (None,"",0) and graph.get(key) not in (None,""):
+                    current=row.get(key)
+                    missing=current in (None,"",0)
+                    if key=="version" and str(current or "").upper() in {"","UNKNOWN","NONE"}:
+                        missing=True
+                    if key=="protocol_guess" and str(current or "").upper() in {"","UNKNOWN","UNISWAP","NONE"}:
+                        missing=True
+                    if missing and graph.get(key) not in (None,""):
                         row[key]=graph.get(key)
 
             live_tvl=max((_f(x.get("tvl_usd")) for x in live),default=0.0)
@@ -369,20 +419,36 @@ class DiscoveryLab:
             )
         )
         overlaps=sum(1 for x in out if int(x.get("provider_count") or 0)>1)
-        v3=sum(
-            1 for x in out
-            if str(x.get("version") or "").upper()=="V3"
-            or str(x.get("protocol") or "").upper()=="UNISWAP_V3"
-            or str(x.get("protocol_guess") or "").upper()=="UNISWAP_V3"
-        )
+
+        def is_v3(x: dict[str,Any]) -> bool:
+            return (
+                str(x.get("version") or "").upper()=="V3"
+                or str(x.get("protocol") or "").upper()=="UNISWAP_V3"
+                or str(x.get("protocol_guess") or "").upper()=="UNISWAP_V3"
+            )
+
+        v3_rows=[x for x in out if is_v3(x)]
+        unsupported=sum(1 for x in out if str(x.get("version") or "").upper() in {"V2","V4"})
+        unknown=sum(1 for x in out if not is_v3(x) and str(x.get("version") or "").upper() not in {"V2","V4"})
+        live_v3=sum(1 for x in v3_rows if str(x.get("economic_validation") or "")!="UNVERIFIED")
+        graph_only_v3=sum(1 for x in v3_rows if str(x.get("economic_validation") or "")=="UNVERIFIED")
+
         return {
             "unique_candidates":len(out),
             "multi_provider_matches":overlaps,
             "live_validated_candidates":live_validated,
+            "live_validated_v3_candidates":live_v3,
             "graph_only_candidates":graph_only,
+            "graph_only_v3_candidates":graph_only_v3,
             "tvl_mismatch_count":mismatch_count,
-            "v3_identified":v3,
-            "top_candidates":out[:25],
+            "v3_identified":len(v3_rows),
+            "v3_eligible_candidates":len(v3_rows),
+            "unsupported_version_candidates":unsupported,
+            "unknown_version_candidates":unknown,
+            # The on-screen diagnostic sample now mirrors the future production
+            # gate: unsupported V2/V4 and unknown-version pools are counted but
+            # not shown as LP Manager candidates.
+            "top_candidates":v3_rows[:25],
         }
 
     def run(self, chain_key: str, *, gecko_pages: int = 1, graph_limit: int = 250) -> dict[str,Any]:
