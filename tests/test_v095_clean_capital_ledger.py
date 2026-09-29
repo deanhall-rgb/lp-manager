@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from lp_manager.capital_ledger import clean_capital_ledger, import_reviewed_baseline
+from lp_manager.capital_ledger import clean_capital_ledger, import_reviewed_baseline, enrich_campaigns_with_capital
 from lp_manager.wallet_audit import wallet_audit_summary
 from lp_manager.db import Store
 
@@ -200,3 +200,74 @@ def test_advanced_wallet_audit_uses_clean_capital_ledger_cash_boundary(tmp_path)
     assert summary["metrics"]["current_portfolio_value"]==800.0
     assert summary["metrics"]["provisional_true_pnl"]==650.0
     assert summary["metrics"]["cash_boundary_source"]=="CAPITAL_LEDGER"
+
+
+def test_campaign_enrichment_uses_wallet_audit_swaps_and_exposes_movement_history(tmp_path):
+    store=Store(tmp_path/"campaign_enriched.sqlite3")
+    store.set_setting("fx:USD:GBP",{"rate":0.8,"read_at":time.time(),"source":"TEST"})
+    import_reviewed_baseline(store,{
+        "currency":"GBP",
+        "entries":[
+            {"id":"cash","occurred_at":1_788_000_000,"event_type":"EXTERNAL_FUNDING","amount_gbp":200.0,"asset":"ETH","asset_amount":0.1},
+        ],
+        "audit_rules":{},
+    })
+    wallet="0xabc"
+    store.upsert_wallet_audit_event({
+        "id":"swap-eth","chain":"ROBINHOOD_CHAIN","tx_hash":"0xswap","transfer_key":"1",
+        "occurred_at":1_788_100_000.0,"direction":"OUT","category":"external","asset":"ETH",
+        "token_address":"","amount":0.02,"from_address":wallet,"to_address":"0xrouter",
+        "source":"TEST","payload":{},"review_status":"INTERNAL_CONVERSION",
+    })
+    store.upsert_wallet_audit_event({
+        "id":"swap-delta","chain":"ROBINHOOD_CHAIN","tx_hash":"0xswap","transfer_key":"2",
+        "occurred_at":1_788_100_000.0,"direction":"IN","category":"erc20","asset":"DELTA",
+        "token_address":"0xdelta","amount":1000.0,"from_address":"0xrouter","to_address":wallet,
+        "source":"TEST","payload":{},"review_status":"INTERNAL_CONVERSION",
+    })
+    store.upsert_wallet_audit_transaction({
+        "id":"wat:swap","chain":"ROBINHOOD_CHAIN","tx_hash":"0xswap","occurred_at":1_788_100_000.0,
+        "direction":"OUT","kind":"SWAP","method":"exactInput","from_address":wallet,"to_address":"0xrouter",
+        "native_symbol":"ETH","value_native":0.02,"gas_native":0.00001,"success":True,"source":"TEST","payload":{},
+    })
+
+    campaign={
+        "id":"campaign:ROBINHOOD_CHAIN:DELTA","chain":"ROBINHOOD_CHAIN","asset_symbol":"DELTA",
+        "asset_address":"0xdelta","label":"DELTA","identity_quality":"ASSET_ADDRESS_AND_SYMBOL",
+        "status":"ACTIVE","position_count":1,"open_positions":1,"closed_positions":0,
+        "known_campaign_pnl_usd":10.0,"lifetime_fees_usd":12.0,"transaction_costs_usd":1.0,
+        "current_lp_value_usd":150.0,"marked_exposure_usd":250.0,
+        "wallet_inventory":{"balance":500.0,"value_usd":100.0,"quality":"UNATTRIBUTED_COST_BASIS"},
+        "positions":[{"id":"p1","status":"OPEN","opening_capital_usd":100.0,"pnl_quality":"VERIFIED"}],
+        "timeline":[],
+        "provenance":{"linked_positions":1,"verified_position_bases":1,"financial_events":0},
+    }
+    out=enrich_campaigns_with_capital(_settings(),store,[campaign])[0]
+
+    # £200 / 0.1 ETH = £2,000/ETH. 0.02 ETH bought 1,000 DELTA => £40 basis.
+    # 500 DELTA remains in wallet => £20 wallet basis. Open LP basis is $100 = £80.
+    assert out["capital_invested_gbp"]==100.0
+    assert out["capital_invested_usd"]==125.0
+    assert out["exposure_pnl_usd"]==125.0
+    assert out["exposure_return_pct"]==100.0
+    assert out["wallet_inventory"]["quality"]=="TRANSACTION_TRACED_COST_BASIS"
+    assert out["accounting_quality"]=="CAMPAIGN_CAPITAL_TRACED"
+    assert out["capital_accounting"]["movement_count"]==1
+    move=out["movement_history"][0]
+    assert move["type"]=="BUY"
+    assert move["focus_in"]==1000.0
+    assert {x["asset"] for x in move["transfers"]}=={"ETH","DELTA"}
+
+
+def test_campaign_ui_uses_traced_capital_and_movement_history():
+    root=Path(__file__).parents[1]
+    html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
+    js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
+    assert "transaction-traced wallet acquisition basis" in html.lower()
+    assert "excluded from P/L until its acquisition cost" not in html
+    assert "data-campaign-movements" in js
+    assert "function showCampaignMovements" in js
+    assert "Campaign capital context" in js
+    assert "Capital invested" in js
+    assert "Exposure P/L" in js
+    assert "Movement history" in js
