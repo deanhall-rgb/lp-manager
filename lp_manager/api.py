@@ -80,6 +80,7 @@ from .capital_ledger import (
     enrich_campaigns_with_capital,
     campaign_with_capital,
 )
+from .discovery_lab import DiscoveryLab
 
 
 class ScoutIntent(BaseModel):
@@ -396,6 +397,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     executor = ExecutionService(settings, store)
     live = LiveDataService(settings, store)
+    discovery_lab = DiscoveryLab(settings, live.market)
     # Repair confirmed LP Manager closes from their exact transaction receipt.
     # This is intentionally receipt-only and never performs a historical block scan.
     try:
@@ -996,6 +998,42 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             # converting provider/transient failures into an opaque browser 502.
             return result
         return result
+
+    @app.get("/api/discovery-lab/{chain}")
+    def discovery_lab_run(chain: str, gecko_pages: int = 1, graph_limit: int = 250):
+        try:
+            return discovery_lab.run(
+                chain.upper(),
+                gecko_pages=max(1,min(2,int(gecko_pages))),
+                graph_limit=max(25,min(1000,int(graph_limit))),
+            )
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
+        except Exception as exc:
+            # v0.9.6.1 is a diagnostic surface: return the provider failure in
+            # the body so the operator can see which path failed.
+            return {
+                "ok":False,
+                "mode":"READ_ONLY_DISCOVERY_PROOF",
+                "feeds_strategy":False,
+                "chain":chain.upper(),
+                "error":str(exc)[:800],
+            }
+
+    @app.get("/api/discovery-lab/resolve/{chain}/{address}")
+    def discovery_lab_resolve(chain: str, address: str):
+        try:
+            return discovery_lab.resolve_pool(chain.upper(),address)
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
+        except Exception as exc:
+            return {
+                "ok":False,
+                "status":"PROVIDER_ERROR",
+                "preferred_chain":chain.upper(),
+                "address":address,
+                "message":str(exc)[:800],
+            }
 
     @app.get("/api/scout/live/{chain}")
     def live_scout(chain: str, limit: int = 20):
