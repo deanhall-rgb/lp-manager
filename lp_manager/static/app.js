@@ -1,5 +1,5 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let state=null, poolRows=[], selectedPool=null, lastProfitResult=null, lastProfitSearch=null, positionFilter='OPEN', lastRpcHealth=[], decisionCategory='ALL', decisionSleeve='ALL', execPoolMeta=null, execPlan=null, execForecastId=null, execTargetCapitalUsd=null, execCapitalPrefilled=false, browserWallet=null, browserProvider=null, announcedWalletProviders=[], walletShowHidden=false, lastLabResult=null, execQuoteTimer=null, execPriceTimer=null, execLastEditedSide=0, execQuoteBusy=false, execLastRequoteAt=0, refreshPromise=null, targetCacheKey='', targetCacheAt=0, profitDecisionContext=null, execRebalanceContext=null;
+let state=null, poolRows=[], selectedPool=null, lastProfitResult=null, lastProfitSearch=null, positionFilter='OPEN', lastRpcHealth=[], decisionCategory='ALL', decisionSleeve='ALL', execPoolMeta=null, execPlan=null, execForecastId=null, execTargetCapitalUsd=null, execCapitalPrefilled=false, browserWallet=null, browserProvider=null, announcedWalletProviders=[], walletShowHidden=false, lastLabResult=null, execQuoteTimer=null, execPriceTimer=null, execLastEditedSide=0, execQuoteBusy=false, execLastRequoteAt=0, refreshPromise=null, targetCacheKey='', targetCacheAt=0, profitDecisionContext=null, execRebalanceContext=null, walletAuditScanBusy=false;
 const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const num=(v,d=2)=>Number(v||0).toLocaleString(undefined,{maximumFractionDigits:d});
 const pct=(v,d=1)=>`${num(v,d)}%`;
@@ -78,12 +78,13 @@ function capitalLedgerEventLabel(type){
  return labels[String(type||'').toUpperCase()]||String(type||'').replaceAll('_',' ');
 }
 function renderCapitalLedger(){
- const l=state.capital_ledger||{},m=l.metrics||{},note=$('#capital-ledger-note'),metrics=$('#capital-ledger-metrics'),journal=$('#capital-ledger-journal'),campaigns=$('#capital-ledger-campaigns'),importBtn=$('#capital-ledger-import-btn');
+ const l=state.capital_ledger||{},m=l.metrics||{},a=state.wallet_audit||{},reviewRows=a.unresolved||[],note=$('#capital-ledger-note'),metrics=$('#capital-ledger-metrics'),review=$('#capital-ledger-review'),journal=$('#capital-ledger-journal'),campaigns=$('#capital-ledger-campaigns'),importBtn=$('#capital-ledger-import-btn');
  if(importBtn)importBtn.classList.toggle('hidden',Boolean(l.baseline_installed));
  if(note){
-  note.className='notice '+(l.baseline_installed?'good':'warn');
+  const last=a.last_scan||{},lastText=last.read_at?when(last.read_at):'not scanned yet';
+  note.className='notice '+(reviewRows.length?'warn':l.baseline_installed?'good':'warn');
   note.innerHTML=l.baseline_installed
-   ?'<b>Official investor baseline active.</b> '+(l.entries||[]).length+' reviewed cash event'+((l.entries||[]).length===1?'':'s')+' · internal swaps, bridges and LP mechanics are excluded from cash invested.'
+   ?'<b>Official investor baseline active.</b> '+(l.entries||[]).length+' reviewed cash event'+((l.entries||[]).length===1?'':'s')+' · automatic wallet reconciliation is ON · '+reviewRows.length+' movement'+(reviewRows.length===1?'':'s')+' need review · last scan '+esc(lastText)+'.'
    :'<b>Reviewed baseline not installed yet.</b> Import the supplied baseline JSON once; it is idempotent and does not invent blockchain activity.';
  }
  if(metrics){
@@ -95,6 +96,18 @@ function renderCapitalLedger(){
    ['Estimated on-ramp drag',displayMoneyRaw(m.estimated_onramp_friction_gbp||0,'GBP'),'Approx. provider fee/spread on reviewed Transak funding']
   ].map(x=>'<div class="metric"><div class="label">'+x[0]+'</div><div class="value">'+x[1]+'</div><div class="sub">'+x[2]+'</div></div>').join('');
  }
+ if(review){
+  if(reviewRows.length){
+   review.className='panel lower';
+   review.innerHTML='<div class="panel-head"><div><h2>Needs your review</h2><p>The scanner classified everything deterministic. These movements could change real cash invested/withdrawn, so LP Manager will not guess.</p></div>'+badge(String(reviewRows.length)+' REVIEW','watch')+'</div><table class="table"><thead><tr><th>Date</th><th>Movement</th><th>Likely meaning</th><th>Reason</th><th></th></tr></thead><tbody>'+
+    reviewRows.slice(0,12).map(e=>{const auto=(e.payload||{}).automation||{},suggest=auto.suggestion?walletAuditStatusLabel(auto.suggestion):'AMBIGUOUS';return '<tr><td>'+when(e.occurred_at)+'</td><td><b>'+walletAuditTransferText(e)+'</b><div class="meta">'+esc(e.chain||'')+' · '+short(e.tx_hash||'')+'</div></td><td>'+badge(suggest,'watch')+'</td><td>'+esc(auto.reason||'External movement requires confirmation')+'</td><td><button class="btn small" data-capital-review="'+esc(e.id)+'">Review</button></td></tr>'}).join('')+
+    '</tbody></table>';
+   $$('[data-capital-review]').forEach(b=>b.onclick=()=>openWalletAuditReview(b.dataset.capitalReview));
+  }else{
+   review.className='notice good lower';
+   review.innerHTML='<b>Automatic reconciliation clear.</b> No new external movements need your input. Swaps, bridges, LP activity and known internal movements are being classified in the background.';
+  }
+ }
  if(journal){
   const rows=l.entries||[];
   journal.innerHTML=rows.length?'<table class="table"><thead><tr><th>Date</th><th>Event</th><th>Cash basis</th><th>Crypto / allocation</th><th>Est. friction</th><th>Reference</th></tr></thead><tbody>'+
@@ -103,9 +116,10 @@ function renderCapitalLedger(){
  }
  if(campaigns){
   const rows=l.campaigns||[];
-  campaigns.innerHTML=rows.length?'<table class="table"><thead><tr><th>Campaign</th><th>Capital invested</th><th>Marked exposure</th><th>Exposure P/L</th><th>LP strategy P/L</th><th>Lifetime fees</th><th>Transaction costs</th></tr></thead><tbody>'+
-   rows.map(c=>'<tr><td><b>'+esc(c.label||c.symbol||'')+'</b><div class="meta">'+esc(c.status||'')+' · '+num(c.open_positions||0,0)+' open / '+num(c.closed_positions||0,0)+' closed</div></td><td><b>'+displayMoneyRaw(c.capital_invested_gbp||0,'GBP')+'</b></td><td>'+displayMoneyRaw(c.marked_exposure_gbp||0,'GBP')+'</td><td><b>'+(Number(c.exposure_pnl_gbp||0)>=0?'+':'')+displayMoneyRaw(c.exposure_pnl_gbp||0,'GBP')+'</b></td><td><b>'+(Number(c.lp_strategy_pnl_gbp||0)>=0?'+':'')+displayMoneyRaw(c.lp_strategy_pnl_gbp||0,'GBP')+'</b></td><td>'+displayMoneyRaw(c.lifetime_fees_gbp||0,'GBP')+'</td><td>'+displayMoneyRaw(c.transaction_costs_gbp||0,'GBP')+'</td></tr>').join('')+
+  campaigns.innerHTML=rows.length?'<table class="table"><thead><tr><th>Campaign</th><th>Capital invested</th><th>Marked exposure</th><th>Exposure P/L</th><th>LP strategy P/L</th><th>Lifetime fees</th><th>Transaction costs</th><th></th></tr></thead><tbody>'+
+   rows.map(c=>'<tr><td><b>'+esc(c.label||c.symbol||'')+'</b><div class="meta">'+esc(c.status||'')+' · '+num(c.open_positions||0,0)+' open / '+num(c.closed_positions||0,0)+' closed</div></td><td><b>'+displayMoneyRaw(c.capital_invested_gbp||0,'GBP')+'</b></td><td>'+displayMoneyRaw(c.marked_exposure_gbp||0,'GBP')+'</td><td><b>'+(Number(c.exposure_pnl_gbp||0)>=0?'+':'')+displayMoneyRaw(c.exposure_pnl_gbp||0,'GBP')+'</b></td><td><b>'+(Number(c.lp_strategy_pnl_gbp||0)>=0?'+':'')+displayMoneyRaw(c.lp_strategy_pnl_gbp||0,'GBP')+'</b></td><td>'+displayMoneyRaw(c.lifetime_fees_gbp||0,'GBP')+'</td><td>'+displayMoneyRaw(c.transaction_costs_gbp||0,'GBP')+'</td><td><button class="btn secondary small" data-ledger-campaign-movements="'+esc(c.campaign_id||'')+'">Movements</button></td></tr>').join('')+
    '</tbody></table>':'<div class="empty-state">Campaign accounting will appear after positions are loaded.</div>';
+  $$('[data-ledger-campaign-movements]').forEach(b=>b.onclick=()=>showCampaignMovements(b.dataset.ledgerCampaignMovements));
  }
 }
 async function importCapitalLedgerFile(file){
@@ -127,6 +141,9 @@ function walletAuditStatusLabel(status){
  const labels={CONFIRMED_FUNDING:'NEW MONEY',CONFIRMED_WITHDRAWAL:'WITHDRAWAL',INTERNAL_TRANSFER:'INTERNAL TRANSFER',INTERNAL_PROTOCOL:'LP/PROTOCOL',INTERNAL_CONVERSION:'SWAP / CONVERSION',IGNORE:'IGNORED',UNRESOLVED:'NEEDS REVIEW'};
  return labels[s]||s.replaceAll('_',' ');
 }
+function walletAuditAutomation(e){
+ return ((e?.payload||{}).automation||{});
+}
 function walletAuditTransferText(e){
  const dir=String(e.direction||'');
  return (dir==='IN'?'Received ':dir==='OUT'?'Sent ':'Moved ')+num(e.amount||0,8)+' '+esc(e.asset||'TOKEN');
@@ -145,14 +162,14 @@ function renderWalletAudit(){
  if(note){
   const scan=a.last_scan||{},scanned=scan.read_at?when(scan.read_at):'Not scanned yet',full=Number(m.full_history_chains||0),active=Number(m.active_chains||0);
   note.className='notice '+(Number(m.unresolved_count||0)>0||((scan.chains||[]).some(x=>x.transaction_error))?'warn':'good');
-  note.innerHTML='<b>Audit status:</b> '+num(m.observed_transactions||0,0)+' full transactions + '+num(m.observed_transfers||0,0)+' asset transfers stored. '+num(m.unresolved_count||0,0)+' funding gap'+(Number(m.unresolved_count||0)===1?'':'s')+' need review. Full transaction history on '+full+'/'+active+' active chains. Last scan: '+esc(scanned)+'.';
+  note.innerHTML='<b>Audit status:</b> '+num(m.observed_transactions||0,0)+' full transactions + '+num(m.observed_transfers||0,0)+' asset transfers stored. '+num(m.unresolved_count||0,0)+' ambiguous movement'+(Number(m.unresolved_count||0)===1?'':'s')+' need review. Deterministic swaps, bridges and LP/protocol activity are auto-classified. Full transaction history on '+full+'/'+active+' active chains. Last scan: '+esc(scanned)+'.';
  }
  if(metrics)metrics.innerHTML=[
   ['Cash invested',displayMoneyRaw(m.confirmed_contributions||0,currency),'Confirmed real-money cost including provider fees'],
   ['Cash withdrawn',displayMoneyRaw(m.confirmed_withdrawals||0,currency),'Confirmed money returned to you'],
   ['Current portfolio',displayMoneyRaw(m.current_portfolio_value||0,currency),'Wallet + LP capital currently tracked'],
   ['True lifetime P/L',displayMoneyRaw(m.provisional_true_pnl||0,currency),m.pnl_complete?'AUDITED':'PROVISIONAL · funding/coverage not complete'],
-  ['Funding gaps',String(m.unresolved_count||0),'One-sided transfers needing your classification'],
+  ['Needs review',String(m.unresolved_count||0),'Only ambiguous external cash/transfer movements'],
   ['On-chain transactions',String(m.observed_transactions||0),'Contract calls, approvals and transfers']
  ].map(x=>'<div class="metric"><div class="label">'+x[0]+'</div><div class="value">'+x[1]+'</div><div class="sub">'+x[2]+'</div></div>').join('');
 
@@ -166,7 +183,7 @@ function renderWalletAudit(){
  if(gaps){
   const rows=a.unresolved||[];
   gaps.innerHTML=rows.length?'<table class="table"><thead><tr><th>Date</th><th>Movement</th><th>Network</th><th>Transaction context</th><th>Other wallet / contract</th><th></th></tr></thead><tbody>'+
-   rows.map(e=>{const other=String(e.direction)==='IN'?e.from_address:e.to_address,tx=e.transaction||{};return '<tr><td>'+when(e.occurred_at)+'</td><td><b>'+walletAuditTransferText(e)+'</b><div class="meta">'+esc(String(e.category||'transfer'))+' · '+short(e.tx_hash||'')+'</div></td><td>'+esc(e.chain||'')+'</td><td>'+(tx.kind?'<b>'+esc(walletAuditTxLabel(tx))+'</b><div class="meta">'+(Number(tx.gas_native||0)>0?'gas '+num(tx.gas_native,9)+' '+esc(tx.native_symbol||'ETH'):'no wallet gas / inbound')+'</div>':'Transfer evidence only')+'</td><td>'+short(other||'unknown')+'</td><td><button class="btn small" data-wallet-audit-review="'+esc(e.id)+'">Review</button></td></tr>'}).join('')+
+   rows.map(e=>{const other=String(e.direction)==='IN'?e.from_address:e.to_address,tx=e.transaction||{},auto=walletAuditAutomation(e),suggest=auto.suggestion?walletAuditStatusLabel(auto.suggestion):'';return '<tr><td>'+when(e.occurred_at)+'</td><td><b>'+walletAuditTransferText(e)+'</b><div class="meta">'+esc(String(e.category||'transfer'))+' · '+short(e.tx_hash||'')+'</div></td><td>'+esc(e.chain||'')+'</td><td>'+(tx.kind?'<b>'+esc(walletAuditTxLabel(tx))+'</b><div class="meta">'+(Number(tx.gas_native||0)>0?'gas '+num(tx.gas_native,9)+' '+esc(tx.native_symbol||'ETH'):'no wallet gas / inbound')+'</div>':'Transfer evidence only')+(suggest?'<div class="meta">Suggested: '+esc(suggest)+' · '+esc(auto.reason||'')+'</div>':'')+'</td><td>'+short(other||'unknown')+'</td><td><button class="btn small" data-wallet-audit-review="'+esc(e.id)+'">Review</button></td></tr>'}).join('')+
    '</tbody></table>':'<div class="empty-state">No unresolved transfer gaps. The cash-capital baseline is fully classified for the transfers discovered so far.</div>';
   $$('[data-wallet-audit-review]').forEach(b=>b.onclick=()=>openWalletAuditReview(b.dataset.walletAuditReview));
  }
@@ -198,16 +215,17 @@ function showWalletAuditActivity(id){
 function openWalletAuditReview(id){
  const a=state.wallet_audit||{},e=(a.events||[]).find(x=>String(x.id)===String(id))||(a.unresolved||[]).find(x=>String(x.id)===String(id));
  if(!e){toast('Audit transfer not found');return}
- const currency=a.currency||state?.money?.display_currency||'GBP',other=String(e.direction)==='IN'?e.from_address:e.to_address,tx=e.transaction||{};
- modal('<h2>Classify wallet movement</h2><p class="meta">'+esc(walletAuditTransferText(e))+' · '+esc(e.chain||'')+' · '+when(e.occurred_at)+'</p>'+
-  '<div class="notice lower"><b>Other address:</b> '+esc(other||'unknown')+'<br><b>Transaction:</b> '+esc(e.tx_hash||'')+(tx.kind?'<br><b>On-chain context:</b> '+esc(walletAuditTxLabel(tx))+(Number(tx.gas_native||0)>0?' · gas '+num(tx.gas_native,9)+' '+esc(tx.native_symbol||'ETH'):''):'')+'</div>'+
+ const currency=a.currency||state?.money?.display_currency||'GBP',other=String(e.direction)==='IN'?e.from_address:e.to_address,tx=e.transaction||{},auto=walletAuditAutomation(e),suggest=String(auto.suggestion||'');
+ modal('<h2>Review new wallet movement</h2><p class="meta">'+esc(walletAuditTransferText(e))+' · '+esc(e.chain||'')+' · '+when(e.occurred_at)+'</p>'+
+  '<div class="notice lower"><b>Other address:</b> '+esc(other||'unknown')+'<br><b>Transaction:</b> '+esc(e.tx_hash||'')+(tx.kind?'<br><b>On-chain context:</b> '+esc(walletAuditTxLabel(tx))+(Number(tx.gas_native||0)>0?' · gas '+num(tx.gas_native,9)+' '+esc(tx.native_symbol||'ETH'):''):'')+(auto.reason?'<br><b>LP Manager view:</b> '+esc(auto.reason):'')+'</div>'+
   '<div class="form-grid lower"><div class="field"><label>What was this?</label><select id="wallet-audit-classification"><option value="CONFIRMED_FUNDING">New money / funding</option><option value="INTERNAL_TRANSFER">Transfer from/to one of my wallets or a bridge</option><option value="CONFIRMED_WITHDRAWAL">Cash withdrawal / money returned to me</option><option value="IGNORE">Ignore / irrelevant</option></select></div>'+
-  '<div class="field"><label>Real cash amount ('+esc(currency)+')</label><input id="wallet-audit-fiat" type="number" min="0" step="0.01" placeholder="Required for funding/withdrawal"></div>'+
-  '<div class="field grow"><label>Note</label><input id="wallet-audit-review-note" placeholder="e.g. Transak £500 incl fees, transferred from old wallet"></div></div>'+
-  '<div class="notice lower"><b>For new money:</b> enter what it actually cost you in cash, including provider fees. Do not enter the crypto value received.</div>'+
-  '<div class="actions"><button id="wallet-audit-save" class="btn">Save classification</button></div>');
+  '<div class="field"><label>Real cash amount ('+esc(currency)+')</label><input id="wallet-audit-fiat" type="number" min="0" step="0.01" placeholder="Required only for funding/withdrawal"></div>'+
+  '<div class="field grow"><label>Note</label><input id="wallet-audit-review-note" placeholder="e.g. Transak £50 incl fees, moved from old wallet"></div></div>'+
+  '<div class="notice lower"><b>If this is new money or cash withdrawn:</b> enter the real bank/card amount, including provider fees. Saving it updates the clean Investor Ledger and daily performance cash-flow automatically.</div>'+
+  '<div class="actions"><button id="wallet-audit-save" class="btn">Confirm & update ledger</button></div>');
  const select=$('#wallet-audit-classification');
- if(String(e.direction)==='OUT')select.value='INTERNAL_TRANSFER';
+ if(['CONFIRMED_FUNDING','INTERNAL_TRANSFER','CONFIRMED_WITHDRAWAL','IGNORE'].includes(suggest))select.value=suggest;
+ else if(String(e.direction)==='OUT')select.value='INTERNAL_TRANSFER';
  $('#wallet-audit-save').onclick=()=>saveWalletAuditReview(id).catch(err=>toast(err.message));
 }
 async function saveWalletAuditReview(id){
@@ -216,14 +234,22 @@ async function saveWalletAuditReview(id){
  await api('/api/wallet-audit/resolve',{method:'POST',body:JSON.stringify({event_id:id,classification,fiat_amount:fiat,note})});
  closeModal();await refresh();toast('Wallet movement classified');
 }
-async function scanWalletAudit(){
- const btn=$('#wallet-audit-scan-btn');if(btn){btn.disabled=true;btn.textContent='Scanning full history…'}
+async function scanWalletAudit(silent=false){
+ if(walletAuditScanBusy)return null;
+ walletAuditScanBusy=true;
+ const btn=$('#wallet-audit-scan-btn');
+ if(btn&&!silent){btn.disabled=true;btn.textContent='Scanning wallet…'}
  try{
   const r=await api('/api/wallet-audit/scan',{method:'POST',timeoutMs:240000,body:JSON.stringify({chains:null})});
   await refresh();
-  const full=(r.chains||[]).filter(x=>x.full_transaction_history).length,active=(r.chains||[]).filter(x=>Number(x.transactions||0)>0||Number(x.transfers||0)>0).length;
-  toast('Wallet audit complete: '+num(r.imported||0,0)+' transfers · '+num(r.transactions||0,0)+' transactions · full history '+full+'/'+active+' active chains');
- }finally{if(btn){btn.disabled=false;btn.textContent='Scan wallet history'}}
+  const newCount=Number(r.new_transfers||0)+Number(r.new_transactions||0),review=Number(r.needs_review||0),auto=Number(r.auto_classified||0);
+  if(!silent)toast('Wallet scan: '+newCount+' new record'+(newCount===1?'':'s')+' · '+auto+' auto-classified · '+review+' need review');
+  else if(review>0&&Number(r.new_transfers||0)>0)toast(review+' wallet movement'+(review===1?'':'s')+' need review in Investor Ledger');
+  return r;
+ }finally{
+  walletAuditScanBusy=false;
+  if(btn&&!silent){btn.disabled=false;btn.textContent='Scan wallet history'}
+ }
 }
 
 function renderNetworkCards(rows){return (rows||[]).map(r=>`<div class="list-card"><div class="card-head"><div><b>${esc(r.name||r.chain)}</b><div class="meta">${esc(r.rpc_source||'')} ${r.block_number?`· block ${Number(r.block_number).toLocaleString()}`:''}</div></div>${badge(r.status||((r.rpc_configured||r.ok)?'READY':'MISSING'),(r.ok||r.status==='CONNECTED')?'good':r.rpc_source==='PUBLIC_FALLBACK'?'watch':'')}</div>${r.latency_ms?`<div class="meta">${num(r.latency_ms,0)} ms</div>`:''}${r.error?`<div class="meta">${esc(r.error)}</div>`:''}</div>`).join('')||'<div class="empty-state">No network data.</div>'}
@@ -760,5 +786,7 @@ $('#exec-amount0').addEventListener('input',()=>{if(!execQuoteBusy){execLastEdit
 window.addEventListener('eip6963:announceProvider',e=>{if(e?.detail?.provider&&!announcedWalletProviders.some(x=>x.provider===e.detail.provider)){announcedWalletProviders.push(e.detail);detectBrowserWallet()}});window.dispatchEvent(new Event('eip6963:requestProvider'));setTimeout(()=>detectBrowserWallet(),250)
 refresh();
 setInterval(()=>{if(document.visibilityState==='visible'&&$('#modal').classList.contains('hidden'))refresh()},60000);
+setTimeout(()=>{if(document.visibilityState==='visible')scanWalletAudit(true).catch(e=>console.warn('Automatic wallet scan failed',e))},15000);
+setInterval(()=>{if(document.visibilityState==='visible'&&$('#modal').classList.contains('hidden'))scanWalletAudit(true).catch(e=>console.warn('Automatic wallet scan failed',e))},15*60*1000);
 
 const positionRescan=$('#position-rescan-btn');if(positionRescan)positionRescan.onclick=()=>rescanWalletLPs().catch(e=>toast(e.message));
