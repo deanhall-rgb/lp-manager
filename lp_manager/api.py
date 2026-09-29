@@ -81,6 +81,7 @@ from .capital_ledger import (
     campaign_with_capital,
 )
 from .discovery_lab import DiscoveryLab
+from .candidate_universe import CandidateUniverse
 
 
 class ScoutIntent(BaseModel):
@@ -397,7 +398,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     executor = ExecutionService(settings, store)
     live = LiveDataService(settings, store)
-    discovery_lab = DiscoveryLab(settings, live.market)
+    discovery_lab = DiscoveryLab(settings, live.market, store=store)
+    candidate_universe = CandidateUniverse(settings, store, discovery_lab)
     # Repair confirmed LP Manager closes from their exact transaction receipt.
     # This is intentionally receipt-only and never performs a historical block scan.
     try:
@@ -1033,6 +1035,43 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 "preferred_chain":chain.upper(),
                 "address":address,
                 "message":str(exc)[:800],
+            }
+
+    @app.get("/api/candidate-universe/{chain}")
+    def candidate_universe_cached(chain: str):
+        try:
+            return candidate_universe.cached(chain.upper())
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
+
+    @app.post("/api/candidate-universe/{chain}/refresh")
+    def candidate_universe_refresh(
+        chain: str,
+        graph_limit: int = 500,
+        shortlist_limit: int = 40,
+        validate_limit: int = 20,
+    ):
+        try:
+            return candidate_universe.refresh(
+                chain.upper(),
+                graph_limit=max(50,min(1000,int(graph_limit))),
+                shortlist_limit=max(5,min(100,int(shortlist_limit))),
+                validate_limit=max(0,min(50,int(validate_limit))),
+            )
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
+        except Exception as exc:
+            # The candidate universe is an isolated v0.9.6.2 proof surface.
+            # Provider trouble must not affect the existing live scout/advisor.
+            return {
+                "ok":False,
+                "mode":"READ_ONLY_CANDIDATE_UNIVERSE",
+                "feeds_strategy":False,
+                "feeds_portfolio_advisor":False,
+                "chain":chain.upper(),
+                "error":str(exc)[:800],
+                "shortlist":[],
+                "summary":{},
             }
 
     @app.get("/api/scout/live/{chain}")
