@@ -223,14 +223,14 @@ def build_campaign_decision(
     exposure_return=capital_context.get("exposure_return_pct")
     if traced_capital>0 and exposure_pnl>0.01:
         rationale += (
-            f" Campaign accounting is {exposure_pnl:.2f} USD above its traced capital basis"
-            + (f" ({_f(exposure_return):.1f}%)" if exposure_return is not None else "")
+            " Campaign accounting is above its traced capital basis"
+            + (f" by {_f(exposure_return):.1f}%" if exposure_return is not None else "")
             + "; preserving or banking gains becomes more relevant if the fee/thesis case weakens, but profit alone does not force an exit."
         )
     elif traced_capital>0 and exposure_pnl<-0.01:
         rationale += (
-            f" Campaign accounting is {abs(exposure_pnl):.2f} USD below its traced capital basis"
-            + (f" ({abs(_f(exposure_return)):.1f}%)" if exposure_return is not None else "")
+            " Campaign accounting is below its traced capital basis"
+            + (f" by {abs(_f(exposure_return)):.1f}%" if exposure_return is not None else "")
             + "; the manager must not take extra risk merely to recover prior losses."
         )
 
