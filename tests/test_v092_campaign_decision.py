@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from lp_manager.campaign_decision import build_campaign_decision
+from lp_manager.campaign_accounting import campaign_by_id
 from lp_manager.db import Store
 from lp_manager.models import Position
 
@@ -116,3 +117,32 @@ def test_v092_ui_has_campaign_decision_and_safe_profit_handoff():
     assert "Do not mint the replacement from the same capital" in js
     assert "$$('[data-campaign-position]').forEach" in js
     assert "reviewCampaignDecision(p.campaign_id,id)" in js
+
+
+def test_campaign_decision_receives_traced_capital_context_without_overriding_fee_logic(tmp_path):
+    store,pid=_store(tmp_path,105.0)
+    campaign=campaign_by_id(store,"campaign:ROBINHOOD_CHAIN:DELTA")
+    campaign["capital_accounting"]={
+        "capital_invested_usd":180.0,
+        "marked_exposure_usd":260.0,
+        "exposure_pnl_usd":80.0,
+        "exposure_return_pct":44.44,
+        "profit_cushion_usd":80.0,
+        "capital_shortfall_usd":0.0,
+        "state":"ABOVE_BASIS",
+        "movement_count":12,
+    }
+    out=build_campaign_decision(
+        store,"campaign:ROBINHOOD_CHAIN:DELTA",
+        profit_result=_profit(8.0,1.0,expected_fees=9.0),position_id=pid,
+        campaign_context=campaign,
+    )
+    # Fee/range logic remains unchanged: current LP stays because its fee pace is stronger.
+    assert out["recommended_action"]=="KEEP"
+    summary=out["campaign_summary"]
+    assert summary["capital_invested_usd"]==180.0
+    assert summary["exposure_pnl_usd"]==80.0
+    assert summary["exposure_return_pct"]==44.44
+    assert summary["movement_count"]==12
+    assert "above its traced capital basis" in out["rationale"]
+    assert "profit alone does not force an exit" in out["rationale"]
