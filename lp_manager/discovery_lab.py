@@ -162,11 +162,12 @@ class DiscoveryLab:
     broader-discovery flow before we alter production strategy behaviour.
     """
 
-    def __init__(self, settings, market=None, session: requests.Session | None = None):
+    def __init__(self, settings, market=None, session: requests.Session | None = None, store=None):
         self.settings=settings
         self.market=market
+        self.store=store
         self.session=session or requests.Session()
-        self.session.headers.update({"User-Agent":"LP-Manager/0.9.6.1","Accept":"application/json"})
+        self.session.headers.update({"User-Agent":"LP-Manager/0.9.6.2","Accept":"application/json"})
 
     def _graph_ids(self, chain_key: str) -> list[str]:
         env=f"THEGRAPH_UNISWAP_V3_{chain_key}_SUBGRAPH_ID"
@@ -174,6 +175,17 @@ class DiscoveryLab:
         ids=[]
         if configured:
             ids.append(configured)
+        # Once a fallback deployment has proved it exposes the expected V3
+        # schema, remember it. This avoids repeatedly paying the 20-30 second
+        # fallback penalty seen on Optimism during the v0.9.6.1 proof.
+        remembered=""
+        if self.store is not None:
+            try:
+                remembered=str(self.store.get_setting(f"discovery:working_subgraph:{chain_key}","") or "").strip()
+            except Exception:
+                remembered=""
+        if remembered:
+            ids.append(remembered)
         ids.extend(SUBGRAPH_CANDIDATES.get(chain_key,[]))
         default=DEFAULT_SUBGRAPH_IDS.get(chain_key,"")
         if default:
@@ -311,6 +323,11 @@ class DiscoveryLab:
                 if not rows:
                     errors.append(f"{subgraph[:8]}…: valid query returned no pools")
                     continue
+                if self.store is not None:
+                    try:
+                        self.store.set_setting(f"discovery:working_subgraph:{chain_key}",subgraph)
+                    except Exception:
+                        pass
                 return {
                     "provider":"THEGRAPH","status":"OK","requests":len(attempts),
                     "rate_budget":"indexed query / API-key plan",
@@ -319,6 +336,7 @@ class DiscoveryLab:
                     "subgraph_id":subgraph,
                     "attempted_subgraph_ids":attempts,
                     "fallback_used":len(attempts)>1,
+                    "remembered_subgraph":bool(self.store is not None),
                     "error":None,
                 }
             except Exception as exc:
