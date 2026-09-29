@@ -262,7 +262,7 @@ def test_v095_wallet_audit_ui_is_separate_and_manual_review_is_explicit():
     assert 'id="walletaudit-section"' in html
     assert "Investor Ledger" in html
     assert 'id="wallet-audit-scan-btn"' in html
-    assert "Funding gaps to review" in html
+    assert "Review queue" in html
     assert "Full on-chain activity" in html
     assert "Scan coverage & transaction costs" in html
     assert "function renderWalletAudit()" in js
