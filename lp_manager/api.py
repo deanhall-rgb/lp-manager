@@ -77,6 +77,8 @@ from .wallet_audit import (
 from .capital_ledger import (
     clean_capital_ledger,
     import_reviewed_baseline,
+    enrich_campaigns_with_capital,
+    campaign_with_capital,
 )
 
 
@@ -439,7 +441,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         return row
 
     def _campaigns_with_thesis() -> list[dict[str,Any]]:
-        rows=build_campaigns(store)
+        rows=enrich_campaigns_with_capital(settings,store,build_campaigns(store))
         for row in rows:
             thesis=store.get_setting(f"campaign:thesis:{row.get('id')}",None)
             if thesis:
@@ -647,7 +649,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     @app.get("/api/campaigns/{campaign_id:path}")
     def campaign_view(campaign_id: str):
-        row=campaign_by_id(store,campaign_id)
+        row=campaign_with_capital(settings,store,campaign_id)
         if not row:
             raise HTTPException(404,"Campaign not found")
         return row
@@ -730,9 +732,13 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     @app.post("/api/campaign-decision")
     def campaign_decision(intent: CampaignDecisionIntent):
+        decision_campaign=campaign_with_capital(settings,store,intent.campaign_id)
+        if not decision_campaign:
+            raise HTTPException(404,"Campaign not found")
         base=build_campaign_decision(
             store,intent.campaign_id,position_id=intent.position_id,
             horizon_days=intent.horizon_days,monthly_target_pct=intent.monthly_target_pct,
+            campaign_context=decision_campaign,
         )
         profit_result=None
         profit_error=""
@@ -759,6 +765,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             store,intent.campaign_id,profit_result=profit_result,
             position_id=intent.position_id,horizon_days=intent.horizon_days,
             monthly_target_pct=intent.monthly_target_pct,profit_error=profit_error,
+            campaign_context=decision_campaign,
         )
         ctx=money_context(settings,store)
         rate=float(ctx.get("usd_to_display_rate") or 1.0)
