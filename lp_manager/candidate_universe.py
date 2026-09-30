@@ -180,12 +180,20 @@ class CandidateUniverse:
         row["portfolio_exposure"]=round(exposure,2)
         return row
 
-    def _broad_candidates(self, chain_key: str, graph_limit: int) -> tuple[list[dict[str,Any]],list[dict[str,Any]]]:
+    def _broad_candidates(self, chain_key: str, graph_limit: int, *, include_gecko: bool = True) -> tuple[list[dict[str,Any]],list[dict[str,Any]]]:
         graph=self.discovery.graph_sample(chain_key,graph_limit)
         dex=self.discovery.dexscreener_sample(chain_key)
-        # One Gecko page is enough to seed live validation. It is deliberately
-        # not used as the exhaustive discovery backbone.
-        gecko=self.discovery.gecko_sample(chain_key,1)
+        # Manual Candidate Universe builds still include one Gecko page. Bulk
+        # Advisor refreshes can deliberately skip it: Gecko is the scarce
+        # provider and must not make a six-chain comparison wait on cooldowns.
+        if include_gecko:
+            gecko=self.discovery.gecko_sample(chain_key,1)
+        else:
+            gecko={
+                "provider":"GECKOTERMINAL","status":"SKIPPED_CONSUMER_PROFILE",
+                "requests":0,"candidates":[],"candidate_count":0,"elapsed_ms":0,
+                "error":"Skipped for fast shared-consumer refresh; live validation uses DEX Screener.",
+            }
         providers=[graph,dex,gecko]
 
         grouped: dict[str,dict[str,dict[str,Any]]]={}
@@ -291,12 +299,12 @@ class CandidateUniverse:
             and not row.get("version_conflict")
         )
 
-    def refresh(self, chain_key: str, *, graph_limit: int = 500, shortlist_limit: int = 40, validate_limit: int = 20) -> dict[str,Any]:
+    def refresh(self, chain_key: str, *, graph_limit: int = 500, shortlist_limit: int = 40, validate_limit: int = 20, include_gecko: bool = True) -> dict[str,Any]:
         chain_key=str(chain_key or "").upper()
         if chain_key not in CHAINS:
             raise ValueError(f"Unsupported chain: {chain_key}")
         started=time.perf_counter()
-        rows,providers=self._broad_candidates(chain_key,max(50,min(1000,int(graph_limit))))
+        rows,providers=self._broad_candidates(chain_key,max(50,min(1000,int(graph_limit))),include_gecko=include_gecko)
         ctx=self._portfolio_context(chain_key)
         shortlist,filtered=self._cheap_filter(rows,ctx,shortlist_limit)
         targeted_requests,target_errors=self._targeted_validate(chain_key,shortlist,validate_limit)
@@ -340,6 +348,7 @@ class CandidateUniverse:
             "graph_limit":int(graph_limit),
             "shortlist_limit":int(shortlist_limit),
             "validate_limit":int(validate_limit),
+            "include_gecko":bool(include_gecko),
             "summary":{
                 "v3_discovered":len(rows),
                 "cheap_filtered_out":filtered,
