@@ -288,6 +288,7 @@ This is deliberately a patch release rather than v0.9. It corrects the evidence 
 - Strategy Lab alternative ranges are individually comparable and display fee-operating economics;
 - Execution Desk auto-balances the paired token amount and refreshes the live pool price while the desk is open;
 - Portfolio Advisor returns near-miss candidates and rejection reasons instead of a blank result.
+
 ## v0.9.6.3 portfolio-aware Advisor patch
 
 This patch is deliberately narrow. Candidate Universe remains read-only and is **not** yet wired into Portfolio Advisor; that cross-chain unification is reserved for v0.9.6.4.
@@ -301,4 +302,3 @@ This patch is deliberately narrow. Candidate Universe remains read-only and is *
 - Fresh candidates are selected ahead of stale persisted rows before each chain is capped for comparison, preventing old high-score cache entries from crowding current evidence out of the ranking set.
 - Owned/historical fee evidence can only calibrate Advisor economics when mature **exact-pool** samples exist. The Advisor-only adjustment is capped to **0.90x–1.10x** and does not alter the canonical current-market economics persisted for Profit Lab.
 - Browser-wallet signing, broadcasting, Profit Lab, Candidate Universe and execution safety boundaries are unchanged.
-
