@@ -300,8 +300,10 @@ class LiveDataService:
         self._stop.clear()
 
         def worker():
-            # Small delay lets the web server become responsive before the first chain scan.
-            if self._stop.wait(2.0): return
+            # Give the first browser render/API overview a clear runway before
+            # the multi-chain RPC refresh begins. The old 2s delay let startup
+            # scanning compete with the first page load on slower providers.
+            if self._stop.wait(8.0): return
             last_scout=0.0
             while not self._stop.is_set():
                 try:
