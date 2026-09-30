@@ -99,8 +99,8 @@ def test_candidate_universe_filters_then_validates_and_marks_portfolio_overlap()
 
     result=universe.refresh("ETHEREUM",graph_limit=500,shortlist_limit=40,validate_limit=20)
 
-    assert result["feeds_strategy"] is False
-    assert result["feeds_portfolio_advisor"] is False
+    assert result["feeds_strategy"] is True
+    assert result["feeds_portfolio_advisor"] is True
     assert result["summary"]["v3_discovered"]==3
     assert result["summary"]["cheap_filtered_out"]==1
     assert result["summary"]["shortlisted"]==2
@@ -158,15 +158,15 @@ def test_discovery_lab_prefers_remembered_working_subgraph(monkeypatch):
     assert len(ids)>1
 
 
-def test_v0962_ui_is_isolated_from_existing_scout_and_advisor():
+def test_v0964_ui_promotes_candidate_universe_to_shared_scout_and_advisor_source():
     root=Path(__file__).parents[1]
     html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
     js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
 
-    assert "v0.9.6.3 · portfolio-aware advisor" in html
-    assert "Candidate Universe · v0.9.6.2" in html
-    assert "READ ONLY · NOT IN ADVISOR" in html
+    assert "v0.9.6.4 · cross-chain fairness" in html
+    assert "Candidate Universe · v0.9.6.4" in html
+    assert "SHARED DISCOVERY · FEEDS ADVISOR" in html
     assert 'id="universe-run-btn"' in html
     assert "/api/candidate-universe/" in js
     assert "Discovery score only decides which pools deserve scarce live checks" in js
-    assert "Nothing here feeds Portfolio Advisor yet" in js
+    assert "shared discovery source for Scout and Portfolio Advisor" in js
