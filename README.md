@@ -1,3 +1,63 @@
+# LP Manager — Stable Main v0.9.5
+
+`main` is the current **stable operating baseline** and is pinned to the proven v0.9.5 code line.
+
+- **Stable:** `main` / `v0.9.5`
+- **Preserved earlier baseline:** `v0.9`
+- **Active development:** `v0.9.6.1` and `v0.9.6.2`
+- Newer development branches are intentionally **not merged into main** until promoted.
+
+## Release progression after v0.9
+
+### v0.9.1 — Campaign accounting & provenance
+- Added first-class campaign registry and position links.
+- Grouped campaign-level P/L, inventory and wallet provenance.
+- Added campaign accounting/provenance API and UI workspace.
+- Linked financial events directly to campaigns and normalised ETH/WETH exposure.
+
+### v0.9.2 — Campaign decisions & rebalance workflow
+- Added HOLD / RERANGE / EXIT decision modelling based on fee economics.
+- Added rebalance analysis API and campaign next-move workflow.
+- Added direct handoff from campaign review into Profit Lab.
+
+### v0.9.3 — Sentiment, thesis & bounded range overlay
+- Added campaign sentiment and thesis research.
+- Added bounded thesis-aware range skew rather than unconstrained directional bias.
+- Integrated thesis context into campaign review and Profit Lab.
+- Tightened fee-tier handling and thesis/ratio UX clarity.
+
+### v0.9.4 — Performance Log
+- Added persistent hourly performance checkpoints and evidence history.
+- Added dynamic fee targets and fee-vs-target tracking.
+- Added evidence-quality/history views.
+- Simplified the everyday Positions UI and demoted Replay to advanced use.
+
+### v0.9.5 — Investor Ledger / wallet truth
+- Added full wallet audit and clean external-capital ledger.
+- Separated genuine investor cash from swaps, bridges, wrappers and internal crypto movements.
+- Added rolling automatic classification plus a review queue for unresolved movements.
+- Fed traced capital and audited wallet movement history into campaign accounting and next-move decisions.
+- Renamed the wallet-accounting workspace to **Investor Ledger**.
+- This is the current stable main baseline.
+
+### v0.9.6.1 — Development: Discovery Lab
+- Added read-only multi-provider discovery diagnostics.
+- Added exact-pool resolution and provider comparison.
+- Added The Graph discovery with schema-aware fallback.
+- Quarantines unverified Graph-only economics and exposes V3 eligibility/validation explicitly.
+
+### v0.9.6.2 — Development: persistent candidate universe
+- Added a read-only persistent pool candidate universe.
+- Added isolated candidate-universe endpoints and shortlist UI.
+- Remembers working Graph deployments to reduce repeat fallback delays.
+- Intended as the foundation for broader opportunity discovery/ranking; **not yet promoted to main**.
+
+## Safety boundary
+
+LP Manager must never store a seed phrase or private key. Browser-wallet confirmation remains the signing authority boundary; development and diagnostics must not autonomously broadcast transactions or move funds.
+
+---
+
 # LP Manager v0.9 — Stable Baseline
 
 V0.9 is the first release we are treating as the stable operating baseline for live testing. It preserves the explicit browser-wallet signing boundary while combining Profit Lab forecasting, automatic capital sizing, live LP discovery/accounting, fee tracking and direct close finalisation in one tested lifecycle.
