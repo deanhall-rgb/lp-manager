@@ -301,3 +301,4 @@ This patch is deliberately narrow. Candidate Universe remains read-only and is *
 - Fresh candidates are selected ahead of stale persisted rows before each chain is capped for comparison, preventing old high-score cache entries from crowding current evidence out of the ranking set.
 - Owned/historical fee evidence can only calibrate Advisor economics when mature **exact-pool** samples exist. The Advisor-only adjustment is capped to **0.90x–1.10x** and does not alter the canonical current-market economics persisted for Profit Lab.
 - Browser-wallet signing, broadcasting, Profit Lab, Candidate Universe and execution safety boundaries are unchanged.
+
