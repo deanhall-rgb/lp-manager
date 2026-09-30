@@ -288,3 +288,16 @@ This is deliberately a patch release rather than v0.9. It corrects the evidence 
 - Strategy Lab alternative ranges are individually comparable and display fee-operating economics;
 - Execution Desk auto-balances the paired token amount and refreshes the live pool price while the desk is open;
 - Portfolio Advisor returns near-miss candidates and rejection reasons instead of a blank result.
+## v0.9.6.3 portfolio-aware Advisor patch
+
+This patch is deliberately narrow. Candidate Universe remains read-only and is **not** yet wired into Portfolio Advisor; that cross-chain unification is reserved for v0.9.6.4.
+
+- Portfolio Advisor now receives the current open LP book and treats every recommendation as an **incremental addition**, not a fresh portfolio starting from zero.
+- Existing exact-pool, pair, chain and sleeve exposure is carried into the ranking result. The UI shows the current exact-pool value and the projected value/concentration after the suggested addition.
+- Existing exposure applies a small bounded ranking penalty and reduces incremental concentration room using the Advisor's existing Core/Tactical concentration percentages. It can still add to an owned pool when room remains; it simply stops pretending the existing capital is absent.
+- The Capital field is explicitly **new money**. Existing open LP exposure informs pool/pair/chain concentration context but does not consume or shrink the newly entered capital budget.
+- In Diversified mode, Tactical candidates retain the per-pool concentration cap (30% of deployable new capital), but there is no separate portfolio-wide Tactical cap that arbitrarily strands new capital when all eligible opportunities are Tactical.
+- Persisted opportunity rows are explicitly re-labelled `PERSISTED_CACHE` when loaded. They remain useful as research fallbacks but cannot receive an allocation unless the current Advisor run refreshes them as `LIVE_CURRENT`.
+- Fresh candidates are selected ahead of stale persisted rows before each chain is capped for comparison, preventing old high-score cache entries from crowding current evidence out of the ranking set.
+- Owned/historical fee evidence can only calibrate Advisor economics when mature **exact-pool** samples exist. The Advisor-only adjustment is capped to **0.90x–1.10x** and does not alter the canonical current-market economics persisted for Profit Lab.
+- Browser-wallet signing, broadcasting, Profit Lab, Candidate Universe and execution safety boundaries are unchanged.
