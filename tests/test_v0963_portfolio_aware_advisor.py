@@ -144,7 +144,7 @@ def test_v0963_ui_explains_incremental_portfolio_aware_allocation():
     html = (root / "lp_manager" / "static" / "index.html").read_text(encoding="utf-8")
     js = (root / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
 
-    assert "v0.9.6.3" in html
+    assert "v0.9.6.4" in html
     assert "Portfolio-aware" in html
     assert "Existing pool" in js
     assert "New capital plan" in js
