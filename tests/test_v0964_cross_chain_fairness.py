@@ -88,7 +88,7 @@ def test_v0964_soak_diagnostics_are_exposed_to_ui():
 
     assert "v0.9.6.4 · cross-chain fairness" in html
     assert "SHARED DISCOVERY · FEEDS ADVISOR" in html
-    assert '"universe_diagnostics"' in api
+    assert 'result["universe_diagnostics"]' in api
     assert '"fresh_cache_hits"' in api
     assert '"rate_limit_events"' in api
     assert '"ranking_chains"' in api
