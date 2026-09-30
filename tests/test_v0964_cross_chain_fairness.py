@@ -86,7 +86,7 @@ def test_v0964_soak_diagnostics_are_exposed_to_ui():
     html = (root / "lp_manager" / "static" / "index.html").read_text(encoding="utf-8")
     js = (root / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
 
-    assert "v0.9.6.4 · cross-chain fairness" in html
+    assert "v0.9.6.4.1 · stability hotfix" in html
     assert "SHARED DISCOVERY · FEEDS ADVISOR" in html
     assert 'result["universe_diagnostics"]' in api
     assert '"fresh_cache_hits"' in api
