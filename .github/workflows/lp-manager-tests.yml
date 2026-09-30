@@ -17,7 +17,7 @@ on:
       - "v0.9.4"
       - "v0.9.5"
       - "v0.9.6.1"
-      - "v0.9.6.2"
+      - "v0.9.6.2"\n      - "v0.9.6.3"
   pull_request:
 
 jobs:
@@ -45,7 +45,7 @@ jobs:
 
   package:
     needs: test
-    if: github.ref == 'refs/heads/v0.9.5' || github.ref == 'refs/heads/v0.9.6.1' || github.ref == 'refs/heads/v0.9.6.2'
+    if: github.ref == 'refs/heads/v0.9.5' || github.ref == 'refs/heads/v0.9.6.1' || github.ref == 'refs/heads/v0.9.6.2' || github.ref == 'refs/heads/v0.9.6.3'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
