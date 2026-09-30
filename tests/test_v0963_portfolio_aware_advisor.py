@@ -188,3 +188,4 @@ def test_ui_explains_existing_book_is_context_not_a_deduction_from_new_capital()
     assert "New capital plan" in js
     assert "does not reduce your new-capital budget" in js
     assert "${money(deployable)} available to deploy" in js
+
