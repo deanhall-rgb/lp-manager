@@ -50,11 +50,12 @@ def _log_score(value: float, floor: float, decades: float = 4.0) -> float:
 
 
 class CandidateUniverse:
-    """v0.9.6.2 broad discovery + cheap filtering + selective validation.
+    """Shared broad discovery + cheap filtering + selective validation.
 
-    This surface is intentionally isolated from the existing Opportunity Scout,
-    Portfolio Advisor and Profit Lab. It proves that a much broader V3 universe
-    can be considered without spending live-provider calls on every pool.
+    v0.9.6.2 proved the discovery funnel in isolation. v0.9.6.4 promotes that
+    same shortlist to the Scout and Portfolio Advisor so every strategy surface
+    starts from the same cross-chain candidate evidence. Profit Lab remains
+    separate and still performs the expensive range/history analysis on demand.
     """
 
     def __init__(self, settings, store, discovery_lab):
@@ -330,9 +331,10 @@ class CandidateUniverse:
 
         snapshot={
             "ok":bool(rows),
-            "mode":"READ_ONLY_CANDIDATE_UNIVERSE",
-            "feeds_strategy":False,
-            "feeds_portfolio_advisor":False,
+            "mode":"SHARED_CANDIDATE_UNIVERSE",
+            "feeds_strategy":True,
+            "feeds_scout":True,
+            "feeds_portfolio_advisor":True,
             "chain":chain_key,
             "generated_at":time.time(),
             "graph_limit":int(graph_limit),
@@ -353,13 +355,22 @@ class CandidateUniverse:
             "providers":provider_summary,
             "shortlist":shortlist,
             "targeted_validation_errors":target_errors[:5],
-            "note":"Discovery score is a cheap search heuristic only. It does not rank capital or change Portfolio Advisor / Profit Lab.",
+            "note":"Discovery score only controls the cheap shortlist. Scout and Portfolio Advisor apply their own risk/economics ranking to this shared universe; Profit Lab remains on-demand.",
         }
         try:
             self.store.set_setting(f"candidate_universe:{chain_key}",snapshot)
         except Exception:
             pass
         return snapshot
+
+    def fresh_cached(self, chain_key: str, *, max_age_seconds: float = 180.0) -> dict[str,Any] | None:
+        """Return a recent persisted universe without spending provider requests."""
+        payload=self.cached(chain_key)
+        generated=float(payload.get("generated_at") or 0)
+        age=max(0.0,time.time()-generated) if generated>0 else float("inf")
+        if payload.get("ok") and generated>0 and age <= max(1.0,float(max_age_seconds)):
+            return {**payload,"cached":True,"fresh_cache":True,"cache_age_seconds":round(age,1)}
+        return None
 
     def cached(self, chain_key: str) -> dict[str,Any]:
         chain_key=str(chain_key or "").upper()
@@ -374,12 +385,13 @@ class CandidateUniverse:
         return {
             "ok":False,
             "cached":True,
-            "mode":"READ_ONLY_CANDIDATE_UNIVERSE",
-            "feeds_strategy":False,
-            "feeds_portfolio_advisor":False,
+            "mode":"SHARED_CANDIDATE_UNIVERSE",
+            "feeds_strategy":True,
+            "feeds_scout":True,
+            "feeds_portfolio_advisor":True,
             "chain":chain_key,
             "summary":{},
             "providers":[],
             "shortlist":[],
-            "note":"No candidate universe has been built for this chain yet.",
+            "note":"No shared candidate universe has been built for this chain yet.",
         }
