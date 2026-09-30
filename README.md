@@ -316,3 +316,17 @@ This patch completes the v0.9.6 discovery/ranking integration without changing P
 - Portfolio Advisor returns `universe_diagnostics` covering per-chain discovered/shortlisted/live-validated/research-ready counts, provider request counts, cache reuse, rate-limit/timeout events, scan duration and ranking/allocation diversity. The Opportunities UI shows a compact summary so repeated soak runs can be checked without reading logs.
 - The v0.9.6.3 new-capital semantics remain unchanged: entered Capital is new money, reserve is deducted from that new money, existing LPs provide concentration context, and stale evidence cannot allocate.
 - Profit Lab remains the on-demand range/history authority. Execution Desk remains build/simulate only until the browser wallet explicitly signs.
+
+## v0.9.6.4.1 stability hotfix
+
+This hotfix preserves the v0.9.6.4 cross-chain design while correcting the live-test regressions seen during the first full six-chain soak.
+
+- Portfolio Advisor still consumes the shared Candidate Universe, but its foreground refresh uses a **fast consumer profile**: The Graph + DEX Screener, 200 broad candidates, 24 shortlist rows and at most 6 targeted validations per chain. The manual Candidate Universe control retains the full 500 / 40 / 20 build and GeckoTerminal seed.
+- GeckoTerminal is deliberately skipped during the six-chain Advisor refresh so one public-provider cooldown cannot turn a single allocation request into a 60–90 second blocking scan.
+- Fresh shared-universe reuse increases from 180 to **300 seconds**. This is a discovery-cache TTL only; stale rows remain ineligible for allocation.
+- Browser HTML/static assets now send no-cache headers and carry versioned asset URLs so an older v0.9.6.2/v0.9.6.3 interface cannot sit on top of a newer backend after folder upgrades.
+- The first background live-position refresh is delayed from 2 to **8 seconds** so startup RPC work does not compete with the initial page render.
+- Manual Wallet refresh no longer performs a redundant full RPC-health pass first; System diagnostics remains the dedicated place for explicit RPC health checks.
+- WPOL/POL and other network-major assets remain in executable **token-price** units. Provider market-cap/FDV metadata is no longer allowed to make a WPOL/USDT0 range appear as a misleading small-token market-cap range.
+- V4 position discovery and Profit Lab/history request coalescing are intentionally **not** part of this hotfix; they are carried into the v0.9.7 cleanup.
+
