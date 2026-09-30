@@ -163,7 +163,7 @@ def test_v0962_ui_is_isolated_from_existing_scout_and_advisor():
     html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
     js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
 
-    assert "v0.9.6.2 · candidate universe" in html
+    assert "v0.9.6.3 · portfolio-aware advisor" in html
     assert "Candidate Universe · v0.9.6.2" in html
     assert "READ ONLY · NOT IN ADVISOR" in html
     assert 'id="universe-run-btn"' in html
