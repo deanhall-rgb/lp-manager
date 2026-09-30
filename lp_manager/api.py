@@ -536,7 +536,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             row={**row,"historical_current":ctx}
         return row
 
-    _UNIVERSE_FRESH_SECONDS = 180.0
+    _UNIVERSE_FRESH_SECONDS = 300.0
 
     def _shared_universe_snapshot(chain: str, *, force_refresh: bool = False) -> tuple[dict[str,Any],str,list[str]]:
         """One candidate source for Scout and Advisor, with short-lived cache reuse.
@@ -552,7 +552,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             if fresh:
                 return fresh,"FRESH_CACHE",[]
         try:
-            snap=candidate_universe.refresh(key,graph_limit=500,shortlist_limit=40,validate_limit=20)
+            snap=candidate_universe.refresh(
+                key,graph_limit=200,shortlist_limit=24,validate_limit=6,include_gecko=False,
+            )
             if snap.get("ok"):
                 return snap,"REFRESH",list(snap.get("targeted_validation_errors") or [])
             error=str(snap.get("error") or "candidate universe returned no usable V3 pools")
@@ -684,19 +686,32 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.9.5", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.9.6.4.1", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
+
+    @app.middleware("http")
+    async def disable_browser_asset_cache(request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/")
     def index():
-        return FileResponse(static_dir / "index.html")
+        return FileResponse(
+            static_dir / "index.html",
+            headers={"Cache-Control":"no-store, no-cache, must-revalidate, max-age=0","Pragma":"no-cache","Expires":"0"},
+        )
 
     @app.get("/api/health")
     def health():
         return {
             "ok": True,
-            "version": "0.9.5",
+            "version": "0.9.6.4.1",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -1075,7 +1090,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     @app.post("/api/wallet/refresh")
     def wallet_refresh():
-        try: return live.refresh_wallet(include_health=True)
+        # Wallet refresh is for balances/valuation. Full RPC health belongs to
+        # System diagnostics and doubled the RPC work on every manual refresh.
+        try: return live.refresh_wallet(include_health=False)
         except ImportError as exc: raise HTTPException(503,f"Wallet dependencies unavailable: {exc}") from exc
 
     @app.get("/api/live/rpc-health")
