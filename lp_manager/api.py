@@ -43,7 +43,7 @@ from .targets import performance_targets
 from .transaction_plan import ALLOWED_ACTIONS
 from .economics_engine import estimate_lp_economics
 from .market_regime import analyse_regime
-from .portfolio_advisor import rank_opportunities
+from .portfolio_advisor import rank_opportunities, bounded_advisor_calibration
 from .models import Decision
 from .historical_import import import_delta_pool_history
 from .closed_history import import_closed_position_finals
@@ -1346,8 +1346,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         candidates: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
 
-        # Start with persisted opportunities so the Advisor remains useful during
-        # provider throttling. Then refresh one top-pool page per chain in parallel.
+        # Persisted opportunities remain useful as research fallbacks, but they
+        # are never allowed to masquerade as fresh evidence. A candidate only
+        # becomes allocation-eligible after this Advisor run refreshes it live.
         raw: dict[tuple[str,str],dict[str,Any]]={}
         for op in store.list_opportunities(250):
             chain=str(op.get("chain") or "").upper()
@@ -1358,7 +1359,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             if not addr:
                 continue
             candidate["chain"]=chain
-            candidate.setdefault("market_data_status","PERSISTED")
+            candidate["persisted_market_data_status"]=candidate.get("market_data_status")
+            candidate["market_data_status"]="PERSISTED_CACHE"
+            candidate["market_evidence_status"]="PERSISTED_CACHE"
             raw[(chain,addr)]=candidate
 
         def _advisor_chain_page(chain: str):
@@ -1373,7 +1376,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     for row in rows:
                         addr=str(row.get("pool_address") or "").lower()
                         if addr:
+                            row["chain"]=chain
                             row["market_data_status"]="LIVE_TOP_PAGE"
+                            row["market_evidence_status"]="LIVE_CURRENT"
                             raw[(chain,addr)]=row
                 except Exception as exc:
                     errors.append({"chain":chain,"error":str(exc)[:180]})
@@ -1388,35 +1393,43 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 "CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
                 else "TACTICAL_CAMPAIGN"
             )
-            economics=estimate_lp_economics(
+            live_economics=estimate_lp_economics(
                 row,capital=1000.0,
                 active_time_pct=84.0 if sleeve=="CORE_INCOME" else 60.0,
                 width_pct=48.0 if sleeve=="CORE_INCOME" else 22.0,
                 regime={},
             )
+            calibration=fee_calibration_for_pool(store,row,sleeve=sleeve)
+            advisor_economics=bounded_advisor_calibration(live_economics,calibration)
             persisted_candidate={
                 **row,
-                "quick_economics":economics,
+                # Persist the uncalibrated current-market screen. Profit Lab has
+                # its own stronger calibration path and must not inherit an
+                # Advisor-only historical adjustment as if it were live market data.
+                "quick_economics":live_economics,
                 "quick_economics_context":{
                     "capital_usd":1000.0,
                     "active_time_pct":84.0 if sleeve=="CORE_INCOME" else 60.0,
                     "width_pct":48.0 if sleeve=="CORE_INCOME" else 22.0,
                     "source":"PORTFOLIO_ADVISOR_CANONICAL_SCREEN",
+                    "market_evidence_status":row.get("market_evidence_status") or "PERSISTED_CACHE",
                 },
             }
-            persisted_evaluation={**evaluation,"advisor_economics":economics,"advisor_sleeve":sleeve}
+            persisted_evaluation={**evaluation,"advisor_economics":live_economics,"advisor_sleeve":sleeve}
             try:
                 store.upsert_opportunity(candidate=persisted_candidate,evaluation=persisted_evaluation,status="WATCH")
             except Exception:
                 pass
             per_chain.setdefault(chain,[]).append({
-                **persisted_candidate,"evaluation":persisted_evaluation,"sleeve":sleeve,"economics":economics,
+                **persisted_candidate,"evaluation":persisted_evaluation,"sleeve":sleeve,"economics":advisor_economics,
+                "advisor_calibration":advisor_economics.get("advisor_calibration") or {},
                 "regime":{"confidence":50,"label":"QUICK_ADVISOR_SCREEN"},
             })
 
         for chain,rows in per_chain.items():
             rows.sort(
                 key=lambda r:(
+                    1 if str(r.get("market_evidence_status") or "").upper()=="LIVE_CURRENT" else 0,
                     max(float((r.get("evaluation") or {}).get("core_pre_score") or 0),float((r.get("evaluation") or {}).get("tactical_pre_score") or 0)),
                     float(r.get("tvl_usd") or 0),
                 ),
@@ -1429,6 +1442,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             reserve_pct=max(0.0,min(90.0,intent.reserve_pct)),
             max_positions=max(1,min(8,intent.max_positions)),
             sleeve_filter=intent.sleeve_filter, allocation_mode=intent.allocation_mode,
+            open_positions=_visible_positions("OPEN"),
         )
         result["scan_errors"] = errors
         result["candidate_count"] = len(candidates)
@@ -1444,9 +1458,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     position_id=None,created_at=time.time(),severity="INFO",action="PORTFOLIO_ALLOCATION_RECOMMENDATION",
                     confidence=min(0.95,max(0.50,float(top.get("score") or 0)/100.0)),
                     summary=f"Portfolio Advisor currently ranks {top.get('pair')} first",
-                    rationale=f"Cross-chain comparison allocated {top.get('amount')} of {intent.available_capital} available capital to the strongest risk-adjusted candidate; reserve and tactical ceilings were preserved.",
+                    rationale=f"Cross-chain comparison recommends an incremental {top.get('amount')} from {intent.available_capital} available capital after accounting for existing open LP exposure; reserve and concentration ceilings were preserved.",
                     trigger="PORTFOLIO_ADVISOR",source="PORTFOLIO_ADVISOR",
-                    evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"expected_net_month":top.get("expected_net_month")},
+                    evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"expected_net_month":top.get("expected_net_month"),"existing_pool_value":(top.get("existing_exposure") or {}).get("pool_value"),"post_pool_pct":(top.get("post_allocation") or {}).get("pool_pct")},
                 ))
             except Exception:
                 pass
