@@ -536,6 +536,108 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             row={**row,"historical_current":ctx}
         return row
 
+    _UNIVERSE_FRESH_SECONDS = 180.0
+
+    def _shared_universe_snapshot(chain: str, *, force_refresh: bool = False) -> tuple[dict[str,Any],str,list[str]]:
+        """One candidate source for Scout and Advisor, with short-lived cache reuse.
+
+        Reusing a universe built in the last few minutes is deliberate: it avoids
+        six parallel GeckoTerminal requests every time the Advisor button is
+        clicked while still refusing old/stale evidence for capital allocation.
+        """
+        key=str(chain or "").upper()
+        prior=candidate_universe.cached(key)
+        if not force_refresh:
+            fresh=candidate_universe.fresh_cached(key,max_age_seconds=_UNIVERSE_FRESH_SECONDS)
+            if fresh:
+                return fresh,"FRESH_CACHE",[]
+        try:
+            snap=candidate_universe.refresh(key,graph_limit=500,shortlist_limit=40,validate_limit=20)
+            if snap.get("ok"):
+                return snap,"REFRESH",list(snap.get("targeted_validation_errors") or [])
+            error=str(snap.get("error") or "candidate universe returned no usable V3 pools")
+        except Exception as exc:
+            snap={}
+            error=str(exc)[:300]
+        # A stale universe may still be useful to *show* what was recently known,
+        # but its rows are marked NOT_REFRESHED downstream and cannot allocate.
+        if isinstance(prior,dict) and prior.get("ok"):
+            try:
+                store.set_setting(f"candidate_universe:{key}",{k:v for k,v in prior.items() if k not in {"cached","fresh_cache","cache_age_seconds"}})
+            except Exception:
+                pass
+            return prior,"STALE_CACHE",[error]
+        return snap or {"ok":False,"chain":key,"shortlist":[],"summary":{},"providers":[]},"FAILED",[error]
+
+    def _enrich_universe_rows(chain: str, snap: dict[str,Any], *, fresh: bool) -> list[dict[str,Any]]:
+        out=[]
+        valid_states={"CROSS_VALIDATED","LIVE_VALIDATED","TVL_MISMATCH"}
+        for original in snap.get("shortlist") or []:
+            row=dict(original)
+            if str(row.get("protocol") or "").upper()!="UNISWAP_V3":
+                continue
+            row["chain"]=str(chain).upper()
+            validation=str(row.get("economic_validation") or "").upper()
+            row["market_evidence_status"]="LIVE_CURRENT" if fresh and validation in valid_states else "NOT_REFRESHED"
+            row["market_data_status"]="SHARED_CANDIDATE_UNIVERSE" if fresh else "STALE_UNIVERSE_CACHE"
+            evaluation=preliminary_pool_evaluation(row)
+            preferred=evaluation.get("preferred_sleeve") or (
+                "CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
+                else "TACTICAL_CAMPAIGN"
+            )
+            quick=estimate_lp_economics(
+                row,capital=1000.0,
+                active_time_pct=82.0 if preferred=="CORE_INCOME" else 58.0,
+                width_pct=50.0 if preferred=="CORE_INCOME" else 22.0,regime={},
+            )
+            enriched={**row,"evaluation":evaluation,"sleeve":preferred,"quick_economics":quick}
+            out.append(enriched)
+            if fresh:
+                try:
+                    store.upsert_opportunity(candidate=row,evaluation={**evaluation,"quick_economics":quick},status="CANDIDATE" if evaluation.get("preferred_sleeve") else "WATCH")
+                except Exception:
+                    pass
+        return out
+
+    def _fair_chain_candidates(rows: list[dict[str,Any]], limit: int = 8) -> list[dict[str,Any]]:
+        """Preserve several independent reasons for entering the global ranking.
+
+        A single Core-score sort can hide strong Tactical, volume or operating
+        return candidates. Take leaders from each dimension, then fill remaining
+        slots with the broad strategy score.
+        """
+        limit=max(1,min(20,int(limit)))
+        selected: dict[str,dict[str,Any]]={}
+        criteria=[
+            lambda r: float(r.get("tvl_usd") or 0),
+            lambda r: float(r.get("volume_24h_usd") or 0),
+            lambda r: float((r.get("evaluation") or {}).get("core_pre_score") or 0),
+            lambda r: float((r.get("evaluation") or {}).get("tactical_pre_score") or 0),
+            lambda r: float((r.get("quick_economics") or {}).get("estimated_operating_net_month_usd") or (r.get("quick_economics") or {}).get("estimated_net_month_usd") or 0),
+        ]
+        for criterion in criteria:
+            for row in sorted(rows,key=criterion,reverse=True)[:2]:
+                address=str(row.get("pool_address") or "").lower()
+                if address:
+                    selected.setdefault(address,row)
+                if len(selected)>=limit:
+                    return list(selected.values())[:limit]
+        if len(selected)<limit:
+            def fallback_score(r):
+                ev=r.get("evaluation") or {}; econ=r.get("quick_economics") or {}
+                return (
+                    max(float(ev.get("core_pre_score") or 0),float(ev.get("tactical_pre_score") or 0)),
+                    float(econ.get("estimated_operating_net_month_usd") or econ.get("estimated_net_month_usd") or 0),
+                    float(r.get("volume_24h_usd") or 0),
+                )
+            for row in sorted(rows,key=fallback_score,reverse=True):
+                address=str(row.get("pool_address") or "").lower()
+                if address:
+                    selected.setdefault(address,row)
+                if len(selected)>=limit:
+                    break
+        return list(selected.values())[:limit]
+
     def _discover_scout_pools(chain: str, *, max_pages: int = 2, wallet_token_limit: int = 6) -> tuple[list[dict[str,Any]], list[str]]:
         """Broader discovery than GeckoTerminal's single network top page.
 
@@ -1061,13 +1163,14 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(400,str(exc)) from exc
         except Exception as exc:
-            # The candidate universe is an isolated v0.9.6.2 proof surface.
-            # Provider trouble must not affect the existing live scout/advisor.
+            # Shared discovery may degrade, but downstream strategy still refuses
+            # stale/unvalidated rows for allocation.
             return {
                 "ok":False,
-                "mode":"READ_ONLY_CANDIDATE_UNIVERSE",
-                "feeds_strategy":False,
-                "feeds_portfolio_advisor":False,
+                "mode":"SHARED_CANDIDATE_UNIVERSE",
+                "feeds_strategy":True,
+                "feeds_scout":True,
+                "feeds_portfolio_advisor":True,
                 "chain":chain.upper(),
                 "error":str(exc)[:800],
                 "shortlist":[],
@@ -1078,51 +1181,31 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def live_scout(chain: str, limit: int = 20):
         if not live.market:
             raise HTTPException(503, "GeckoTerminal market data is disabled")
-        try:
-            rows, discovery_errors = _discover_scout_pools(chain.upper(), max_pages=2)
-            if not rows:
-                raise RuntimeError("No pools returned from top-page, wallet-token or known-pool discovery" + (f": {'; '.join(discovery_errors[:2])}" if discovery_errors else ""))
-            provider_status = "LIVE"
-            provider_error = "; ".join(discovery_errors[:3]) if discovery_errors else None
-        except Exception as exc:
-            # Market-data failure must not erase the operator's opportunity view.
-            # Fall back to the persistent opportunity book for this chain and mark
-            # it degraded/stale rather than turning the page into a 502.
-            cached=[]
-            for op in store.list_opportunities(100):
-                if str(op.get("chain") or "").upper() != chain.upper():
-                    continue
-                candidate=dict(op.get("candidate") or {})
-                evaluation=dict(op.get("evaluation") or {})
-                candidate["evaluation"] = evaluation
-                candidate["sleeve"] = evaluation.get("preferred_sleeve") or op.get("preferred_sleeve")
-                candidate["quick_economics"] = evaluation.get("quick_economics") or {}
-                candidate["market_data_status"] = "STALE_PERSISTED"
-                cached.append(candidate)
-            cached.sort(key=lambda r:max(float((r.get("evaluation") or {}).get("core_pre_score") or 0),float((r.get("evaluation") or {}).get("tactical_pre_score") or 0)),reverse=True)
-            return {"chain":chain.upper(),"count":len(cached[:max(1,min(100,limit))]),"pools":cached[:max(1,min(100,limit))],"provider_status":"DEGRADED","provider_error":str(exc)[:300],"stale":True}
-        out=[]
-        for row in rows:
-            if str(row.get("protocol") or "").upper() != "UNISWAP_V3":
-                continue
-            evaluation = preliminary_pool_evaluation(row)
-            preferred=evaluation.get("preferred_sleeve") or ("CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0) else "TACTICAL_CAMPAIGN")
-            quick=estimate_lp_economics(row,capital=1000.0,active_time_pct=82.0 if preferred=="CORE_INCOME" else 58.0,width_pct=50.0 if preferred=="CORE_INCOME" else 22.0,regime={})
-            enriched={**row,"evaluation":evaluation,"sleeve":preferred,"quick_economics":quick}
-            out.append(enriched)
-            try:
-                store.upsert_opportunity(candidate=row,evaluation={**evaluation,"quick_economics":quick},status="CANDIDATE" if evaluation.get("preferred_sleeve") else "WATCH")
-            except Exception:
-                pass
-        out.sort(key=lambda r: (float((r.get("evaluation") or {}).get("core_pre_score") or 0),float(r.get("tvl_usd") or 0)), reverse=True)
-        result=out[:max(1,min(100,limit))]
+        key=chain.upper()
+        snap,source,errors=_shared_universe_snapshot(key)
+        fresh=source in {"REFRESH","FRESH_CACHE"}
+        rows=_enrich_universe_rows(key,snap,fresh=fresh)
+        rows=_fair_chain_candidates(rows,max(20,min(100,limit)))
+        rows.sort(key=lambda r:(
+            str(r.get("market_evidence_status") or "")=="LIVE_CURRENT",
+            max(float((r.get("evaluation") or {}).get("core_pre_score") or 0),float((r.get("evaluation") or {}).get("tactical_pre_score") or 0)),
+            float(r.get("tvl_usd") or 0),
+        ),reverse=True)
+        result=rows[:max(1,min(100,limit))]
+        provider_status="LIVE" if fresh else "DEGRADED"
+        provider_error="; ".join(str(x) for x in errors[:3]) if errors else None
         if result:
             top=result[0]; hour=int(time.time()//3600)
             try:
-                store.add_decision(Decision(id=uuid.uuid5(uuid.NAMESPACE_URL,f"scout:{chain.upper()}:{top.get('pool_address')}:{hour}").hex,position_id=None,created_at=time.time(),severity="INFO",action="OPPORTUNITY_REVIEW",confidence=max(float((top.get("evaluation") or {}).get("core_pre_score") or 0),float((top.get("evaluation") or {}).get("tactical_pre_score") or 0))/100.0,summary=f"{top.get('pair')} currently leads the {chain.upper()} scout",rationale=f"Current pool quality, TVL and activity rank it highest in this scan; economics shown are estimates pending a full Profit Lab analysis.",trigger="SCOUT_REFRESH",source="SCOUT",evidence={"chain":chain.upper(),"pair":top.get("pair"),"pool":top.get("pool_address"),"sleeve":top.get("sleeve"),"est_month_per_1000":(top.get("quick_economics") or {}).get("estimated_operating_net_month_usd",(top.get("quick_economics") or {}).get("estimated_net_month_usd"))}))
+                store.add_decision(Decision(id=uuid.uuid5(uuid.NAMESPACE_URL,f"scout:{key}:{top.get('pool_address')}:{hour}").hex,position_id=None,created_at=time.time(),severity="INFO",action="OPPORTUNITY_REVIEW",confidence=max(float((top.get("evaluation") or {}).get("core_pre_score") or 0),float((top.get("evaluation") or {}).get("tactical_pre_score") or 0))/100.0,summary=f"{top.get('pair')} currently leads the {key} scout",rationale="The shared Candidate Universe supplied this pool; Scout then applied current strategy quality and economics. Profit Lab remains the execution-range authority.",trigger="SCOUT_REFRESH",source="SCOUT",evidence={"chain":key,"pair":top.get("pair"),"pool":top.get("pool_address"),"sleeve":top.get("sleeve"),"universe_source":source,"est_month_per_1000":(top.get("quick_economics") or {}).get("estimated_operating_net_month_usd",(top.get("quick_economics") or {}).get("estimated_net_month_usd"))}))
             except Exception:
                 pass
-        return {"chain": chain.upper(), "count": len(result), "pools": result, "provider_status":provider_status, "provider_error":provider_error, "stale":False}
+        return {
+            "chain":key,"count":len(result),"pools":result,
+            "provider_status":provider_status,"provider_error":provider_error,"stale":not fresh,
+            "data_source":"SHARED_CANDIDATE_UNIVERSE_V0964","universe_source":source,
+            "universe_summary":snap.get("summary") or {},"universe_providers":snap.get("providers") or [],
+        }
 
     @app.get("/api/scout/pools/{chain}/{address}")
     def live_pool_detail(chain: str, address: str):
@@ -1342,111 +1425,103 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def portfolio_advisor(intent: PortfolioAdvisorIntent):
         if not live.market:
             raise HTTPException(503, "Market data is disabled")
-        chains = [str(x).upper() for x in (intent.chains or ["ETHEREUM","BASE","ARBITRUM","OPTIMISM","ROBINHOOD_CHAIN"])][:6]
-        candidates: list[dict[str, Any]] = []
-        errors: list[dict[str, str]] = []
+        started=time.perf_counter()
+        default_chains=["ETHEREUM","BASE","ARBITRUM","OPTIMISM","POLYGON","ROBINHOOD_CHAIN"]
+        chains=list(dict.fromkeys(str(x).upper() for x in (intent.chains or default_chains)))[:6]
+        candidates: list[dict[str, Any]]=[]
+        errors: list[dict[str,str]]=[]
+        chain_diagnostics=[]
+        total_provider_requests=0
+        cache_hits=0
+        stale_fallbacks=0
+        rate_limits=0
+        timeouts=0
 
-        # Persisted opportunities remain useful as research fallbacks, but they
-        # are never allowed to masquerade as fresh evidence. A candidate only
-        # becomes allocation-eligible after this Advisor run refreshes it live.
-        raw: dict[tuple[str,str],dict[str,Any]]={}
-        for op in store.list_opportunities(250):
-            chain=str(op.get("chain") or "").upper()
-            if chain not in chains:
-                continue
-            candidate=dict(op.get("candidate") or {})
-            addr=str(candidate.get("pool_address") or op.get("pool_address") or "").lower()
-            if not addr:
-                continue
-            candidate["chain"]=chain
-            candidate["persisted_market_data_status"]=candidate.get("market_data_status")
-            candidate["market_data_status"]="PERSISTED_CACHE"
-            candidate["market_evidence_status"]="PERSISTED_CACHE"
-            raw[(chain,addr)]=candidate
-
-        def _advisor_chain_page(chain: str):
-            return chain, live.market.network_pools(chain,page=1)
-
-        with ThreadPoolExecutor(max_workers=min(5,max(1,len(chains)))) as pool:
-            futures={pool.submit(_advisor_chain_page,chain):chain for chain in chains}
-            for future in as_completed(futures):
-                chain=futures[future]
-                try:
-                    _chain,rows=future.result()
-                    for row in rows:
-                        addr=str(row.get("pool_address") or "").lower()
-                        if addr:
-                            row["chain"]=chain
-                            row["market_data_status"]="LIVE_TOP_PAGE"
-                            row["market_evidence_status"]="LIVE_CURRENT"
-                            raw[(chain,addr)]=row
-                except Exception as exc:
-                    errors.append({"chain":chain,"error":str(exc)[:180]})
-
-        per_chain: dict[str,list[dict[str,Any]]]={}
-        for row in raw.values():
-            if str(row.get("protocol") or "").upper()!="UNISWAP_V3":
-                continue
-            chain=str(row.get("chain") or "").upper()
-            evaluation=preliminary_pool_evaluation(row)
-            sleeve=evaluation.get("preferred_sleeve") or (
-                "CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
-                else "TACTICAL_CAMPAIGN"
-            )
-            live_economics=estimate_lp_economics(
-                row,capital=1000.0,
-                active_time_pct=84.0 if sleeve=="CORE_INCOME" else 60.0,
-                width_pct=48.0 if sleeve=="CORE_INCOME" else 22.0,
-                regime={},
-            )
-            calibration=fee_calibration_for_pool(store,row,sleeve=sleeve)
-            advisor_economics=bounded_advisor_calibration(live_economics,calibration)
-            persisted_candidate={
-                **row,
-                # Persist the uncalibrated current-market screen. Profit Lab has
-                # its own stronger calibration path and must not inherit an
-                # Advisor-only historical adjustment as if it were live market data.
-                "quick_economics":live_economics,
-                "quick_economics_context":{
-                    "capital_usd":1000.0,
-                    "active_time_pct":84.0 if sleeve=="CORE_INCOME" else 60.0,
-                    "width_pct":48.0 if sleeve=="CORE_INCOME" else 22.0,
-                    "source":"PORTFOLIO_ADVISOR_CANONICAL_SCREEN",
-                    "market_evidence_status":row.get("market_evidence_status") or "PERSISTED_CACHE",
-                },
-            }
-            persisted_evaluation={**evaluation,"advisor_economics":live_economics,"advisor_sleeve":sleeve}
-            try:
-                store.upsert_opportunity(candidate=persisted_candidate,evaluation=persisted_evaluation,status="WATCH")
-            except Exception:
-                pass
-            per_chain.setdefault(chain,[]).append({
-                **persisted_candidate,"evaluation":persisted_evaluation,"sleeve":sleeve,"economics":advisor_economics,
-                "advisor_calibration":advisor_economics.get("advisor_calibration") or {},
-                "regime":{"confidence":50,"label":"QUICK_ADVISOR_SCREEN"},
+        # Deliberately scan through the shared Candidate Universe rather than a
+        # separate one-page Advisor query. Runs are sequential so the shared
+        # GeckoTerminal budget/cooldown is respected across all six chains.
+        for chain in chains:
+            chain_started=time.perf_counter()
+            snap,source,chain_errors=_shared_universe_snapshot(chain)
+            fresh=source in {"REFRESH","FRESH_CACHE"}
+            if source=="FRESH_CACHE": cache_hits+=1
+            if source=="STALE_CACHE": stale_fallbacks+=1
+            for err in chain_errors:
+                msg=str(err)
+                errors.append({"chain":chain,"error":msg[:180]})
+                low=msg.lower()
+                if "429" in low or "rate limit" in low: rate_limits+=1
+                if "timeout" in low or "timed out" in low: timeouts+=1
+            providers=snap.get("providers") or []
+            provider_requests=sum(int(float(x.get("requests") or 0)) for x in providers)
+            targeted=int(float((snap.get("summary") or {}).get("targeted_live_requests") or 0))
+            total_provider_requests+=provider_requests+targeted
+            enriched=_enrich_universe_rows(chain,snap,fresh=fresh)
+            selected=_fair_chain_candidates(enriched,8)
+            for row in selected:
+                evaluation=row.get("evaluation") or preliminary_pool_evaluation(row)
+                sleeve=row.get("sleeve") or evaluation.get("preferred_sleeve") or (
+                    "CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
+                    else "TACTICAL_CAMPAIGN"
+                )
+                live_economics=dict(row.get("quick_economics") or {})
+                if not live_economics:
+                    live_economics=estimate_lp_economics(
+                        row,capital=1000.0,active_time_pct=84.0 if sleeve=="CORE_INCOME" else 60.0,
+                        width_pct=48.0 if sleeve=="CORE_INCOME" else 22.0,regime={},
+                    )
+                calibration=fee_calibration_for_pool(store,row,sleeve=sleeve)
+                advisor_economics=bounded_advisor_calibration(live_economics,calibration)
+                candidates.append({
+                    **row,"evaluation":evaluation,"sleeve":sleeve,"economics":advisor_economics,
+                    "advisor_calibration":advisor_economics.get("advisor_calibration") or {},
+                    "regime":{"confidence":50,"label":"QUICK_ADVISOR_SCREEN"},
+                })
+            summary=snap.get("summary") or {}
+            chain_diagnostics.append({
+                "chain":chain,"source":source,"fresh":fresh,
+                "v3_discovered":int(float(summary.get("v3_discovered") or 0)),
+                "shortlisted":int(float(summary.get("shortlisted") or 0)),
+                "live_validated":int(float(summary.get("live_validated") or 0)),
+                "research_ready":int(float(summary.get("research_ready") or 0)),
+                "strategy_selected":len(selected),
+                "provider_requests":provider_requests+targeted,
+                "cache_used":source in {"FRESH_CACHE","STALE_CACHE"},
+                "cache_age_seconds":round(max(0.0,time.time()-float(snap.get("generated_at") or time.time())),1) if source in {"FRESH_CACHE","STALE_CACHE"} else 0.0,
+                "elapsed_ms":round((time.perf_counter()-chain_started)*1000,1),
+                "provider_statuses":{str(x.get("provider") or "UNKNOWN"):str(x.get("status") or "UNKNOWN") for x in providers},
             })
 
-        for chain,rows in per_chain.items():
-            rows.sort(
-                key=lambda r:(
-                    1 if str(r.get("market_evidence_status") or "").upper()=="LIVE_CURRENT" else 0,
-                    max(float((r.get("evaluation") or {}).get("core_pre_score") or 0),float((r.get("evaluation") or {}).get("tactical_pre_score") or 0)),
-                    float(r.get("tvl_usd") or 0),
-                ),
-                reverse=True,
-            )
-            candidates.extend(rows[:6])
-
         result=rank_opportunities(
-            candidates, available_capital=max(0.0,_display_capital_to_usd(intent.available_capital)),
+            candidates,available_capital=max(0.0,_display_capital_to_usd(intent.available_capital)),
             reserve_pct=max(0.0,min(90.0,intent.reserve_pct)),
             max_positions=max(1,min(8,intent.max_positions)),
-            sleeve_filter=intent.sleeve_filter, allocation_mode=intent.allocation_mode,
+            sleeve_filter=intent.sleeve_filter,allocation_mode=intent.allocation_mode,
             open_positions=_visible_positions("OPEN"),
         )
-        result["scan_errors"] = errors
-        result["candidate_count"] = len(candidates)
-        result["data_source"]="PERSISTED_PLUS_PARALLEL_TOP_PAGES"
+        candidate_chains=sorted({str(x.get("chain") or "") for x in candidates if x.get("chain")})
+        allocated_chains=sorted({str(x.get("chain") or "") for x in result.get("allocations") or [] if x.get("chain")})
+        result["scan_errors"]=errors
+        result["candidate_count"]=len(candidates)
+        result["data_source"]="SHARED_CANDIDATE_UNIVERSE_V0964"
+        result["universe_diagnostics"]={
+            "chains":chain_diagnostics,
+            "summary":{
+                "chains_requested":len(chains),
+                "chains_with_candidates":len(candidate_chains),
+                "fresh_chains":sum(1 for x in chain_diagnostics if x.get("fresh")),
+                "fresh_cache_hits":cache_hits,
+                "stale_cache_fallbacks":stale_fallbacks,
+                "provider_requests":total_provider_requests,
+                "rate_limit_events":rate_limits,
+                "timeout_events":timeouts,
+                "ranking_candidates":len(candidates),
+                "ranking_chains":len(candidate_chains),
+                "allocation_chains":len(allocated_chains),
+                "unique_pairs":len({str(x.get("pair") or "") for x in candidates if x.get("pair")}),
+                "elapsed_ms":round((time.perf_counter()-started)*1000,1),
+            },
+        }
         result["ai_advice"]=None
         result["ai_advice_status"]="ON_DEMAND_NOT_IN_CRITICAL_PATH"
         if result.get("allocations"):
@@ -1458,9 +1533,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     position_id=None,created_at=time.time(),severity="INFO",action="PORTFOLIO_ALLOCATION_RECOMMENDATION",
                     confidence=min(0.95,max(0.50,float(top.get("score") or 0)/100.0)),
                     summary=f"Portfolio Advisor currently ranks {top.get('pair')} first",
-                    rationale=f"Cross-chain comparison recommends an incremental {top.get('amount')} from {intent.available_capital} available capital after accounting for existing open LP exposure; reserve and concentration ceilings were preserved.",
+                    rationale=f"Shared cross-chain Candidate Universe recommends an incremental {top.get('amount')} from {intent.available_capital} new capital; existing exposure, reserve and concentration ceilings were preserved.",
                     trigger="PORTFOLIO_ADVISOR",source="PORTFOLIO_ADVISOR",
-                    evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"expected_net_month":top.get("expected_net_month"),"existing_pool_value":(top.get("existing_exposure") or {}).get("pool_value"),"post_pool_pct":(top.get("post_allocation") or {}).get("pool_pct")},
+                    evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"expected_net_month":top.get("expected_net_month"),"existing_pool_value":(top.get("existing_exposure") or {}).get("pool_value"),"post_pool_pct":(top.get("post_allocation") or {}).get("pool_pct"),"candidate_source":"SHARED_CANDIDATE_UNIVERSE_V0964"},
                 ))
             except Exception:
                 pass
