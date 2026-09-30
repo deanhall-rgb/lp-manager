@@ -302,3 +302,16 @@ This patch is deliberately narrow. Candidate Universe remains read-only and is *
 - Fresh candidates are selected ahead of stale persisted rows before each chain is capped for comparison, preventing old high-score cache entries from crowding current evidence out of the ranking set.
 - Owned/historical fee evidence can only calibrate Advisor economics when mature **exact-pool** samples exist. The Advisor-only adjustment is capped to **0.90x–1.10x** and does not alter the canonical current-market economics persisted for Profit Lab.
 - Browser-wallet signing, broadcasting, Profit Lab, Candidate Universe and execution safety boundaries are unchanged.
+## v0.9.6.4 cross-chain fairness + soak patch
+
+This patch completes the v0.9.6 discovery/ranking integration without changing Profit Lab or execution signing boundaries.
+
+- Candidate Universe is promoted from an isolated proof surface to the **shared discovery source** used by both Live Scout and Portfolio Advisor. Discovery score still only controls the cheap shortlist; it does not become the Advisor score.
+- Portfolio Advisor no longer runs its own one-page `network_pools(page=1)` mini-scan. It consumes the same broad Graph + DEX Screener + limited GeckoTerminal Candidate Universe that Scout sees.
+- Advisor default coverage is now **Ethereum, Base, Arbitrum, Optimism, Polygon and Robinhood Chain**. Polygon is no longer omitted from the default cross-chain comparison.
+- Cross-chain refreshes are deliberately sequential and a successful Candidate Universe can be reused for 180 seconds. This reduces repeat GeckoTerminal pressure and makes immediate re-runs useful soak/cache tests instead of duplicating provider calls.
+- A stale Candidate Universe may still be displayed as degraded research evidence, but its rows are marked `NOT_REFRESHED` and cannot receive capital. Fresh-cache reuse inside the 180-second window remains allocation-eligible.
+- Each chain contributes candidates through several independent lenses — TVL, 24-hour volume, Core pre-score, Tactical pre-score and estimated operating return — before the global Portfolio Advisor ranking. This avoids a single Core-score sort silently determining cross-chain representation.
+- Portfolio Advisor returns `universe_diagnostics` covering per-chain discovered/shortlisted/live-validated/research-ready counts, provider request counts, cache reuse, rate-limit/timeout events, scan duration and ranking/allocation diversity. The Opportunities UI shows a compact summary so repeated soak runs can be checked without reading logs.
+- The v0.9.6.3 new-capital semantics remain unchanged: entered Capital is new money, reserve is deducted from that new money, existing LPs provide concentration context, and stale evidence cannot allocate.
+- Profit Lab remains the on-demand range/history authority. Execution Desk remains build/simulate only until the browser wallet explicitly signs.
