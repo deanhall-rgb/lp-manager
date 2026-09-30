@@ -63,7 +63,7 @@ def test_v0964_advisor_defaults_include_all_six_supported_chains_and_shared_univ
     api = (root / "lp_manager" / "api.py").read_text(encoding="utf-8")
 
     assert 'default_chains=["ETHEREUM","BASE","ARBITRUM","OPTIMISM","POLYGON","ROBINHOOD_CHAIN"]' in api
-    assert 'data_source"]="SHARED_CANDIDATE_UNIVERSE_V0964"' in api
+    assert 'result["data_source"]="SHARED_CANDIDATE_UNIVERSE_V0964"' in api
     assert "_shared_universe_snapshot" in api
     assert "_fair_chain_candidates" in api
     assert 'live.market.network_pools(chain,page=1)' not in api
