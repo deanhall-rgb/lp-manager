@@ -341,4 +341,17 @@ This hotfix fixes the Profit Lab regression exposed during the v0.9.6.4.1 live s
 - **USDT0 is treated as a USD stablecoin** in both Profit Lab history selection and on-chain pool reconstruction. WPOL/USDT0 can therefore use the normal stable-quoted history fallback rather than being incorrectly rejected as a volatile/volatile pair.
 - The existing stale-result safety remains: a previously validated Profit Lab recommendation may be displayed during a provider outage, but fresh calculations are never fabricated from missing history.
 - v0.9.7 remains the planned larger cleanup for protocol-aware V3/V4 position discovery, global provider scheduling/request coalescing, deeper history architecture and the Opportunities UI redesign.
+## v0.9.7.1 foundation cleanup
 
+This patch starts the v0.9.7 programme by cleaning the shared data contract and duplicated policy definitions before the background provider coordinator, persistent leaderboard universe and scoring engine are added.
+
+- Added one canonical product metadata source for the application version, display version, release label and HTTP user-agent. API health, overview metadata, support bundles and provider clients now use that shared identity instead of carrying unrelated old release strings.
+- Added a canonical **opportunity schema v1.0**. Opportunity records now carry a stable cross-chain identity, explicit protocol/version, normalised token symbols, analysis state and market/analysis freshness metadata while preserving all existing v0.9.6 fields for compatibility.
+- The opportunity data model explicitly understands **Uniswap V3 and Uniswap V4** from day one. V4 discovery/execution is not enabled by this patch; the schema is being made V4-safe now so later V4 work does not require another data-model rewrite.
+- DEX Screener, The Graph and GeckoTerminal pool normalisation now emit the same canonical opportunity shape before Candidate Universe, Scout or Advisor consume it.
+- Centralised stablecoin, ETH/BTC major and network-major symbol policy in one asset registry. USDT0 is therefore consistently recognised across pool-price orientation, Profit Lab history, Strategy Lab, fee-tier assumptions and display rules.
+- Core-pair behaviour is deliberately unchanged: ETH/BTC majors and stablecoins retain the existing Core inventory semantics; network tokens such as WPOL/ARB are not silently promoted to Core merely because they are recognised as major display assets.
+- Candidate Universe now adds the canonical opportunity identity/freshness contract without changing its V3-only production filter, discovery score, shortlist policy or provider budgets.
+- Removed internal patch-history wording from the everyday UI. The sidebar now displays only the current application version at runtime; Opportunities, Provider diagnostics and Candidate Universe use stable product names rather than old patch numbers.
+- Internal shared-discovery source names are now versionless (SHARED_CANDIDATE_UNIVERSE) so persisted evidence does not encode a temporary implementation release into its semantic source.
+- Advisor ranking, Portfolio Advisor allocation semantics, Profit Lab range/economic maths, wallet/position refresh behaviour and Execution Desk signing boundaries are intentionally unchanged in v0.9.7.1.
