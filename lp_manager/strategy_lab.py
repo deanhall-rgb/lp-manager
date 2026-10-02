@@ -86,7 +86,7 @@ def _pool_from_onchain(chain: str, address: str, onchain: dict[str, Any], fallba
         "price_unit":lens.get("unit"),"price_unit_label":unit_label,
     }
     # When the quote is USD-pegged, the pool ratio is also a usable USD spot mark.
-    if str(quote_sym).upper() in {"USDC","USDT","USDG","DAI","USDS","USDBC","FRAX","GHO"} and current>0:
+    if str(quote_sym).upper() in {"USDC","USDT","USDT0","USDG","DAI","USDS","USDBC","FRAX","GHO"} and current>0:
         result.setdefault("base_token_price_usd",current)
         result.setdefault("quote_token_price_usd",1.0)
     return result
