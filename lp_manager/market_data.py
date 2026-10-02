@@ -8,6 +8,8 @@ from typing import Any
 import requests
 
 from .chain_registry import chain_config
+from .opportunity_model import canonical_opportunity
+from .product import APP_USER_AGENT
 
 
 class MarketDataError(RuntimeError):
@@ -19,7 +21,7 @@ class GeckoTerminalClient:
 
     def __init__(self, session: requests.Session | None = None):
         self.session = session or requests.Session()
-        self.session.headers.update({"Accept": "application/json;version=20230203", "User-Agent": "LP-Manager/0.8.9"})
+        self.session.headers.update({"Accept": "application/json;version=20230203", "User-Agent": APP_USER_AGENT})
         self._cache: dict[str, tuple[float, dict]] = {}
         self._last_request_at = 0.0
         self._blocked_until = 0.0
@@ -109,7 +111,7 @@ class GeckoTerminalClient:
         quote = included.get(str(quote_id), {})
         vols = attrs.get("volume_usd") or {}
         txs = attrs.get("transactions") or {}
-        return {
+        out={
             "id": row.get("id"),
             "chain": chain_key,
             "protocol": "UNISWAP_V3" if "uniswap" in str(dex_id or "").lower() and "v3" in str(dex_id or "").lower() else str(dex_id or "DEX").upper(),
@@ -133,6 +135,7 @@ class GeckoTerminalClient:
             "source": "GECKOTERMINAL",
             "source_updated_at": time.time(),
         }
+        return canonical_opportunity(out,analysis_status="DISCOVERED")
 
 
 
@@ -162,7 +165,7 @@ class GeckoTerminalClient:
                     f"https://api.g.alchemy.com/prices/v1/{api_key}/tokens/by-address",
                     json={"addresses":[{"network":network,"address":a} for a in batch]},
                     timeout=15,
-                    headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"LP-Manager/0.8.5"},
+                    headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":APP_USER_AGENT},
                 )
                 r.raise_for_status(); payload=r.json()
                 for row in payload.get("data") or []:
@@ -197,10 +200,10 @@ class GeckoTerminalClient:
         body={**identity,"startTime":start.isoformat().replace("+00:00","Z"),"endTime":end.isoformat().replace("+00:00","Z"),"interval":interval,"withMarketData":True}
         url=f"https://api.g.alchemy.com/prices/v1/{api_key}/tokens/historical"
         try:
-            r=self.session.post(url,json=body,timeout=20,headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"LP-Manager/0.8.5"})
+            r=self.session.post(url,json=body,timeout=20,headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":APP_USER_AGENT})
             if r.status_code==404 and symbol and "symbol" not in identity:
                 body={"symbol":symbol,"startTime":body["startTime"],"endTime":body["endTime"],"interval":interval,"withMarketData":True}
-                r=self.session.post(url,json=body,timeout=20,headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"LP-Manager/0.8.5"})
+                r=self.session.post(url,json=body,timeout=20,headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":APP_USER_AGENT})
             r.raise_for_status(); payload=r.json()
         except Exception:
             return []
