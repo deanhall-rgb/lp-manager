@@ -22,9 +22,9 @@ def test_browser_assets_are_cache_busted_and_no_store():
 
     assert "disable_browser_asset_cache" in api
     assert "no-store, no-cache, must-revalidate, max-age=0" in api
-    assert "/static/styles.css?v=0.9.6.4.2" in html
-    assert "/static/app.js?v=0.9.6.4.2" in html
-    assert "v0.9.6.4.2 · Profit Lab stability" in html
+    assert "/static/styles.css?v=0.9.7.1" in html
+    assert "/static/app.js?v=0.9.7.1" in html
+    assert 'id="app-version-label"' in html
 
 
 def test_wallet_refresh_skips_duplicate_full_rpc_health_pass():
