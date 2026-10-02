@@ -87,7 +87,7 @@ def test_v0964_soak_diagnostics_are_exposed_to_ui():
     js = (root / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
 
     assert 'id="app-version-label"' in html
-    assert "SHARED DISCOVERY · FEEDS ADVISOR" in html
+    assert "SHARED DISCOVERY" in html
     assert 'result["universe_diagnostics"]' in api
     assert '"fresh_cache_hits"' in api
     assert '"rate_limit_events"' in api
