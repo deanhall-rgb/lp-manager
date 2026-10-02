@@ -596,10 +596,91 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             out.append(enriched)
             if fresh:
                 try:
-                    store.upsert_opportunity(candidate=row,evaluation={**evaluation,"quick_economics":quick},status="CANDIDATE" if evaluation.get("preferred_sleeve") else "WATCH")
+                    # Persist the same enriched current context that Scout/Advisor
+                    # are using so Profit Lab does not immediately re-fetch the
+                    # exact pool from GeckoTerminal.
+                    store.upsert_opportunity(
+                        candidate=enriched,
+                        evaluation={**evaluation,"quick_economics":quick},
+                        status="CANDIDATE" if evaluation.get("preferred_sleeve") else "WATCH",
+                    )
                 except Exception:
                     pass
         return out
+
+    def _profit_pool_fallback(chain: str, address: str) -> dict[str,Any] | None:
+        """Reuse already-known current pool context before asking market providers.
+
+        v0.9.6.4 unified discovery for Scout/Advisor but Profit Lab still looked
+        only at the older opportunity shape. That made a Profit Plan click spend a
+        redundant Gecko exact-pool request immediately after discovery had already
+        identified the pool.
+        """
+        key=str(chain or "").upper()
+        addr=str(address or "").lower()
+
+        for op in store.list_opportunities(500):
+            candidate=dict(op.get("candidate") or {})
+            op_chain=str(candidate.get("chain") or op.get("chain") or "").upper()
+            op_addr=str(candidate.get("pool_address") or op.get("pool_address") or "").lower()
+            if op_chain!=key or op_addr!=addr:
+                continue
+            evaluation=dict(op.get("evaluation") or {})
+            quick=(
+                candidate.get("quick_economics")
+                or evaluation.get("advisor_economics")
+                or evaluation.get("quick_economics")
+            )
+            if quick:
+                candidate["quick_economics"]=quick
+            if candidate.get("quick_economics") and not candidate.get("quick_economics_context"):
+                advisor_sleeve=str(
+                    candidate.get("sleeve")
+                    or evaluation.get("advisor_sleeve")
+                    or evaluation.get("preferred_sleeve")
+                    or "TACTICAL_CAMPAIGN"
+                ).upper()
+                candidate["quick_economics_context"]={
+                    "capital_usd":1000.0,
+                    "active_time_pct":84.0 if advisor_sleeve=="CORE_INCOME" else 60.0,
+                    "width_pct":48.0 if advisor_sleeve=="CORE_INCOME" else 22.0,
+                    "source":"SHARED_UNIVERSE_PERSISTED_OPPORTUNITY",
+                }
+            candidate["profit_pool_context_source"]="PERSISTED_OPPORTUNITY"
+            return candidate
+
+        # A manual Candidate Universe build may precede any Scout/Advisor render,
+        # so use the cached shortlist directly as a second deterministic source.
+        snap=candidate_universe.cached(key)
+        for original in snap.get("shortlist") or []:
+            if str(original.get("pool_address") or "").lower()!=addr:
+                continue
+            candidate=dict(original)
+            evaluation=preliminary_pool_evaluation(candidate)
+            preferred=evaluation.get("preferred_sleeve") or (
+                "CORE_INCOME"
+                if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
+                else "TACTICAL_CAMPAIGN"
+            )
+            quick=estimate_lp_economics(
+                candidate,capital=1000.0,
+                active_time_pct=84.0 if preferred=="CORE_INCOME" else 60.0,
+                width_pct=48.0 if preferred=="CORE_INCOME" else 22.0,regime={},
+            )
+            candidate.update({
+                "evaluation":evaluation,
+                "sleeve":preferred,
+                "quick_economics":quick,
+                "quick_economics_context":{
+                    "capital_usd":1000.0,
+                    "active_time_pct":84.0 if preferred=="CORE_INCOME" else 60.0,
+                    "width_pct":48.0 if preferred=="CORE_INCOME" else 22.0,
+                    "source":"SHARED_CANDIDATE_UNIVERSE_CACHE",
+                },
+                "profit_pool_context_source":"SHARED_CANDIDATE_UNIVERSE_CACHE",
+            })
+            return candidate
+        return None
 
     def _fair_chain_candidates(rows: list[dict[str,Any]], limit: int = 8) -> list[dict[str,Any]]:
         """Preserve several independent reasons for entering the global ranking.
@@ -686,7 +767,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.9.6.4.1", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version="0.9.6.4.2", lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
 
     @app.middleware("http")
@@ -711,7 +792,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.9.6.4.1",
+            "version": "0.9.6.4.2",
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -934,26 +1015,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             f"profit:last:v09:v093:{chain}:{address}:{round(horizon,3)}:{sleeve}:"
             f"{round(capital_usd,2)}:{round(target,2)}:{intent.campaign_id or 'NO_CAMPAIGN'}:{thesis_version}"
         )
-        pool_fallback=None
-        for op in store.list_opportunities(500):
-            candidate=dict(op.get("candidate") or {})
-            if str(candidate.get("pool_address") or "").lower()==address and str(candidate.get("chain") or op.get("chain") or "").upper()==chain:
-                pool_fallback=candidate
-                # Advisor quick economics is part of the canonical persisted
-                # opportunity evidence used by Profit Lab if public volume later
-                # disappears from the provider response.
-                evaluation=dict(op.get("evaluation") or {})
-                if evaluation.get("advisor_economics") and not pool_fallback.get("quick_economics"):
-                    pool_fallback["quick_economics"]=evaluation.get("advisor_economics")
-                if pool_fallback.get("quick_economics") and not pool_fallback.get("quick_economics_context"):
-                    advisor_sleeve=str(evaluation.get("advisor_sleeve") or sleeve or "TACTICAL_CAMPAIGN").upper()
-                    pool_fallback["quick_economics_context"]={
-                        "capital_usd":1000.0,
-                        "active_time_pct":84.0 if advisor_sleeve=="CORE_INCOME" else 60.0,
-                        "width_pct":48.0 if advisor_sleeve=="CORE_INCOME" else 22.0,
-                        "source":"PORTFOLIO_ADVISOR_PERSISTED_EVIDENCE",
-                    }
-                break
+        pool_fallback=_profit_pool_fallback(chain,address)
 
         with profit_request_lock:
             recent=store.get_setting(cache_key,None)
