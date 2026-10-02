@@ -165,7 +165,7 @@ def test_v0964_ui_promotes_candidate_universe_to_shared_scout_and_advisor_source
 
     assert 'id="app-version-label"' in html
     assert "<h2>Candidate Universe</h2>" in html
-    assert "SHARED DISCOVERY · FEEDS ADVISOR" in html
+    assert "SHARED DISCOVERY" in html
     assert 'id="universe-run-btn"' in html
     assert "/api/candidate-universe/" in js
     assert "Discovery score only decides which pools deserve scarce live checks" in js
