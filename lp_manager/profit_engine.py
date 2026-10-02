@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from .asset_lens import pool_price_lens
+from .asset_registry import STABLE_SYMBOLS, RISK_MAJOR_SYMBOLS
 from .economics_engine import estimate_lp_economics, infer_fee_tier_bps, volume_quality
 from .market_regime import analyse_regime
 from .pool_chain import read_v3_pool_metadata, discover_v3_pair_fee_tiers, read_v3_observation_history
@@ -227,7 +228,7 @@ def _boundary_inventory_outcomes(
 ) -> dict[str, Any]:
     base=str((pool.get("base_token") or {}).get("symbol") or "BASE").upper()
     quote=str((pool.get("quote_token") or {}).get("symbol") or "QUOTE").upper()
-    stables={"USDC","USDT","USDG","DAI","USDS","USDBC","FRAX","GHO","LUSD"}
+    stables=STABLE_SYMBOLS
     majors={"WETH","ETH","WBTC","BTC"}
     bullish=str(regime.get("direction") or "").upper()=="BULLISH" or _f(regime.get("score"),50)>55
     below_utility=55.0
@@ -422,7 +423,7 @@ def _load_pool_and_history(
     quote_symbol = base_symbol = ""
     if " per " in unit_label:
         quote_symbol, base_symbol = [x.strip().upper() for x in unit_label.split(" per ", 1)]
-    stable_symbols = {"USDC","USDT","USDT0","USDG","DAI","USDS","USDBC","FRAX","GHO","LUSD"}
+    stable_symbols = STABLE_SYMBOLS
 
     # For stable-quoted pools, fetch the human base token's USD OHLC. WETH/USDG
     # then uses WETH USD history, not USDG's ~$1 history.
@@ -473,7 +474,7 @@ def _load_pool_and_history(
 
     # A wrapped major on a new chain can have sparse/wrong address-specific price
     # history while the global WETH/ETH market history is sound.
-    if not candles and quote_symbol in stable_symbols and base_symbol in {"WETH","ETH","WBTC","BTC"} and hasattr(market,"alchemy_symbol_history"):
+    if not candles and quote_symbol in stable_symbols and base_symbol in RISK_MAJOR_SYMBOLS and hasattr(market,"alchemy_symbol_history"):
         try:
             points=market.alchemy_symbol_history(base_symbol,history_days,timeframe=timeframe)
             symbol_history=[
