@@ -82,6 +82,7 @@ from .capital_ledger import (
 )
 from .discovery_lab import DiscoveryLab
 from .candidate_universe import CandidateUniverse
+from .product import APP_VERSION, app_metadata
 
 
 class ScoutIntent(BaseModel):
@@ -767,7 +768,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         finally:
             live.stop_background()
 
-    app = FastAPI(title="LP Manager", version="0.9.6.4.2", lifespan=lifespan)
+    app = FastAPI(title="LP Manager", version=APP_VERSION, lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
 
     @app.middleware("http")
@@ -792,7 +793,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def health():
         return {
             "ok": True,
-            "version": "0.9.6.4.2",
+            "version": APP_VERSION,
+            "app": app_metadata(),
             "server_time": time.time(),
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
@@ -819,6 +821,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         )
         campaigns=_campaigns_with_thesis()
         return {
+            "app": app_metadata(),
             "summary": portfolio_summary(positions),
             "money": money_context(settings, store),
             "wallet": store.get_wallet_snapshot(),
@@ -1282,7 +1285,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         return {
             "chain":key,"count":len(result),"pools":result,
             "provider_status":provider_status,"provider_error":provider_error,"stale":not fresh,
-            "data_source":"SHARED_CANDIDATE_UNIVERSE_V0964","universe_source":source,
+            "data_source":"SHARED_CANDIDATE_UNIVERSE","universe_source":source,
             "universe_summary":snap.get("summary") or {},"universe_providers":snap.get("providers") or [],
         }
 
@@ -1582,7 +1585,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         allocated_chains=sorted({str(x.get("chain") or "") for x in result.get("allocations") or [] if x.get("chain")})
         result["scan_errors"]=errors
         result["candidate_count"]=len(candidates)
-        result["data_source"]="SHARED_CANDIDATE_UNIVERSE_V0964"
+        result["data_source"]="SHARED_CANDIDATE_UNIVERSE"
         result["universe_diagnostics"]={
             "chains":chain_diagnostics,
             "summary":{
@@ -1614,7 +1617,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     summary=f"Portfolio Advisor currently ranks {top.get('pair')} first",
                     rationale=f"Shared cross-chain Candidate Universe recommends an incremental {top.get('amount')} from {intent.available_capital} new capital; existing exposure, reserve and concentration ceilings were preserved.",
                     trigger="PORTFOLIO_ADVISOR",source="PORTFOLIO_ADVISOR",
-                    evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"expected_net_month":top.get("expected_net_month"),"existing_pool_value":(top.get("existing_exposure") or {}).get("pool_value"),"post_pool_pct":(top.get("post_allocation") or {}).get("pool_pct"),"candidate_source":"SHARED_CANDIDATE_UNIVERSE_V0964"},
+                    evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"expected_net_month":top.get("expected_net_month"),"existing_pool_value":(top.get("existing_exposure") or {}).get("pool_value"),"post_pool_pct":(top.get("post_allocation") or {}).get("pool_pct"),"candidate_source":"SHARED_CANDIDATE_UNIVERSE"},
                 ))
             except Exception:
                 pass
@@ -1648,7 +1651,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def support_bundle():
         path = build_support_bundle(
             store, output_dir=settings.data_dir / "support",
-            extra={"version":"0.9.4", "execution":executor.capabilities(), "scout_universe":scout_universe()},
+            extra={"version":APP_VERSION, "execution":executor.capabilities(), "scout_universe":scout_universe()},
         )
         return {"ok": True, "filename": path.name, "download": f"/api/support/bundle/{path.name}"}
 
