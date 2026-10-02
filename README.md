@@ -330,3 +330,15 @@ This hotfix preserves the v0.9.6.4 cross-chain design while correcting the live-
 - WPOL/POL and other network-major assets remain in executable **token-price** units. Provider market-cap/FDV metadata is no longer allowed to make a WPOL/USDT0 range appear as a misleading small-token market-cap range.
 - V4 position discovery and Profit Lab/history request coalescing are intentionally **not** part of this hotfix; they are carried into the v0.9.7 cleanup.
 
+## v0.9.6.4.2 Profit Lab stability hotfix
+
+This hotfix fixes the Profit Lab regression exposed during the v0.9.6.4.1 live soak without changing the range model, Advisor ranking or execution boundary.
+
+- Profit Lab now reuses **shared Candidate Universe / persisted opportunity pool context** before attempting a fresh exact-pool GeckoTerminal lookup. A Profit Plan click no longer spends another public-provider request simply to rediscover a pool Scout/Advisor already knows.
+- Shared-universe opportunity persistence now stores the enriched current pool row, including quick economics, so Profit Lab retains the same TVL/volume/current-context evidence used by Scout and Advisor.
+- Profit history is now **cache-first**. Fresh validated persisted history is checked before Alchemy or GeckoTerminal rather than after those providers have already been queried.
+- The history cache gains a horizon-independent v0.9.6.4.2 key so a valid recent pool history can be reused across 3-day / 7-day Profit Lab runs instead of duplicating provider work solely because the requested holding period changed.
+- **USDT0 is treated as a USD stablecoin** in both Profit Lab history selection and on-chain pool reconstruction. WPOL/USDT0 can therefore use the normal stable-quoted history fallback rather than being incorrectly rejected as a volatile/volatile pair.
+- The existing stale-result safety remains: a previously validated Profit Lab recommendation may be displayed during a provider outage, but fresh calculations are never fabricated from missing history.
+- v0.9.7 remains the planned larger cleanup for protocol-aware V3/V4 position discovery, global provider scheduling/request coalescing, deeper history architecture and the Opportunities UI redesign.
+
