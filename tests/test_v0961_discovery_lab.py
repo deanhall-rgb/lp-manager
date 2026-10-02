@@ -205,8 +205,8 @@ def test_discovery_lab_ui_is_explicitly_non_strategy_and_has_exact_pool_resolver
     html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
     js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
 
-    assert "Discovery Lab · v0.9.6.1" in html
-    assert "DOES NOT FEED STRATEGY" in html
+    assert "<h2>Provider diagnostics</h2>" in html
+    assert "ADVANCED DIAGNOSTIC" in html
     assert 'id="discovery-run-btn"' in html
     assert 'id="discovery-resolve-btn"' in html
     assert "Run provider test" in html
