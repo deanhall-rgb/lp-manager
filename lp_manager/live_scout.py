@@ -5,10 +5,12 @@ from typing import Any
 
 from .risk_engine import assess_pool_risk
 from .economics_engine import volume_quality
+from .asset_registry import RISK_MAJOR_SYMBOLS, STABLE_SYMBOLS, CORE_MAJOR_SYMBOLS
 
-RISK_MAJORS = {"WETH","ETH","WBTC","BTC"}
-STABLES = {"USDC","USDT","USDG","DAI","USDS","USDBC","FRAX","GHO","LUSD"}
-MAJORS = RISK_MAJORS | STABLES
+# Compatibility aliases: one canonical registry now owns these classifications.
+RISK_MAJORS = RISK_MAJOR_SYMBOLS
+STABLES = STABLE_SYMBOLS
+MAJORS = CORE_MAJOR_SYMBOLS
 
 
 def _age_days(value: Any) -> float:
