@@ -163,8 +163,8 @@ def test_v0964_ui_promotes_candidate_universe_to_shared_scout_and_advisor_source
     html=(root/"lp_manager"/"static"/"index.html").read_text(encoding="utf-8")
     js=(root/"lp_manager"/"static"/"app.js").read_text(encoding="utf-8")
 
-    assert "v0.9.6.4.2 · Profit Lab stability" in html
-    assert "Candidate Universe · v0.9.6.4.2" in html
+    assert 'id="app-version-label"' in html
+    assert "<h2>Candidate Universe</h2>" in html
     assert "SHARED DISCOVERY · FEEDS ADVISOR" in html
     assert 'id="universe-run-btn"' in html
     assert "/api/candidate-universe/" in js
