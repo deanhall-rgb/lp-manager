@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .asset_registry import should_use_market_cap_display
+
 
 def _f(v: Any, default: float = 0.0) -> float:
     try: return float(v)
@@ -38,11 +40,7 @@ def pool_price_lens(pool: dict[str, Any], *, lower: float | None = None, upper: 
         # network assets and majors should stay in executable pool-price units.
         # Provider market-cap/FDV fields can refer to the provider's original
         # token orientation, which made WPOL ranges look like a spurious ~$20m MC.
-        "primary_display":"MARKET_CAP" if supply and base_symbol.upper() not in {
-            "WETH","ETH","WBTC","BTC","POL","WPOL","MATIC","WMATIC","ARB","OP",
-            "BNB","WBNB","AVAX","WAVAX","SOL","WSOL",
-            "USDC","USDT","USDT0","DAI","USDG","USDS","USDBC","FRAX","GHO","LUSD"
-        } else "TOKEN_PRICE",
+        "primary_display":"MARKET_CAP" if supply and should_use_market_cap_display(base_symbol) else "TOKEN_PRICE",
     }
     if supply:
         if lower and lower > 0: result["lower_market_cap_usd"]=_f(lower)*supply
