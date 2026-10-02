@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-STABLES={"USDC","USDT","DAI","USDS","USDBC","USDG","USD+","FRAX","LUSD","GHO"}
-ETHS={"WETH","ETH"}
-BTCS={"WBTC","BTC"}
+from .asset_registry import STABLE_SYMBOLS, ETH_SYMBOLS, BTC_SYMBOLS
+
+# Compatibility aliases retained for existing callers/tests; policy lives in asset_registry.
+STABLES = STABLE_SYMBOLS
+ETHS = ETH_SYMBOLS
+BTCS = BTC_SYMBOLS
 
 
 def tick_token1_per_token0(tick: int, dec0: int, dec1: int) -> float:
