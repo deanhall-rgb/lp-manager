@@ -412,6 +412,7 @@ def _load_pool_and_history(
 
     timeframe = "hour" if history_days <= 45 else "day"
     minimum = 48 if timeframe == "hour" else 20
+    minimum_floor = 24 if timeframe == "hour" else 12
     provider = "GECKOTERMINAL_POOL_OHLC"
     warning = None
     candles: list[dict[str, Any]] = []
@@ -421,7 +422,7 @@ def _load_pool_and_history(
     quote_symbol = base_symbol = ""
     if " per " in unit_label:
         quote_symbol, base_symbol = [x.strip().upper() for x in unit_label.split(" per ", 1)]
-    stable_symbols = {"USDC","USDT","USDG","DAI","USDS","USDBC","FRAX","GHO","LUSD"}
+    stable_symbols = {"USDC","USDT","USDT0","USDG","DAI","USDS","USDBC","FRAX","GHO","LUSD"}
 
     # For stable-quoted pools, fetch the human base token's USD OHLC. WETH/USDG
     # then uses WETH USD history, not USDG's ~$1 history.
@@ -432,12 +433,34 @@ def _load_pool_and_history(
         gecko_token = "quote"
     pool["_history_token"] = gecko_token
 
-    # Prefer configured Alchemy token-price history before spending scarce public
-    # GeckoTerminal OHLC quota. Stable-quoted pairs can reconstruct WETH/USD from
-    # token history (with the stable side fixed near $1); non-stable pairs use the
-    # same routine as an execution-ratio proxy.
+    # Reuse validated persisted history before touching any external history
+    # provider. V0.9.6.4 exposed this ordering bug: Profit Lab was calling Alchemy
+    # and Gecko first, then checking its own perfectly usable cache afterwards.
     live_spot=_f((onchain.get("price_lens") or {}).get("current"))
-    if hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
+    generic_cache_key=f"profit:history:v09642:{chain}:{str(address).lower()}:{timeframe}"
+    legacy_cache_key=f"profit:history:v0811:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
+    cached_rows=[]
+    cached_provider=""
+    if store is not None:
+        for candidate_key in (generic_cache_key, legacy_cache_key):
+            cached=store.get_setting(candidate_key,{}) or {}
+            rows=list(cached.get("candles") or [])
+            valid=(
+                len(rows)>=minimum_floor
+                and _history_matches_spot(rows,live_spot)
+                and _history_cache_is_fresh(rows,timeframe)
+            )
+            if valid:
+                cached_rows=rows
+                cached_provider=str(cached.get("provider") or "PERSISTED_HISTORY_CACHE")
+                candles=rows
+                provider=cached_provider
+                warning="reused fresh validated persisted history before provider lookup"
+                break
+
+    # Only when no fresh validated history exists do we ask Alchemy. Stable-quoted
+    # pairs can reconstruct token/USD history; non-stable pairs use pair ratios.
+    if not candles and hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
         try:
             ratio_history = market.alchemy_pool_history(chain, onchain, history_days, timeframe=timeframe)
             if len(ratio_history) >= minimum and _history_matches_spot(ratio_history,live_spot):
@@ -464,26 +487,6 @@ def _load_pool_and_history(
                 provider="ALCHEMY_MAJOR_SYMBOL_HISTORY"
         except Exception as exc:
             warning=warning or str(exc)
-
-    # V0.8.11 deliberately starts a new cache namespace. Older caches may contain
-    # token-USD history that predates the execution-ratio/orientation fixes and
-    # must never be silently promoted into current range economics.
-    cache_key=f"profit:history:v0811:{chain}:{str(address).lower()}:{timeframe}:{history_days}"
-    cached_rows=[]
-    cached_provider=""
-    if store is not None:
-        cached=store.get_setting(cache_key,{}) or {}
-        cached_rows=list(cached.get("candles") or [])
-        cached_provider=str(cached.get("provider") or "PERSISTED_HISTORY_CACHE")
-        cache_valid=(
-            len(cached_rows)>=minimum
-            and _history_matches_spot(cached_rows,live_spot)
-            and _history_cache_is_fresh(cached_rows,timeframe)
-        )
-        if not candles and cache_valid:
-            candles=cached_rows
-            provider=cached_provider
-            warning=(warning+"; " if warning else "")+"reused fresh validated v0.8.11 history"
 
     # Pool-native V3 observations are independent of public market-data APIs and
     # therefore the preferred resilience path during provider throttling. They
@@ -535,7 +538,6 @@ def _load_pool_and_history(
         warning=(warning+"; " if warning else "")+"Historical series failed live execution-price sanity check"
         candles=[]
 
-    minimum_floor=24 if timeframe=="hour" else 12
     if (
         len(candles) < minimum_floor
         and cached_rows
@@ -559,10 +561,12 @@ def _load_pool_and_history(
         )
     if store is not None:
         try:
-            store.set_setting(cache_key,{
+            payload={
                 "saved_at":__import__("time").time(),"provider":provider,
                 "candles":candles[-max(minimum,2200):],
-            })
+            }
+            store.set_setting(generic_cache_key,payload)
+            store.set_setting(legacy_cache_key,payload)
         except Exception:
             pass
     return pool, onchain, candles, provider, warning
