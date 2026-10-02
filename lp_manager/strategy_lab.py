@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .asset_lens import pool_price_lens
+from .asset_registry import is_stable_symbol
 from .economics_engine import estimate_lp_economics
 from .live_scout import preliminary_pool_evaluation
 from .market_regime import analyse_regime
@@ -86,7 +87,7 @@ def _pool_from_onchain(chain: str, address: str, onchain: dict[str, Any], fallba
         "price_unit":lens.get("unit"),"price_unit_label":unit_label,
     }
     # When the quote is USD-pegged, the pool ratio is also a usable USD spot mark.
-    if str(quote_sym).upper() in {"USDC","USDT","USDT0","USDG","DAI","USDS","USDBC","FRAX","GHO"} and current>0:
+    if is_stable_symbol(quote_sym) and current>0:
         result.setdefault("base_token_price_usd",current)
         result.setdefault("quote_token_price_usd",1.0)
     return result
