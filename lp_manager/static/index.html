@@ -4,12 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>LP Manager</title>
-  <link rel="stylesheet" href="/static/styles.css?v=0.9.6.4.2" />
+  <link rel="stylesheet" href="/static/styles.css?v=0.9.7.1" />
 </head>
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub">v0.9.6.4.2 · Profit Lab stability</div></div></div>
+    <div class="brand"><div class="brand-mark">LP</div><div><div class="brand-title">LP Manager</div><div class="brand-sub" id="app-version-label">Starting…</div></div></div>
     <nav>
       <button class="nav active" data-section="overview"><span>⌂</span> Overview</button>
       <button class="nav" data-section="wallet"><span>◈</span> Wallet</button>
@@ -130,11 +130,11 @@
     </section>
 
     <section id="opportunities-section" class="section">
-      <div class="section-hero"><div><h2>Opportunity Scout</h2><p>Discover first, investigate second, recommend a range third. APR alone never creates a position.</p></div></div>
+      <div class="section-hero"><div><h2>Opportunities</h2><p>Discover broadly, compare consistently, then send a chosen pool into deeper analysis and Profit Lab.</p></div></div>
       <div class="panel">
         <div class="panel-head">
-          <div><h2>Discovery Lab · v0.9.6.1</h2><p>Read-only proof: compare provider coverage, request cost and exact pool resolution before any wider scout or ranking change.</p></div>
-          <span class="status-chip good">DOES NOT FEED STRATEGY</span>
+          <div><h2>Provider diagnostics</h2><p>Advanced read-only checks for provider coverage, request cost and exact pool resolution.</p></div>
+          <span class="status-chip">ADVANCED DIAGNOSTIC</span>
         </div>
         <div class="form-grid">
           <div class="field"><label>Test chain</label><select id="discovery-chain"><option>ETHEREUM</option><option>BASE</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option><option>ROBINHOOD_CHAIN</option></select></div>
@@ -154,8 +154,8 @@
       </div>
       <div class="panel lower">
         <div class="panel-head">
-          <div><h2>Candidate Universe · v0.9.6.4.2</h2><p>Broad V3 discovery first, cheap local filtering second, then selective live validation only for the strongest shortlist.</p></div>
-          <span class="status-chip good">SHARED DISCOVERY · FEEDS ADVISOR</span>
+          <div><h2>Candidate Universe</h2><p>Shared discovery source: broad pool discovery, cheap filtering, then selective live validation of the strongest shortlist.</p></div>
+          <span class="status-chip good">SHARED DISCOVERY</span>
         </div>
         <div class="form-grid">
           <div class="field"><label>Chain</label><select id="universe-chain"><option>ETHEREUM</option><option>BASE</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option><option>ROBINHOOD_CHAIN</option></select></div>
@@ -226,6 +226,6 @@
 </div>
 <div id="modal" class="modal hidden"><div class="modal-card"><button id="modal-close" class="modal-close">×</button><div id="modal-content"></div></div></div>
 <div id="toast" class="toast hidden"></div>
-<script src="/static/app.js?v=0.9.6.4.2"></script>
+<script src="/static/app.js?v=0.9.7.1"></script>
 </body>
 </html>
