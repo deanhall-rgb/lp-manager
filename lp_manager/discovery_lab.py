@@ -8,6 +8,8 @@ import requests
 
 from .chain_registry import CHAINS, chain_config
 from .pool_chain import read_v3_pool_metadata
+from .opportunity_model import canonical_opportunity
+from .product import APP_USER_AGENT
 
 
 DEXSCREENER_BASE = "https://api.dexscreener.com"
@@ -110,7 +112,7 @@ def _normalise_dex_pair(pair: dict[str, Any], chain_key: str) -> dict[str, Any]:
     vol=pair.get("volume") or {}
     version=_dex_version(pair)
     dex=str(pair.get("dexId") or "")
-    return {
+    row={
         "chain":chain_key,
         "pool_address":pair.get("pairAddress"),
         "pair":f"{base.get('symbol','?')}/{quote.get('symbol','?')}",
@@ -124,6 +126,7 @@ def _normalise_dex_pair(pair: dict[str, Any], chain_key: str) -> dict[str, Any]:
         "source":"DEXSCREENER",
         "source_updated_at":time.time(),
     }
+    return canonical_opportunity(row,analysis_status="DISCOVERED")
 
 
 def _normalise_graph_pool(row: dict[str, Any], chain_key: str) -> dict[str, Any]:
@@ -133,7 +136,7 @@ def _normalise_graph_pool(row: dict[str, Any], chain_key: str) -> dict[str, Any]
     recent_day=day_rows[0] if isinstance(day_rows,list) and day_rows else {}
     recent_volume=_f(recent_day.get("volumeUSD")) if recent_day else None
     recent_fees=_f(recent_day.get("feesUSD")) if recent_day else None
-    return {
+    out={
         "chain":chain_key,
         "pool_address":row.get("id"),
         "pair":f"{t0.get('symbol','?')}/{t1.get('symbol','?')}",
@@ -152,6 +155,7 @@ def _normalise_graph_pool(row: dict[str, Any], chain_key: str) -> dict[str, Any]
         "source_updated_at":time.time(),
         "economic_validation":"UNVERIFIED",
     }
+    return canonical_opportunity(out,analysis_status="DISCOVERED")
 
 
 class DiscoveryLab:
@@ -167,7 +171,7 @@ class DiscoveryLab:
         self.market=market
         self.store=store
         self.session=session or requests.Session()
-        self.session.headers.update({"User-Agent":"LP-Manager/0.9.6.2","Accept":"application/json"})
+        self.session.headers.update({"User-Agent":APP_USER_AGENT,"Accept":"application/json"})
 
     def _graph_ids(self, chain_key: str) -> list[str]:
         env=f"THEGRAPH_UNISWAP_V3_{chain_key}_SUBGRAPH_ID"
