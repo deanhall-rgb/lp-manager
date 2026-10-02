@@ -6,7 +6,8 @@ from typing import Any
 
 from .chain_registry import CHAINS
 from .discovery_lab import _addr, _f, _normalise_dex_pair
-from .live_scout import MAJORS
+from .asset_registry import CORE_MAJOR_SYMBOLS
+from .opportunity_model import canonical_opportunity, normalise_protocol, PROTOCOL_UNISWAP_V3
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
@@ -31,15 +32,23 @@ def _pair_key(row: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _is_v3(row: dict[str, Any]) -> bool:
-    return (
-        str(row.get("version") or "").upper() == "V3"
-        or str(row.get("protocol") or "").upper() == "UNISWAP_V3"
-        or str(row.get("protocol_guess") or "").upper() == "UNISWAP_V3"
-    )
+    return normalise_protocol(
+        row.get("protocol"),
+        version=row.get("version"),
+        protocol_guess=row.get("protocol_guess"),
+        dex_id=row.get("dex_id"),
+    ) == PROTOCOL_UNISWAP_V3
 
 
 def _explicitly_unsupported(row: dict[str, Any]) -> bool:
-    return str(row.get("version") or "").upper() in {"V2", "V4"}
+    version=str(row.get("version") or "").upper()
+    protocol=normalise_protocol(
+        row.get("protocol"),
+        version=version,
+        protocol_guess=row.get("protocol_guess"),
+        dex_id=row.get("dex_id"),
+    )
+    return version=="V2" or protocol=="UNISWAP_V4"
 
 
 def _log_score(value: float, floor: float, decades: float = 4.0) -> float:
@@ -80,7 +89,7 @@ class CandidateUniverse:
             if key:
                 pairs.setdefault(key,[]).append(row)
             for symbol in _symbols(row):
-                if symbol not in MAJORS:
+                if symbol not in CORE_MAJOR_SYMBOLS:
                     assets.setdefault(symbol,[]).append(row)
         return {"rows":rows,"pools":pools,"pairs":pairs,"assets":assets}
 
@@ -130,7 +139,7 @@ class CandidateUniverse:
         chosen["live_tvl_usd"]=live_tvl if live else None
         chosen["graph_discovered"]=bool(graph)
         chosen["live_discovered"]=bool(live)
-        return chosen
+        return canonical_opportunity(chosen, analysis_status="DISCOVERED")
 
     @staticmethod
     def _discovery_metrics(row: dict[str,Any]) -> dict[str,Any]:
@@ -158,7 +167,7 @@ class CandidateUniverse:
         asset_rows=[]
         matched_assets=[]
         for symbol in sorted(_symbols(row)):
-            if symbol in MAJORS:
+            if symbol in CORE_MAJOR_SYMBOLS:
                 continue
             matches=ctx["assets"].get(symbol) or []
             if matches:
