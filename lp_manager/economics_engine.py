@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .v3_math import active_liquidity_share_for_capital
+from .asset_registry import STABLE_SYMBOLS, RISK_MAJOR_SYMBOLS
 
 
 def _f(v: Any, default: float = 0.0) -> float:
@@ -35,8 +36,8 @@ def infer_fee_tier_bps(pool: dict[str, Any]) -> tuple[float, str]:
             return bps, "POOL_NAME"
     pair = str(pool.get("pair") or "").upper()
     symbols = {p.strip() for p in pair.split("/") if p.strip()}
-    stables = {"USDC", "USDT", "DAI", "USDS", "USDG", "FRAX"}
-    majors = {"WETH", "ETH", "WBTC", "BTC"}
+    stables = STABLE_SYMBOLS
+    majors = RISK_MAJOR_SYMBOLS
     if len(symbols & stables) >= 1 and len(symbols & (stables | majors)) >= 2:
         return 5.0, "PAIR_CLASS_ASSUMPTION"
     return 30.0, "PAIR_CLASS_ASSUMPTION"
