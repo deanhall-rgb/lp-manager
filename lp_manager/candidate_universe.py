@@ -58,6 +58,9 @@ def _log_score(value: float, floor: float, decades: float = 4.0) -> float:
     return _clamp(math.log10(value / floor) / max(decades, 0.1) * 100.0)
 
 
+_PROFIT_STABLE_SYMBOLS={"USDC","USDT","USDT0","USDG","DAI","USDS","USDBC","FRAX","GHO"}
+
+
 class CandidateUniverse:
     """Shared broad discovery + cheap filtering + selective validation.
 
@@ -308,6 +311,83 @@ class CandidateUniverse:
             and not row.get("version_conflict")
         )
 
+    def _profit_lab_readiness(self, row: dict[str,Any], chain_key: str) -> dict[str,Any]:
+        """Describe whether deep execution-price history is already usable.
+
+        This is intentionally separate from research_ready: a pool can have live
+        TVL/volume economics yet still need pair-ratio history before Profit Lab
+        can optimise a volatile/volatile range.
+        """
+        chain=str(chain_key or row.get("chain") or "").upper()
+        address=_addr(row.get("pool_address"))
+        validation=str(row.get("economic_validation") or "").upper()
+        if not address or validation not in {"CROSS_VALIDATED","LIVE_VALIDATED","TVL_MISMATCH"}:
+            return {
+                "ready":False,"status":"MARKET_VALIDATION_REQUIRED",
+                "label":"VALIDATION NEEDED",
+                "reason":"Live pool economics must be validated before deep range analysis.",
+            }
+
+        cache_key=f"profit:history:v09642:{chain}:{address}:hour"
+        try:
+            payload=self.store.get_setting(cache_key,{}) or {}
+        except Exception:
+            payload={}
+        candles=list(payload.get("candles") or [])
+        latest=max((_f(x.get("timestamp")) for x in candles),default=0.0)
+        age=max(0.0,time.time()-latest) if latest>0 else None
+        if len(candles)>=24 and age is not None and age<=8*3600:
+            return {
+                "ready":True,"status":"READY_CACHED_HISTORY","label":"PROFIT READY",
+                "reason":"Validated execution-price history is already cached.",
+                "history_samples":len(candles),"history_age_seconds":round(age,1),
+                "history_provider":payload.get("provider"),
+            }
+
+        status_key=f"profit:evidence:status:{chain}:{address}"
+        try:
+            warm=self.store.get_setting(status_key,{}) or {}
+        except Exception:
+            warm={}
+        checked=_f(warm.get("checked_at") or warm.get("last_run_at"))
+        warm_age=max(0.0,time.time()-checked) if checked>0 else None
+        warm_samples=int(_f(warm.get("samples"),0))
+        if warm.get("ok") and warm_samples>=24 and (
+            bool(warm.get("fresh")) or (warm_age is not None and warm_age<=8*3600)
+        ):
+            return {
+                "ready":True,"status":"READY_WARMED_HISTORY","label":"PROFIT READY",
+                "reason":"Background evidence warming has prepared deep pair history.",
+                "history_samples":warm_samples,"history_age_seconds":round(warm_age,1) if warm_age is not None else None,
+                "history_provider":warm.get("provider"),
+            }
+        if warm.get("status")=="FAILED" and warm_age is not None and warm_age<=6*3600:
+            reason=str(warm.get("error") or "Deep pair history could not be prepared.")
+            return {
+                "ready":False,"status":"HISTORY_FAILED","label":"HISTORY FAILED",
+                "reason":reason[:140],"history_samples":warm_samples,
+                "last_checked_age_seconds":round(warm_age,1),
+            }
+
+        symbols=_symbols(row)
+        if symbols & _PROFIT_STABLE_SYMBOLS:
+            return {
+                "ready":True,"status":"DIRECT_HISTORY_PATH","label":"DIRECT PATH",
+                "reason":"Stable-quoted pool has a direct USD history path; deep history is fetched or warmed on demand.",
+            }
+        return {
+            "ready":False,"status":"PAIR_HISTORY_REQUIRED","label":"HISTORY NEEDED",
+            "reason":"Non-stable pair needs validated pair-ratio history before Profit Lab can optimise it.",
+        }
+
+    def _attach_profit_readiness(self, rows: list[dict[str,Any]], chain_key: str) -> list[dict[str,Any]]:
+        out=[]
+        for original in rows:
+            row=dict(original)
+            row["profit_lab_readiness"]=self._profit_lab_readiness(row,chain_key)
+            out.append(row)
+        return out
+
     def refresh(self, chain_key: str, *, graph_limit: int = 500, shortlist_limit: int = 40, validate_limit: int = 20, include_gecko: bool = True) -> dict[str,Any]:
         chain_key=str(chain_key or "").upper()
         if chain_key not in CHAINS:
@@ -320,6 +400,7 @@ class CandidateUniverse:
 
         for row in shortlist:
             row["research_ready"]=self._research_ready(row)
+            row["profit_lab_readiness"]=self._profit_lab_readiness(row,chain_key)
         shortlist.sort(
             key=lambda x:(
                 bool(x.get("research_ready")),
@@ -333,6 +414,15 @@ class CandidateUniverse:
         awaiting=sum(1 for x in shortlist if str(x.get("economic_validation") or "")=="UNVERIFIED")
         overlaps=sum(1 for x in shortlist if x.get("portfolio_overlap"))
         ready=sum(1 for x in shortlist if x.get("research_ready"))
+        profit_ready=sum(1 for x in shortlist if (x.get("profit_lab_readiness") or {}).get("ready"))
+        profit_history_needed=sum(
+            1 for x in shortlist
+            if str((x.get("profit_lab_readiness") or {}).get("status") or "")=="PAIR_HISTORY_REQUIRED"
+        )
+        profit_history_failed=sum(
+            1 for x in shortlist
+            if str((x.get("profit_lab_readiness") or {}).get("status") or "")=="HISTORY_FAILED"
+        )
         conflicts=sum(1 for x in shortlist if str(x.get("economic_validation") or "")=="VERSION_CONFLICT")
 
         provider_summary=[{
@@ -365,6 +455,9 @@ class CandidateUniverse:
                 "live_validated":live_validated,
                 "awaiting_live_validation":awaiting,
                 "research_ready":ready,
+                "profit_lab_ready":profit_ready,
+                "profit_history_needed":profit_history_needed,
+                "profit_history_failed":profit_history_failed,
                 "portfolio_overlaps":overlaps,
                 "version_conflicts":conflicts,
                 "targeted_live_requests":targeted_requests,
@@ -399,7 +492,21 @@ class CandidateUniverse:
         except Exception:
             payload=None
         if isinstance(payload,dict) and payload:
-            return {**payload,"cached":True}
+            out={**payload,"cached":True}
+            rows=self._attach_profit_readiness(list(out.get("shortlist") or []),chain_key)
+            out["shortlist"]=rows
+            summary=dict(out.get("summary") or {})
+            summary["profit_lab_ready"]=sum(1 for x in rows if (x.get("profit_lab_readiness") or {}).get("ready"))
+            summary["profit_history_needed"]=sum(
+                1 for x in rows
+                if str((x.get("profit_lab_readiness") or {}).get("status") or "")=="PAIR_HISTORY_REQUIRED"
+            )
+            summary["profit_history_failed"]=sum(
+                1 for x in rows
+                if str((x.get("profit_lab_readiness") or {}).get("status") or "")=="HISTORY_FAILED"
+            )
+            out["summary"]=summary
+            return out
         return {
             "ok":False,
             "cached":True,
