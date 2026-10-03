@@ -1048,11 +1048,12 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 store.set_setting(cache_key,result)
                 return result
             except Exception as exc:
+                # Only an exact request-key fallback is safe here. A previous
+                # recommendation for the same pool but a different horizon,
+                # capital, sleeve or target must never appear under the new form
+                # inputs (for example a 7-day / £1,000 result under a 1-day /
+                # £270 request).
                 cached=store.get_setting(cache_key,None)
-                if not isinstance(cached,dict):
-                    last=store.get_setting("profit:last_recommendation:v093",None) or store.get_setting("profit:last_recommendation:v09",None)
-                    if isinstance(last,dict) and str(last.get("chain") or "").upper()==chain and str(last.get("pool_address") or "").lower()==address:
-                        cached=last
                 if isinstance(cached,dict):
                     fallback=dict(cached)
                     fallback["data_status"]="STALE_VALIDATED_RECOMMENDATION"
