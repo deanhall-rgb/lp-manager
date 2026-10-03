@@ -12,6 +12,14 @@ try:
 except Exception:  # pragma: no cover - dependency-light test environments.
     Web3 = None  # type: ignore[assignment]
 
+_PROVIDER_COORDINATOR=None
+
+
+def configure_provider_coordinator(coordinator) -> None:
+    """Attach the process-wide provider coordinator to bounded V3 RPC reads."""
+    global _PROVIDER_COORDINATOR
+    _PROVIDER_COORDINATOR=coordinator
+
 POOL_ABI=[
  {"inputs":[],"name":"token0","outputs":[{"name":"","type":"address"}],"stateMutability":"view","type":"function"},
  {"inputs":[],"name":"token1","outputs":[{"name":"","type":"address"}],"stateMutability":"view","type":"function"},
@@ -49,6 +57,19 @@ def _token_meta(w3,address: str)->tuple[str,int]:
 def discover_v3_pair_fee_tiers(
     chain: str, token_a: str, token_b: str, fee_tiers: tuple[int,...]=(100,500,3000,10000)
 ) -> list[dict[str,Any]]:
+    if _PROVIDER_COORDINATOR is not None:
+        key=f"v3-fee-tiers:{str(chain).upper()}:{str(token_a).lower()}:{str(token_b).lower()}:{','.join(str(x) for x in fee_tiers)}"
+        return _PROVIDER_COORDINATOR.request(
+            "RPC",key,
+            lambda:_discover_v3_pair_fee_tiers_direct(chain,token_a,token_b,fee_tiers),
+            ttl_seconds=5*60,stale_seconds=30*60,wait_timeout_seconds=20,
+        )
+    return _discover_v3_pair_fee_tiers_direct(chain,token_a,token_b,fee_tiers)
+
+
+def _discover_v3_pair_fee_tiers_direct(
+    chain: str, token_a: str, token_b: str, fee_tiers: tuple[int,...]=(100,500,3000,10000)
+) -> list[dict[str,Any]]:
     """Discover canonical Uniswap V3 pair pools directly from the factory.
 
     This avoids relying on a market-data provider's first page when comparing
@@ -78,6 +99,17 @@ def discover_v3_pair_fee_tiers(
 
 
 def read_v3_pool_metadata(chain: str, address: str) -> dict[str,Any]:
+    if _PROVIDER_COORDINATOR is not None:
+        key=f"v3-pool-meta:{str(chain).upper()}:{str(address).lower()}"
+        return _PROVIDER_COORDINATOR.request(
+            "RPC",key,
+            lambda:_read_v3_pool_metadata_direct(chain,address),
+            ttl_seconds=8,stale_seconds=0,wait_timeout_seconds=18,
+        )
+    return _read_v3_pool_metadata_direct(chain,address)
+
+
+def _read_v3_pool_metadata_direct(chain: str, address: str) -> dict[str,Any]:
     cfg=chain_config(chain); url=cfg.rpc_url()
     if not url: return {"ok":False,"chain":cfg.key,"error":"RPC unavailable"}
     try:
@@ -93,6 +125,23 @@ def read_v3_pool_metadata(chain: str, address: str) -> dict[str,Any]:
 
 
 def read_v3_observation_history(
+    chain: str, address: str, days: int, *, timeframe: str = "hour", max_points: int = 241
+) -> list[dict[str, Any]]:
+    if _PROVIDER_COORDINATOR is not None:
+        key=f"v3-observe:{str(chain).upper()}:{str(address).lower()}:{int(days)}:{str(timeframe).lower()}:{int(max_points)}"
+        return _PROVIDER_COORDINATOR.request(
+            "RPC",key,
+            lambda:_read_v3_observation_history_direct(
+                chain,address,days,timeframe=timeframe,max_points=max_points,
+            ),
+            ttl_seconds=10*60,stale_seconds=60*60,wait_timeout_seconds=25,
+        )
+    return _read_v3_observation_history_direct(
+        chain,address,days,timeframe=timeframe,max_points=max_points,
+    )
+
+
+def _read_v3_observation_history_direct(
     chain: str, address: str, days: int, *, timeframe: str = "hour", max_points: int = 241
 ) -> list[dict[str, Any]]:
     """Read a pool-native historical price path from Uniswap V3 observations.
