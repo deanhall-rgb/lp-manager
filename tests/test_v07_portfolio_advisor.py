@@ -5,7 +5,7 @@ def row(pair, sleeve, score, net, chain="BASE"):
     return {"pair":pair,"chain":chain,"pool_address":"0x"+pair.encode().hex()[:40].ljust(40,'0'),"sleeve":sleeve,
             "evaluation":{"core_pre_score":score,"tactical_pre_score":score,"risk_core":{"eligible":True,"blockers":[]},"risk_tactical":{"eligible":True,"blockers":[]}},
             "economics":{"capital_usd":1000,"estimated_net_month_pct":net,"estimated_net_month_usd":net*10,"mode":"ESTIMATED_FROM_VOLUME_TVL_RANGE"},
-            "regime":{"confidence":70}}
+            "regime":{"confidence":70},"deep_analysis":{"status":"DEEP_PROFITABLE","fresh":True,"expected_net_usd":5}}
 
 
 def test_advisor_can_concentrate_capital_in_best_opportunity_but_keeps_reserve():
