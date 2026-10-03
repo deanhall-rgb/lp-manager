@@ -693,6 +693,67 @@ def _load_pool_and_history(
             pass
     return pool, onchain, candles, provider, warning
 
+
+def profit_history_cache_info(store, chain: str, address: str, *, history_days: int = 30) -> dict[str, Any]:
+    """Cheap durable-cache inspection used by the background evidence warmer."""
+    chain=str(chain or "").upper()
+    address=str(address or "").lower()
+    timeframe="hour" if int(history_days) <= 45 else "day"
+    key=f"profit:history:v09642:{chain}:{address}:{timeframe}"
+    payload=store.get_setting(key,{}) if store is not None else {}
+    rows=list((payload or {}).get("candles") or [])
+    latest=max((_f(x.get("timestamp")) for x in rows),default=0.0)
+    age=max(0.0,time.time()-latest) if latest>0 else None
+    fresh=bool(rows) and _history_cache_is_fresh(rows,timeframe)
+    return {
+        "key":key,
+        "chain":chain,
+        "pool_address":address,
+        "timeframe":timeframe,
+        "samples":len(rows),
+        "provider":str((payload or {}).get("provider") or ""),
+        "saved_at":_f((payload or {}).get("saved_at")),
+        "latest_sample_at":latest or None,
+        "age_seconds":round(age,1) if age is not None else None,
+        "fresh":fresh,
+    }
+
+
+def warm_profit_history(
+    market, store, chain: str, address: str, *,
+    history_days: int = 30, pool_fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Pre-warm validated execution-price history without running range optimisation."""
+    before=profit_history_cache_info(store,chain,address,history_days=history_days)
+    if before.get("fresh") and int(before.get("samples") or 0) >= (24 if before.get("timeframe")=="hour" else 12):
+        return {**before,"ok":True,"status":"CACHE_READY","warmed":False}
+    started=time.perf_counter()
+    try:
+        _pool,_onchain,candles,provider,warning=_load_pool_and_history(
+            market,str(chain).upper(),str(address),int(history_days),
+            pool_fallback=pool_fallback,store=store,
+        )
+        after=profit_history_cache_info(store,chain,address,history_days=history_days)
+        return {
+            **after,
+            "ok":True,
+            "status":"WARMED",
+            "warmed":True,
+            "provider":provider or after.get("provider"),
+            "warning":warning,
+            "elapsed_ms":round((time.perf_counter()-started)*1000,1),
+            "samples":len(candles),
+        }
+    except Exception as exc:
+        return {
+            **before,
+            "ok":False,
+            "status":"FAILED",
+            "warmed":False,
+            "error":str(exc)[:320],
+            "elapsed_ms":round((time.perf_counter()-started)*1000,1),
+        }
+
 def _recommend_single_pool(
     market, store, chain: str, address: str, *, horizon_days: float = 7.0,
     capital: float = 1000.0, sleeve: str = "AUTO", monthly_target_pct: float = 10.0,
