@@ -166,12 +166,48 @@ class DiscoveryLab:
     broader-discovery flow before we alter production strategy behaviour.
     """
 
-    def __init__(self, settings, market=None, session: requests.Session | None = None, store=None):
+    def __init__(self, settings, market=None, session: requests.Session | None = None, store=None, coordinator=None):
         self.settings=settings
         self.market=market
         self.store=store
+        self.coordinator=coordinator
         self.session=session or requests.Session()
         self.session.headers.update({"User-Agent":APP_USER_AGENT,"Accept":"application/json"})
+
+    def _request_json(
+        self, provider: str, key: str, method: str, url: str, *,
+        ttl_seconds: float, stale_seconds: float, **kwargs,
+    ) -> dict[str,Any]:
+        def load():
+            fn=self.session.get if str(method).upper()=="GET" else self.session.post
+            response=fn(url,**kwargs)
+            response.raise_for_status()
+            return response.json()
+        if self.coordinator is not None:
+            return self.coordinator.request(
+                provider,key,load,
+                ttl_seconds=ttl_seconds,stale_seconds=stale_seconds,
+                wait_timeout_seconds=35,
+            )
+        return load()
+
+    def _request_status_json(
+        self, provider: str, key: str, url: str, *,
+        ttl_seconds: float = 30, stale_seconds: float = 5*60, **kwargs,
+    ) -> dict[str,Any]:
+        def load():
+            response=self.session.get(url,**kwargs)
+            status=int(getattr(response,"status_code",200) or 200)
+            if status!=404:
+                response.raise_for_status()
+            return {"status_code":status,"payload":response.json()}
+        if self.coordinator is not None:
+            return self.coordinator.request(
+                provider,key,load,
+                ttl_seconds=ttl_seconds,stale_seconds=stale_seconds,
+                wait_timeout_seconds=25,
+            )
+        return load()
 
     def _graph_ids(self, chain_key: str) -> list[str]:
         env=f"THEGRAPH_UNISWAP_V3_{chain_key}_SUBGRAPH_ID"
@@ -238,9 +274,10 @@ class DiscoveryLab:
             try:
                 requests_used+=1
                 url=f"{DEXSCREENER_BASE}/token-pairs/v1/{slug}/{token}"
-                r=self.session.get(url,timeout=15)
-                r.raise_for_status()
-                payload=r.json()
+                payload=self._request_json(
+                    "DEXSCREENER",f"token-pairs:{slug}:{str(token).lower()}","GET",url,
+                    ttl_seconds=45,stale_seconds=10*60,timeout=15,
+                )
                 pairs=payload if isinstance(payload,list) else (payload.get("pairs") or [])
                 for pair in pairs:
                     if str(pair.get("chainId") or "").lower()!=slug:
@@ -312,14 +349,13 @@ class DiscoveryLab:
             attempts.append(subgraph)
             try:
                 url=f"{THEGRAPH_BASE}/{subgraph}"
-                r=self.session.post(
-                    url,
+                payload=self._request_json(
+                    "THEGRAPH",f"v3-pools:{chain_key}:{subgraph}:{requested}","POST",url,
+                    ttl_seconds=3*60,stale_seconds=30*60,
                     json={"query":query,"variables":{"first":requested}},
                     headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"},
                     timeout=25,
                 )
-                r.raise_for_status()
-                payload=r.json()
                 if payload.get("errors"):
                     errors.append(f"{subgraph[:8]}…: "+"; ".join(str(x.get("message") or x) for x in payload["errors"][:2]))
                     continue
@@ -500,11 +536,14 @@ class DiscoveryLab:
         if not slug:
             return None,"No DEX Screener chain mapping"
         try:
-            r=self.session.get(f"{DEXSCREENER_BASE}/latest/dex/pairs/{slug}/{address}",timeout=12)
-            if r.status_code==404:
+            url=f"{DEXSCREENER_BASE}/latest/dex/pairs/{slug}/{address}"
+            response=self._request_status_json(
+                "DEXSCREENER",f"pair:{slug}:{str(address).lower()}",url,
+                ttl_seconds=30,stale_seconds=5*60,timeout=12,
+            )
+            if int(response.get("status_code") or 0)==404:
                 return None,None
-            r.raise_for_status()
-            payload=r.json()
+            payload=response.get("payload") or {}
             pairs=payload.get("pairs") or ([payload.get("pair")] if payload.get("pair") else [])
             pair=next((x for x in pairs if isinstance(x,dict) and _addr(x.get("pairAddress"))==_addr(address)),None)
             return pair,None
