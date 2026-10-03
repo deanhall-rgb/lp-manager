@@ -1,3 +1,3 @@
-"""LP Manager v0.9.7.3 - persistent cross-chain opportunity leaderboard."""
+"""LP Manager v0.9.7.3.1 - capital-aware Advisor validation hotfix."""
 
-__version__ = "0.9.7.3"
+__version__ = "0.9.7.3.1"
