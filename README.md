@@ -362,3 +362,16 @@ Live-sweep follow-up fixes:
 - Changing Profit Lab chain, pool, holding period, style, capital or target now hides the previous result until the operator re-runs optimisation, preventing a stale 7-day / £1,000 result from visually masquerading as a 1-day / £270 result.
 - Execution Desk capital auto-sizing can now complete a missing token USD mark from the verified on-chain pool ratio when the other token has a live USD mark. Known USD stables can act as the anchor. This specifically restores QNT/WETH-style Profit Lab → Execution Desk auto-population without fabricating prices for an unanchored volatile/volatile pair.
 - Robinhood candidate breadth, owned/watchlist pool seeding, the leaderboard/Advisor presentation, offline Performance Log gap reconstruction, Investor Ledger auto-classification refinement and full provider/API cost observability remain scoped to later v0.9.7 stages rather than being mixed into this stability fix.
+
+### v0.9.7.1.1 error-fix soak
+
+This final foundation hotfix addresses the blockers found in the full v0.9.7.1 software sweep before the leaderboard work begins.
+
+- Profit Lab no longer depends on a previously warmed local history cache for volatile/volatile pools such as QNT/WETH. When address-specific Alchemy history and pool observation history are unavailable, it can reconstruct the **actual execution-pair ratio** from two independently priced USD histories. It first tries global Alchemy symbol histories and then, on demand, both GeckoTerminal pool token OHLC series. A single token-USD series is still rejected for non-stable execution pairs.
+- Every reconstructed pair-ratio series is checked against the current on-chain V3 execution price before it can be used. No synthetic flat history or unanchored price path is invented.
+- The reconstructed history is persisted through the existing Profit Lab history cache, so repeat 1d / 3d / 7d analysis can reuse validated data instead of repeating provider work.
+- Portfolio Advisor presentation has been cleaned without changing ranking logic: the seven-column row now actually has seven grid columns; Tactical/Core pills and action buttons no longer overlap; raw internal guardrail strings are replaced by short human-readable reasons; near misses are explicitly labelled research-only rather than looking like allocations.
+- Advisor diagnostics now recognise the canonical `SHARED_CANDIDATE_UNIVERSE` source name, and internal guardrail identifiers are no longer printed as an unexplained footer.
+- Product metadata and browser asset cache keys now expose **v0.9.7.1.1** in the sidebar so the operator can confirm the exact hotfix is running.
+- Execution Desk's earlier v0.9.7.1 pool-ratio USD-mark fallback remains in place and is covered by regression tests; the intended QNT/WETH path is Portfolio Advisor → Profit Lab → auto-sized Execution Desk.
+
