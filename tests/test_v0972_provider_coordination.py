@@ -263,8 +263,8 @@ def test_v0972_ui_exposes_coordination_without_changing_ranking_surface():
     html = (root / "lp_manager" / "static" / "index.html").read_text(encoding="utf-8")
     js = (root / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
 
-    assert "/static/styles.css?v=0.9.7.2.1" in html
-    assert "/static/app.js?v=0.9.7.2.1" in html
+    assert "/static/styles.css?v=0.9.7.3" in html
+    assert "/static/app.js?v=0.9.7.3" in html
     assert "Provider coordinator" in js
     assert "coalesced" in js
     assert "Profit evidence queued" in js
