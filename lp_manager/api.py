@@ -21,6 +21,7 @@ from .config import load_settings
 from .db import Store
 from .event_engine import detect_material_event, review_due
 from .execution import ExecutionService
+from .execution_pricing import complete_pool_usd_marks
 from .legacy_bridge import discover_legacy_sources, import_campaign_ledger
 from .live_service import LiveDataService
 from .live_scout import preliminary_pool_evaluation
@@ -1946,8 +1947,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             marks=live.market.token_prices(intent.chain.upper(),[
                 str(t0.get("address") or ""),str(t1.get("address") or ""),
             ])
-            p0=float(marks.get(str(t0.get("address") or "").lower()) or 0)
-            p1=float(marks.get(str(t1.get("address") or "").lower()) or 0)
+            completed=complete_pool_usd_marks(meta,marks)
+            p0=float(completed.get("price0_usd") or 0)
+            p1=float(completed.get("price1_usd") or 0)
             if (unit0>0 and p0<=0) or (unit1>0 and p1<=0):
                 raise ValueError(
                     f"Current USD marks are unavailable for {t0.get('symbol') or 'token0'} / "
@@ -1961,6 +1963,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 "amount0":amount0,"amount1":amount1,
                 "token0":t0,"token1":t1,
                 "price0_usd":p0,"price1_usd":p1,
+                "price_sources":completed.get("sources") or {},
                 "estimated_value_usd":amount0*p0+amount1*p1,
                 "source":"PROFIT_LAB_CAPITAL_AUTO_SIZE",
             }
