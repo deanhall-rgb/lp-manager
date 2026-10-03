@@ -135,8 +135,9 @@ def test_api_exposes_canonical_app_metadata_and_versionless_shared_source():
     assert "SHARED_CANDIDATE_UNIVERSE_V0964" not in api
 
 class _LeaderboardStore:
-    def __init__(self):
+    def __init__(self, forecasts=None):
         self.settings = {}
+        self.forecasts = list(forecasts or [])
 
     def get_setting(self, key, default=None):
         return self.settings.get(key, default)
@@ -145,7 +146,7 @@ class _LeaderboardStore:
         self.settings[key] = value
 
     def list_forecast_snapshots(self, limit=500):
-        return []
+        return list(self.forecasts)[:limit]
 
     def list_opportunities(self, limit=100):
         return []
@@ -238,4 +239,24 @@ def test_v0973_ui_has_persistent_leaderboard_surface():
     assert "Screen score" in html
     assert "/static/app.js?v=0.9.7.3" in html
     assert "renderOpportunityLeaderboard" in js
+
+def test_v0973_advisor_deep_state_matches_strategy_horizon_not_latest_other_hold():
+    address = "0x" + "9" * 40
+    now = time.time()
+    store = _LeaderboardStore([
+        {"chain": "ETHEREUM", "pool_address": address, "created_at": now, "horizon_days": 1, "expected_net_usd": 9},
+        {"chain": "ETHEREUM", "pool_address": address, "created_at": now - 1, "horizon_days": 3, "expected_net_usd": -2},
+    ])
+    board = OpportunityLeaderboard(store, _LeaderboardUniverse({}))
+    rows = board.attach_analysis_state([{
+        "chain": "ETHEREUM",
+        "pool_address": address,
+        "pair": "QNT/WETH",
+        "sleeve": "TACTICAL_CAMPAIGN",
+    }])
+    deep = rows[0]["deep_analysis"]
+    assert deep["required_horizon_days"] == 3
+    assert deep["horizon_match"] is True
+    assert deep["status"] == "DEEP_NON_POSITIVE"
+    assert deep["expected_net_usd"] == -2
 
