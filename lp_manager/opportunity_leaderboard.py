@@ -2,6 +2,7 @@ from __future__ import annotations
 import time
 from typing import Any
 from .chain_registry import CHAINS
+from .opportunity_score import SCORE_VERSION, score_opportunity
 
 DEFAULT_CHAINS=("ETHEREUM","BASE","ARBITRUM","OPTIMISM","POLYGON","ROBINHOOD_CHAIN")
 VALID={"CROSS_VALIDATED","LIVE_VALIDATED","TVL_MISMATCH"}
@@ -26,7 +27,7 @@ def _version(row):
     return v or "UNKNOWN"
 
 class OpportunityLeaderboard:
-    STORE_KEY="opportunity_leaderboard:v0973"
+    STORE_KEY="opportunity_leaderboard:v0974"
     def __init__(self,store,candidate_universe):
         self.store=store;self.universe=candidate_universe
 
@@ -112,7 +113,7 @@ class OpportunityLeaderboard:
                     "pair":str(raw.get("pair") or "?"),"chain":chain,"pool_address":raw.get("pool_address"),
                     "protocol":str(raw.get("protocol") or raw.get("protocol_guess") or "UNISWAP_V3"),"protocol_version":_version(raw),
                     "tvl_usd":_f(raw.get("tvl_usd")),"volume_24h_usd":_f(raw.get("volume_24h_usd")),
-                    "fee_apr_proxy":_f(raw.get("gross_fee_apr_proxy")),"discovery_score":_f(raw.get("discovery_score")),
+                    "fee_apr_proxy":_f(raw.get("gross_fee_apr_proxy")),"turnover_24h":_f(raw.get("turnover_24h"),_f(raw.get("volume_24h_usd"))/max(_f(raw.get("tvl_usd")),1.0)),"discovery_score":_f(raw.get("discovery_score")),
                     "screen_score":self._screen_score(raw,fr),"score_type":"PROVISIONAL_SCREEN_SCORE",
                     "economic_validation":validation or "UNVERIFIED","profit_lab_readiness":readiness,
                     "freshness":fr,"snapshot_age_seconds":round(age,1) if age is not None else None,
@@ -127,11 +128,14 @@ class OpportunityLeaderboard:
             old=dedup.get(key)
             if old is None or (r["leaderboard_eligible"],r["screen_score"],r["volume_24h_usd"])>(old["leaderboard_eligible"],old["screen_score"],old["volume_24h_usd"]):dedup[key]=r
         all_rows=list(dedup.values())
-        all_rows.sort(key=lambda r:(r["leaderboard_eligible"],bool((r["deep_analysis"] or {}).get("fresh")),bool((r["profit_lab_readiness"] or {}).get("ready")),r["screen_score"],r["volume_24h_usd"],r["tvl_usd"]),reverse=True)
+        for r in all_rows:
+            r["opportunity_score"]=score_opportunity(r)
+            r["score"]=r["opportunity_score"]["score"]
+        all_rows.sort(key=lambda r:(r["leaderboard_eligible"],_f((r.get("opportunity_score") or {}).get("score")),bool((r["deep_analysis"] or {}).get("fresh")),bool((r["profit_lab_readiness"] or {}).get("ready")),r["volume_24h_usd"],r["tvl_usd"]),reverse=True)
         eligible=[r for r in all_rows if r["leaderboard_eligible"]];top=eligible[:max(1,min(100,int(limit)))]
         for i,r in enumerate(top,1):r["rank"]=i
         funnel={**tot,"chains_requested":len(chains),"chains_with_snapshots":sum(1 for x in chain_state if x["has_snapshot"]),"persistent_candidates":len(all_rows),"leaderboard_eligible":len(eligible),"shown":len(top),"deep_analysed":sum(1 for r in eligible if (r["deep_analysis"] or {}).get("status")!="NOT_ANALYSED"),"allocation_confirmed":sum(1 for r in eligible if r["allocation_confirmed"])}
-        payload={"ok":True,"mode":"PERSISTENT_CROSS_CHAIN_LEADERBOARD_FOUNDATION","generated_at":now,"score_version":"SCREEN_FOUNDATION_V0973","score_is_final_opportunity_score":False,"chains":chain_state,"funnel":funnel,"rows":top,"note":"Persistent cross-chain leaderboard foundation. Screen score is provisional; v0.9.7.4 adds the final transparent Opportunity Score."}
+        payload={"ok":True,"mode":"PERSISTENT_CROSS_CHAIN_OPPORTUNITY_SCORE","generated_at":now,"score_version":SCORE_VERSION,"score_is_final_opportunity_score":True,"chains":chain_state,"funnel":funnel,"rows":top,"note":"Transparent Opportunity Score ranks net economics, range durability, liquidity, sustainable activity, risk/friction and evidence quality. APR alone cannot dominate the board."}
         try:self.store.set_setting(self.STORE_KEY,payload)
         except Exception:pass
         return payload
