@@ -14,6 +14,8 @@ from lp_manager.opportunity_model import (
     freshness_state,
 )
 from lp_manager.product import APP_VERSION, APP_DISPLAY_VERSION, OPPORTUNITY_SCHEMA_VERSION
+from lp_manager.opportunity_leaderboard import OpportunityLeaderboard
+import time
 
 
 def test_product_metadata_has_one_release_identity():
@@ -131,3 +133,109 @@ def test_api_exposes_canonical_app_metadata_and_versionless_shared_source():
     assert '"app": app_metadata()' in api
     assert '"SHARED_CANDIDATE_UNIVERSE"' in api
     assert "SHARED_CANDIDATE_UNIVERSE_V0964" not in api
+
+class _LeaderboardStore:
+    def __init__(self):
+        self.settings = {}
+
+    def get_setting(self, key, default=None):
+        return self.settings.get(key, default)
+
+    def set_setting(self, key, value):
+        self.settings[key] = value
+
+    def list_forecast_snapshots(self, limit=500):
+        return []
+
+    def list_opportunities(self, limit=100):
+        return []
+
+
+class _LeaderboardUniverse:
+    def __init__(self, snapshots):
+        self.snapshots = snapshots
+
+    def cached(self, chain):
+        return self.snapshots.get(chain, {"ok": False, "summary": {}, "shortlist": []})
+
+
+def _leaderboard_candidate(chain, address, pair, score, version="V3"):
+    return {
+        "chain": chain,
+        "pool_address": address,
+        "pair": pair,
+        "protocol": "UNISWAP_" + version,
+        "version": version,
+        "tvl_usd": 1000000,
+        "volume_24h_usd": 2000000,
+        "gross_fee_apr_proxy": 40,
+        "discovery_score": score,
+        "economic_validation": "CROSS_VALIDATED",
+        "research_ready": True,
+        "profit_lab_readiness": {"ready": True, "status": "READY_CACHED_HISTORY", "label": "PROFIT READY"},
+    }
+
+
+def _leaderboard_snapshot(chain, rows, age=10):
+    return {
+        "ok": True,
+        "chain": chain,
+        "generated_at": time.time() - age,
+        "summary": {
+            "v3_discovered": len(rows),
+            "shortlisted": len(rows),
+            "live_validated": len(rows),
+            "research_ready": len(rows),
+            "profit_lab_ready": len(rows),
+        },
+        "shortlist": rows,
+    }
+
+
+def test_v0973_persistent_board_combines_cached_chains():
+    eth = _leaderboard_candidate("ETHEREUM", "0x" + "1" * 40, "QNT/WETH", 70)
+    arb = _leaderboard_candidate("ARBITRUM", "0x" + "2" * 40, "ARB/WETH", 65)
+    store = _LeaderboardStore()
+    board = OpportunityLeaderboard(store, _LeaderboardUniverse({
+        "ETHEREUM": _leaderboard_snapshot("ETHEREUM", [eth]),
+        "ARBITRUM": _leaderboard_snapshot("ARBITRUM", [arb]),
+    }))
+    result = board.rebuild()
+    assert result["funnel"]["chains_with_snapshots"] == 2
+    assert {x["chain"] for x in result["rows"]} == {"ETHEREUM", "ARBITRUM"}
+    assert OpportunityLeaderboard.STORE_KEY in store.settings
+
+
+def test_v0973_stale_chain_does_not_compete_as_current():
+    fresh = _leaderboard_candidate("ETHEREUM", "0x" + "3" * 40, "WETH/USDC", 50)
+    stale = _leaderboard_candidate("BASE", "0x" + "4" * 40, "WETH/USDC", 99)
+    board = OpportunityLeaderboard(_LeaderboardStore(), _LeaderboardUniverse({
+        "ETHEREUM": _leaderboard_snapshot("ETHEREUM", [fresh], 30),
+        "BASE": _leaderboard_snapshot("BASE", [stale], 7200),
+    }))
+    result = board.rebuild()
+    assert any(x["chain"] == "ETHEREUM" for x in result["rows"])
+    assert not any(x["chain"] == "BASE" for x in result["rows"])
+
+
+def test_v0973_screen_score_is_provisional_and_v4_ready():
+    row = _leaderboard_candidate("BASE", "0x" + "8" * 40, "TOKEN/WETH", 60, "V4")
+    result = OpportunityLeaderboard(
+        _LeaderboardStore(),
+        _LeaderboardUniverse({"BASE": _leaderboard_snapshot("BASE", [row])}),
+    ).rebuild()
+    assert result["score_is_final_opportunity_score"] is False
+    assert result["rows"][0]["score_type"] == "PROVISIONAL_SCREEN_SCORE"
+    assert result["rows"][0]["protocol_version"] == "V4"
+
+
+def test_v0973_ui_has_persistent_leaderboard_surface():
+    root = Path(__file__).parents[1]
+    html = (root / "lp_manager" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'id="leaderboard-result"' in html
+    assert "Live Opportunity Leaderboard" in html
+    assert "Screen score" in html
+    assert "/static/app.js?v=0.9.7.3" in html
+    assert "renderOpportunityLeaderboard" in js
+
