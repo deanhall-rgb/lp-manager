@@ -778,21 +778,39 @@ function leaderboardDeepBadge(x){
   const tone=status==='DEEP_PROFITABLE'?'good':status==='DEEP_NON_POSITIVE'?'bad':status==='DEEP_STALE'?'watch':'';
   return badge(d.label||'SCREEN ONLY',tone);
 }
+function showLeaderboardScore(i){
+  const x=leaderboardRows[i];if(!x)return;
+  const o=x.opportunity_score||{},c=o.components||{},w=o.weights||{},wc=o.weighted_components||{};
+  const names={
+    net_economics:'Net economics',
+    range_durability:'Range durability',
+    liquidity_quality:'Liquidity quality',
+    activity_quality:'Activity quality',
+    risk_quality:'Risk / friction quality',
+    evidence_quality:'Evidence quality'
+  };
+  const parts=Object.keys(names).map(k=>`<div class="metric"><div class="label">${names[k]} · ${num(w[k]||0,0)}% weight</div><div class="value">${num(c[k]||0,1)}/100</div><div class="sub">contributes ${num(wc[k]||0,1)} points</div></div>`).join('');
+  const cap=o.score_cap<100?`<div class="warning-box lower"><b>Score cap ${num(o.score_cap,0)}.</b> ${esc(o.cap_reason||'Evidence maturity cap applied.')}</div>`:'';
+  const notes=(o.notes||[]).length?`<div class="lower"><h3>Why this score</h3><ul>${o.notes.map(n=>`<li>${esc(n)}</li>`).join('')}</ul></div>`:'';
+  modal(`<h2>${esc(x.pair||'?')} Opportunity Score</h2><p class="meta">${esc(x.chain||'')} · ${esc(x.protocol_version||'')} · ${short(x.pool_address||'')}</p><div class="notice good"><b>${num(o.score||0,1)}/100</b> · ${esc(o.confidence||'LOW')} confidence · ${esc(o.basis||'UNKNOWN')}</div><div class="modal-grid lower">${parts}</div>${cap}${notes}<p class="meta lower">Score version: ${esc(o.version||'UNKNOWN')}. The score ranks expected net wealth creation after durability, liquidity, activity, risk/friction and evidence quality; it is not an APR ranking.</p>`);
+}
 function renderOpportunityLeaderboard(r){
   const target=$('#leaderboard-result');if(!target)return;
   if(!r||r.error){target.innerHTML=`<div class="warning-box"><b>Leaderboard unavailable.</b> ${esc(r?.error||'Unknown error')}</div>`;return}
   leaderboardRows=r.rows||[];
   const f=r.funnel||{},chains=r.chains||[];
   const chainBadges=chains.map(x=>badge(`${x.chain} · ${x.shortlisted||0}`,x.freshness==='FRESH'?'good':x.has_snapshot?'watch':'')).join('');
-  const rows=leaderboardRows.length?`<table class="table"><thead><tr><th>Rank</th><th>Pair</th><th>Chain</th><th>Version</th><th>Screen score</th><th>TVL</th><th>24h volume</th><th>Fee APR proxy</th><th>Profit state</th><th>Deep analysis</th><th>Freshness</th><th>Action</th></tr></thead><tbody>${leaderboardRows.map((x,i)=>{
+  const rows=leaderboardRows.length?`<table class="table"><thead><tr><th>Rank</th><th>Pair</th><th>Chain</th><th>Version</th><th>Opportunity score</th><th>TVL</th><th>24h volume</th><th>Fee APR proxy</th><th>Profit state</th><th>Deep analysis</th><th>Freshness</th><th>Action</th></tr></thead><tbody>${leaderboardRows.map((x,i)=>{
     const pr=x.profit_lab_readiness||{},prStatus=String(pr.status||''),prTone=pr.ready===true?'good':prStatus==='HISTORY_FAILED'?'bad':'watch';
     const d=x.deep_analysis||{},deepDetail=d.status&&d.status!=='NOT_ANALYSED'?`<div class="meta">${money(d.expected_net_usd||0)} net · ${num(d.horizon_days||0,0)}d @ ${money(d.capital_usd||0)} basis</div>`:'<div class="meta">Needs Profit Lab run</div>';
-    return `<tr><td><b>#${x.rank||i+1}</b></td><td><b>${esc(x.pair||'?')}</b><div class="meta">${short(x.pool_address||'')}</div></td><td>${esc(x.chain||'')}</td><td>${badge(x.protocol_version||'UNKNOWN')}</td><td><b>${num(x.screen_score||0,0)}</b><div class="meta">provisional</div></td><td>${moneyRawUsd(x.tvl_usd||0)}</td><td>${moneyRawUsd(x.volume_24h_usd||0)}</td><td>${x.fee_apr_proxy?pct(x.fee_apr_proxy,1):'—'}</td><td>${badge(pr.label||'UNKNOWN',prTone)}</td><td>${leaderboardDeepBadge(x)}${deepDetail}</td><td>${leaderboardFreshnessBadge(x)}</td><td><button class="btn secondary small" onclick="openLeaderboardProfit(${i})">Profit plan</button></td></tr>`
+    const os=x.opportunity_score||{},score=os.score??x.screen_score??0,confidence=String(os.confidence||'LOW');
+    const scoreTone=confidence==='HIGH'?'good':confidence==='MEDIUM'?'watch':'';
+    return `<tr><td><b>#${x.rank||i+1}</b></td><td><b>${esc(x.pair||'?')}</b><div class="meta">${short(x.pool_address||'')}</div></td><td>${esc(x.chain||'')}</td><td>${badge(x.protocol_version||'UNKNOWN')}</td><td><button class="btn secondary small" onclick="showLeaderboardScore(${i})">${num(score,0)}/100</button><div class="meta">${badge(confidence,scoreTone)} · screen ${num(x.screen_score||0,0)}</div></td><td>${moneyRawUsd(x.tvl_usd||0)}</td><td>${moneyRawUsd(x.volume_24h_usd||0)}</td><td>${x.fee_apr_proxy?pct(x.fee_apr_proxy,1):'—'}</td><td>${badge(pr.label||'UNKNOWN',prTone)}</td><td>${leaderboardDeepBadge(x)}${deepDetail}</td><td>${leaderboardFreshnessBadge(x)}</td><td><button class="btn secondary small" onclick="openLeaderboardProfit(${i})">Profit plan</button></td></tr>`
   }).join('')}</tbody></table>`:'<div class="empty-state">No cross-chain candidates are leaderboard-eligible yet. Build Candidate Universe snapshots on one or more chains, then refresh this board.</div>';
   target.innerHTML=`<div class="notice good"><b>Persistent cross-chain board.</b> ${num(f.v3_considered||0,0)} V3 considered → ${num(f.shortlisted||0,0)} shortlisted → ${num(f.research_ready||0,0)} research-ready → ${num(f.profit_ready||0,0)} profit-ready → ${num(f.leaderboard_eligible||0,0)} leaderboard-eligible → ${num(f.shown||0,0)} shown.</div>
   <div class="tag-row lower">${chainBadges}</div>
   <div class="modal-grid lower">${info('Persistent candidates',num(f.persistent_candidates||0,0))}${info('Deep analysed',num(f.deep_analysed||0,0))}${info('Deep positive',num(f.allocation_confirmed||0,0))}${info('Chains with snapshots',`${num(f.chains_with_snapshots||0,0)} / ${num(f.chains_requested||0,0)}`)}</div>
-  <div class="meta lower">Screen score is a temporary discovery/readiness/freshness ordering only. Deep Profit Lab economics remain separate; the transparent Opportunity Score is the next scoring patch.</div>
+  <div class="meta lower">Opportunity Score is now the cross-pool ranking. Click a score to inspect the six weighted components, evidence cap and reasoning. Screen score remains visible only as discovery context.</div>
   <div class="lower">${rows}</div>`;
 }
 async function loadOpportunityLeaderboard(rebuild=false){
