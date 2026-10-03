@@ -24,10 +24,11 @@ def _valid_address(value: str) -> bool:
 
 
 class LiveDataService:
-    def __init__(self, settings, store):
+    def __init__(self, settings, store, provider_coordinator=None):
         self.settings = settings
         self.store = store
-        self.market = GeckoTerminalClient() if settings.gecko_terminal_enabled else None
+        self.provider_coordinator = provider_coordinator
+        self.market = GeckoTerminalClient(coordinator=provider_coordinator) if settings.gecko_terminal_enabled else None
         self._refresh_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -42,6 +43,7 @@ class LiveDataService:
             "wallet_display": f"{wallet[:8]}…{wallet[-6:]}" if len(wallet) > 16 else wallet,
             "demo_seed": self.settings.demo_seed,
             "market_data": {"geckoterminal": bool(self.market), "thegraph": bool(self.settings.thegraph_api_key)},
+            "provider_coordinator": self.provider_coordinator.status() if self.provider_coordinator is not None else {"enabled":False},
             "chains": registry_status(),
             "last_refresh": last,
             "last_scout_refresh": self.store.get_setting("live:last_scout_refresh", None),
