@@ -19,8 +19,8 @@ import time
 
 
 def test_product_metadata_has_one_release_identity():
-    assert APP_VERSION == "0.9.7.3.1"
-    assert APP_DISPLAY_VERSION == "v0.9.7.3.1"
+    assert APP_VERSION == "0.9.7.4"
+    assert APP_DISPLAY_VERSION == "v0.9.7.4"
     assert OPPORTUNITY_SCHEMA_VERSION == "1.0"
 
 
@@ -219,14 +219,14 @@ def test_v0973_stale_chain_does_not_compete_as_current():
     assert not any(x["chain"] == "BASE" for x in result["rows"])
 
 
-def test_v0973_screen_score_is_provisional_and_v4_ready():
+def test_v0974_opportunity_score_is_final_and_v4_ready():
     row = _leaderboard_candidate("BASE", "0x" + "8" * 40, "TOKEN/WETH", 60, "V4")
     result = OpportunityLeaderboard(
         _LeaderboardStore(),
         _LeaderboardUniverse({"BASE": _leaderboard_snapshot("BASE", [row])}),
     ).rebuild()
-    assert result["score_is_final_opportunity_score"] is False
-    assert result["rows"][0]["score_type"] == "PROVISIONAL_SCREEN_SCORE"
+    assert result["score_is_final_opportunity_score"] is True
+    assert result["rows"][0]["opportunity_score"]["version"] == "OPPORTUNITY_SCORE_V1"
     assert result["rows"][0]["protocol_version"] == "V4"
 
 
@@ -236,8 +236,8 @@ def test_v0973_ui_has_persistent_leaderboard_surface():
     js = (root / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
     assert 'id="leaderboard-result"' in html
     assert "Live Opportunity Leaderboard" in html
-    assert "Screen score" in html
-    assert "/static/app.js?v=0.9.7.3.1" in html
+    assert "Opportunity Score" in html
+    assert "/static/app.js?v=0.9.7.4" in html
     assert "renderOpportunityLeaderboard" in js
 
 def test_v0973_advisor_deep_state_matches_strategy_horizon_not_latest_other_hold():
