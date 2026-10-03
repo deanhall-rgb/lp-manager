@@ -438,7 +438,7 @@ This patch turns the shared Candidate Universe into a persistent cross-chain dec
 - Freshness is explicit: FRESH / RECENT / AGING / STALE evidence cannot silently compete as current data.
 - Protocol/version is explicit from the foundation layer so later V4 support does not require a leaderboard redesign.
 - Deep-analysis state distinguishes SCREEN ONLY, DEEP +VE, DEEP -VE and DEEP STALE from persisted Profit Lab results.
-- Portfolio Advisor still performs its fast screening pass, but a candidate must also have fresh positive deep Profit Lab evidence before it can clear the final allocation gate.
+- Portfolio Advisor still performs its fast screening pass, but a candidate must also have fresh positive deep Profit Lab evidence at the strategy planning horizon before it can clear the final allocation gate (3-day Tactical, 30-day Core). A profitable one-day run therefore cannot validate a different holding context.
 - The current Screen score is intentionally provisional. It is not the final Opportunity Score; v0.9.7.4 adds the transparent cross-pool scoring model.
 - Existing Profit Lab to Execution Desk workflow remains unchanged.
 - No new broad provider sweep is introduced here. Leaderboard rebuilds use already-persisted Candidate Universe evidence; larger provider/batch changes remain a later optimisation stage.
