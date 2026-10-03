@@ -447,3 +447,22 @@ Current lifecycle:
 
 **Discovered → Market validated → Profit ready → Deep analysed → Leaderboard eligible → Allocation eligible**
 
+## v0.9.7.3.1 Advisor capital-consistency hotfix
+
+This hotfix closes a decision-boundary bug exposed by live testing of QNT/WETH.
+
+A deep Profit Lab result is only valid for the capital and holding period it analysed. In v0.9.7.3, Advisor correctly required matching-horizon deep evidence, but it could still treat a positive result produced at a larger capital amount as sufficient evidence for a much smaller Tactical allocation. Because Profit Lab contains fixed intervention cash costs, fee income falls with capital while those costs do not. A £1,000 plan can therefore be positive while a £270 allocation is negative.
+
+v0.9.7.3.1 changes that behaviour:
+
+- Advisor still uses the fast cross-chain screen for ranking.
+- Deep Profit Lab evidence must match the strategy horizon.
+- Before an allocation survives, the persisted deep fee forecast is projected onto the **actual proposed capital**: fee income scales with capital while explicit intervention cash cost remains fixed.
+- If the proposed amount turns the deep hold negative, that candidate is removed and allocation is recalculated across the remaining candidates.
+- The Advisor economics column now shows the **validated hold estimate at the proposed size** rather than presenting the quick monthly screen as though it were the final profit forecast.
+- The quick monthly screen remains visible only as secondary context.
+- Profit-plan click-through now carries both the exact proposed capital and the validated holding period into Profit Lab.
+- Leaderboard deep evidence now shows the capital basis used by the stored Profit Lab result, making positive/negative deep status less ambiguous.
+
+The final execution decision still comes from a fresh Profit Lab run at the exact capital and horizon; the size-adjusted persisted result is a safety gate, not a substitute for that rerun.
+
