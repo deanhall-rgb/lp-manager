@@ -125,6 +125,13 @@ class OpportunityLeaderboard:
         except Exception:pass
         return payload
 
+    def attach_analysis_state(self, rows):
+        now=time.time(); idx=self._deep_index(); out=[]
+        for item in rows:
+            row=dict(item); key=(str(row.get('chain') or '').upper(),str(row.get('pool_address') or '').lower())
+            row['deep_analysis']=self._deep_state(idx.get(key),now); out.append(row)
+        return out
+
     def cached(self):
         try:p=self.store.get_setting(self.STORE_KEY,None)
         except Exception:p=None
