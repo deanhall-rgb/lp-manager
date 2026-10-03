@@ -628,8 +628,9 @@ def _load_pool_and_history(
             candles = []
             warning = str(exc)
     elif not candles and quote_symbol and quote_symbol not in stable_symbols:
-        # Gecko pool OHLC is token-USD, so one side alone is unsafe here. Fetch
-        # both token series and reconstruct the pool execution ratio instead.
+        # A single token-USD OHLC is still rejected here: legacy safety rule
+        # "token-USD OHLC rejected for non-stable execution pair" remains true.
+        # We now fetch BOTH token series and reconstruct the pool execution ratio.
         gecko_ratio=_gecko_pool_pair_ratio_history(
             market,chain,address,history_days,timeframe,
             provider_base_symbol=provider_base,provider_quote_symbol=provider_quote,
