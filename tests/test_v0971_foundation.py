@@ -17,8 +17,8 @@ from lp_manager.product import APP_VERSION, APP_DISPLAY_VERSION, OPPORTUNITY_SCH
 
 
 def test_product_metadata_has_one_release_identity():
-    assert APP_VERSION == "0.9.7.1.1"
-    assert APP_DISPLAY_VERSION == "v0.9.7.1.1"
+    assert APP_VERSION == "0.9.7.2"
+    assert APP_DISPLAY_VERSION == "v0.9.7.2"
     assert OPPORTUNITY_SCHEMA_VERSION == "1.0"
 
 
