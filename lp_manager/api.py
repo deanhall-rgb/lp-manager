@@ -1664,9 +1664,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     position_id=None,created_at=time.time(),severity="INFO",action="PORTFOLIO_ALLOCATION_RECOMMENDATION",
                     confidence=min(0.95,max(0.50,float(top.get("score") or 0)/100.0)),
                     summary=f"Portfolio Advisor currently ranks {top.get('pair')} first",
-                    rationale=f"Shared cross-chain Candidate Universe recommends an incremental {top.get('amount')} from {intent.available_capital} new capital; existing exposure, reserve and concentration ceilings were preserved.",
+                    rationale=f"Shared cross-chain Candidate Universe recommends an incremental {top.get('amount')} from {intent.available_capital} new capital after matching-horizon Profit Lab evidence remained positive at the proposed allocation size; existing exposure, reserve and concentration ceilings were preserved.",
                     trigger="PORTFOLIO_ADVISOR",source="PORTFOLIO_ADVISOR",
-                    evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"expected_net_month":top.get("expected_net_month"),"existing_pool_value":(top.get("existing_exposure") or {}).get("pool_value"),"post_pool_pct":(top.get("post_allocation") or {}).get("pool_pct"),"candidate_source":"SHARED_CANDIDATE_UNIVERSE"},
+                    evidence={"pair":top.get("pair"),"chain":top.get("chain"),"sleeve":top.get("sleeve"),"score":top.get("score"),"amount":top.get("amount"),"validated_expected_net_hold":top.get("validated_expected_net_hold"),"validated_horizon_days":top.get("validated_horizon_days"),"screen_expected_net_month":top.get("screen_expected_net_month"),"existing_pool_value":(top.get("existing_exposure") or {}).get("pool_value"),"post_pool_pct":(top.get("post_allocation") or {}).get("pool_pct"),"candidate_source":"SHARED_CANDIDATE_UNIVERSE"},
                 ))
             except Exception:
                 pass
