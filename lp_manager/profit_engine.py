@@ -368,6 +368,100 @@ def _history_cache_is_fresh(candles: list[dict[str, Any]], timeframe: str, *, no
     return 0 <= current-latest <= max_age
 
 
+def _ratio_history_from_usd_rows(
+    base_rows: list[dict[str, Any]], quote_rows: list[dict[str, Any]], timeframe: str,
+    *, source: str,
+) -> list[dict[str, Any]]:
+    """Build execution-unit history from two independently priced USD series.
+
+    If the pool lens is QNT per WETH, the execution price is USD(WETH)/USD(QNT).
+    Zero-span ratio candles are deliberate: they preserve the observed path without
+    inventing intraperiod highs/lows from two asynchronously priced assets.
+    """
+    step=3600 if str(timeframe).lower()=="hour" else 86400
+
+    def keyed(rows):
+        out={}
+        for row in rows or []:
+            ts=int(_f(row.get("timestamp"))//step)*step
+            price=_f(row.get("price_usd"),_f(row.get("close")))
+            if ts>0 and price>0:
+                out[ts]=price
+        return out
+
+    kb=keyed(base_rows); kq=keyed(quote_rows)
+    out=[]
+    for ts in sorted(set(kb).intersection(kq)):
+        close=kb[ts]/kq[ts] if kq[ts]>0 else 0.0
+        if close<=0 or not math.isfinite(close):
+            continue
+        out.append({
+            "timestamp":ts,"open":close,"high":close,"low":close,"close":close,
+            "volume":0.0,"source":source,
+        })
+    return out
+
+
+def _alchemy_symbol_pair_history(
+    market, base_symbol: str, quote_symbol: str, history_days: int, timeframe: str,
+) -> list[dict[str, Any]]:
+    """Fallback pair-ratio history when address-specific Alchemy coverage is sparse.
+
+    Symbol history is accepted only after the caller validates it against the live
+    on-chain pool ratio, preventing an ambiguous symbol from silently setting range
+    geometry.
+    """
+    if not hasattr(market,"alchemy_symbol_history") or not base_symbol or not quote_symbol:
+        return []
+    try:
+        base=market.alchemy_symbol_history(base_symbol,history_days,timeframe=timeframe) or []
+        quote=market.alchemy_symbol_history(quote_symbol,history_days,timeframe=timeframe) or []
+    except Exception:
+        return []
+    return _ratio_history_from_usd_rows(
+        base,quote,timeframe,source="ALCHEMY_SYMBOL_PAIR_RATIO",
+    )
+
+
+def _gecko_pool_pair_ratio_history(
+    market, chain: str, address: str, history_days: int, timeframe: str,
+    *, provider_base_symbol: str, provider_quote_symbol: str,
+    base_symbol: str, quote_symbol: str,
+) -> list[dict[str, Any]]:
+    """Reconstruct a non-stable pool ratio from both Gecko pool token USD series.
+
+    A single token-USD series is never substituted for a volatile/volatile pair.
+    Both sides must be available from the same pool and aligned by timestamp.
+    """
+    if not hasattr(market,"ohlcv_days"):
+        return []
+    try:
+        provider_base_rows=market.ohlcv_days(
+            chain,address,history_days,timeframe=timeframe,token="base",
+        ) or []
+        provider_quote_rows=market.ohlcv_days(
+            chain,address,history_days,timeframe=timeframe,token="quote",
+        ) or []
+    except TypeError:
+        # An adapter without the token selector cannot prove which USD series it
+        # returned, so it is not safe for non-stable pair reconstruction.
+        return []
+    except Exception:
+        return []
+
+    by_symbol={
+        str(provider_base_symbol or "").upper():provider_base_rows,
+        str(provider_quote_symbol or "").upper():provider_quote_rows,
+    }
+    base_rows=by_symbol.get(str(base_symbol or "").upper()) or []
+    quote_rows=by_symbol.get(str(quote_symbol or "").upper()) or []
+    if not base_rows or not quote_rows:
+        return []
+    return _ratio_history_from_usd_rows(
+        base_rows,quote_rows,timeframe,source="GECKOTERMINAL_POOL_PAIR_RATIO",
+    )
+
+
 def _load_pool_and_history(
     market, chain: str, address: str, history_days: int,
     pool_fallback: dict[str, Any] | None = None, store=None,
@@ -472,6 +566,19 @@ def _load_pool_and_history(
         except Exception as exc:
             warning = str(exc)
 
+    # If address-specific token history is sparse, try the provider's global
+    # symbol histories for BOTH assets and reconstruct the actual execution ratio.
+    # The live on-chain ratio sanity check below is mandatory before this can be used.
+    if not candles and quote_symbol and quote_symbol not in stable_symbols:
+        symbol_ratio=_alchemy_symbol_pair_history(
+            market,base_symbol,quote_symbol,history_days,timeframe,
+        )
+        if len(symbol_ratio)>=minimum_floor and _history_matches_spot(symbol_ratio,live_spot):
+            candles=symbol_ratio
+            provider="ALCHEMY_SYMBOL_PAIR_RATIO"
+            if len(symbol_ratio)<minimum:
+                warning=(warning+"; " if warning else "")+f"short symbol pair-ratio history ({len(symbol_ratio)} samples)"
+
     # A wrapped major on a new chain can have sparse/wrong address-specific price
     # history while the global WETH/ETH market history is sound.
     if not candles and quote_symbol in stable_symbols and base_symbol in RISK_MAJOR_SYMBOLS and hasattr(market,"alchemy_symbol_history"):
@@ -521,10 +628,23 @@ def _load_pool_and_history(
             candles = []
             warning = str(exc)
     elif not candles and quote_symbol and quote_symbol not in stable_symbols:
-        warning=(warning+"; " if warning else "")+(
-            "token-USD OHLC rejected for non-stable execution pair; "
-            "pair-ratio or pool-native history required"
+        # Gecko pool OHLC is token-USD, so one side alone is unsafe here. Fetch
+        # both token series and reconstruct the pool execution ratio instead.
+        gecko_ratio=_gecko_pool_pair_ratio_history(
+            market,chain,address,history_days,timeframe,
+            provider_base_symbol=provider_base,provider_quote_symbol=provider_quote,
+            base_symbol=base_symbol,quote_symbol=quote_symbol,
         )
+        if len(gecko_ratio)>=minimum_floor and _history_matches_spot(gecko_ratio,live_spot):
+            candles=gecko_ratio
+            provider="GECKOTERMINAL_POOL_PAIR_RATIO"
+            if len(gecko_ratio)<minimum:
+                warning=(warning+"; " if warning else "")+f"short Gecko pair-ratio history ({len(gecko_ratio)} samples)"
+        else:
+            warning=(warning+"; " if warning else "")+(
+                "non-stable execution pair requires pair-ratio history; "
+                "Alchemy, pool observations and dual-token Gecko ratio were unavailable"
+            )
 
     if len(candles) < minimum and hasattr(market, "alchemy_pool_history") and onchain.get("ok"):
         try:
