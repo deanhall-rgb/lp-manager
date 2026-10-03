@@ -190,3 +190,25 @@ def test_ui_explains_existing_book_is_context_not_a_deduction_from_new_capital()
     assert "does not reduce your new-capital budget" in js
     assert "${money(deployable)} available to deploy" in js
 
+def test_screen_only_candidate_remains_research_only_until_deep_profit_evidence_exists():
+    row = _row()
+    row["deep_analysis"] = {"status": "NOT_ANALYSED", "fresh": False}
+    result = rank_opportunities([row], available_capital=1000, reserve_pct=10)
+    assert result["allocations"] == []
+    assert result["near_misses"]
+    assert any(
+        "deep Profit Lab validation required" in reason
+        for reason in result["near_misses"][0]["reject_reasons"]
+    )
+
+
+def test_non_positive_deep_profit_evidence_blocks_screen_result():
+    row = _row()
+    row["deep_analysis"] = {"status": "DEEP_NON_POSITIVE", "fresh": True, "expected_net_usd": -2.0}
+    result = rank_opportunities([row], available_capital=1000, reserve_pct=10)
+    assert result["allocations"] == []
+    assert any(
+        "expected net is not positive" in reason
+        for reason in result["near_misses"][0]["reject_reasons"]
+    )
+
