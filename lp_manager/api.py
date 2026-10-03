@@ -48,7 +48,7 @@ from .portfolio_advisor import rank_opportunities, bounded_advisor_calibration
 from .models import Decision
 from .historical_import import import_delta_pool_history
 from .closed_history import import_closed_position_finals
-from .pool_chain import read_v3_pool_metadata, read_v3_observation_history
+from .pool_chain import read_v3_pool_metadata, read_v3_observation_history, configure_provider_coordinator
 from .profit_engine import recommend_profit_range
 from .profit_dashboard import portfolio_profit_scorecard
 from .profit_calibration import fee_calibration_for_pool, calibration_samples
@@ -83,6 +83,8 @@ from .capital_ledger import (
 )
 from .discovery_lab import DiscoveryLab
 from .candidate_universe import CandidateUniverse
+from .provider_coordinator import ProviderCoordinator
+from .evidence_warmer import EvidenceWarmService
 from .product import APP_VERSION, app_metadata
 
 
@@ -399,9 +401,16 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             pass
 
     executor = ExecutionService(settings, store)
-    live = LiveDataService(settings, store)
-    discovery_lab = DiscoveryLab(settings, live.market, store=store)
+    provider_coordinator = ProviderCoordinator(store)
+    configure_provider_coordinator(provider_coordinator)
+    live = LiveDataService(settings, store, provider_coordinator=provider_coordinator)
+    discovery_lab = DiscoveryLab(
+        settings, live.market, store=store, coordinator=provider_coordinator,
+    )
     candidate_universe = CandidateUniverse(settings, store, discovery_lab)
+    evidence_warmer = EvidenceWarmService(
+        store, live.market, candidate_universe, provider_coordinator,
+    )
     # Repair confirmed LP Manager closes from their exact transaction receipt.
     # This is intentionally receipt-only and never performs a historical block scan.
     try:
@@ -764,10 +773,13 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         live.start_background()
+        evidence_warmer.start_background()
         try:
             yield
         finally:
+            evidence_warmer.stop_background()
             live.stop_background()
+            configure_provider_coordinator(None)
 
     app = FastAPI(title="LP Manager", version=APP_VERSION, lifespan=lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
@@ -800,6 +812,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "database": str(settings.database_path),
             "execution": executor.capabilities(),
             "live": live.status(),
+            "provider_coordinator": provider_coordinator.status(),
+            "evidence_warmer": evidence_warmer.status(),
             "ai": intelligence.status(),
         }
 
@@ -840,6 +854,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "execution": executor.capabilities(),
             "legacy_sources": discover_legacy_sources(settings.legacy_root),
             "live": live.status(),
+            "provider_coordinator": provider_coordinator.status(),
+            "evidence_warmer": evidence_warmer.status(),
             "ai": intelligence.status(),
             "automation": get_automation_policy(store),
             "profit_scorecard": portfolio_profit_scorecard(store),
