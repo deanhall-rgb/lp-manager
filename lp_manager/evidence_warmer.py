@@ -159,6 +159,23 @@ class EvidenceWarmService:
         )
         return out
 
+    def _persist_pool_status(self, row: dict[str,Any], result: dict[str,Any]) -> None:
+        chain=str(row.get("chain") or result.get("chain") or "").upper()
+        address=str(row.get("pool_address") or result.get("pool_address") or "").lower()
+        if not chain or not address:
+            return
+        payload={
+            **dict(result or {}),
+            "chain":chain,
+            "pool_address":address,
+            "pair":row.get("pair") or result.get("pair"),
+            "checked_at":time.time(),
+        }
+        try:
+            self.store.set_setting(f"profit:evidence:status:{chain}:{address}",payload)
+        except Exception:
+            pass
+
     def run_once(self, *, max_items: int = 2) -> dict[str,Any]:
         started=time.time()
         rows=self._next_targets(max_items)
@@ -170,10 +187,12 @@ class EvidenceWarmService:
                 continue
             info=profit_history_cache_info(self.store,chain,address,history_days=30)
             if info.get("fresh") and int(info.get("samples") or 0)>=24:
-                results.append({
+                item={
                     **info,"ok":True,"status":"CACHE_READY","warmed":False,
                     "pair":row.get("pair"),"priority_reason":row.get("priority_reason"),
-                })
+                }
+                results.append(item)
+                self._persist_pool_status(row,item)
                 continue
             try:
                 if self.coordinator is not None:
@@ -189,12 +208,14 @@ class EvidenceWarmService:
                     )
             except Exception as exc:
                 result={"ok":False,"status":"FAILED","error":str(exc)[:300]}
-            results.append({
+            item={
                 **result,
                 "chain":chain,"pool_address":address,
                 "pair":row.get("pair"),
                 "priority_reason":row.get("priority_reason"),
-            })
+            }
+            results.append(item)
+            self._persist_pool_status(row,item)
 
         payload={
             "ok":all(bool(x.get("ok")) for x in results) if results else True,
