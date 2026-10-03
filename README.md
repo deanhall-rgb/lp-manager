@@ -466,3 +466,53 @@ v0.9.7.3.1 changes that behaviour:
 
 The final execution decision still comes from a fresh Profit Lab run at the exact capital and horizon; the size-adjusted persisted result is a safety gate, not a substitute for that rerun.
 
+
+
+## v0.9.7.4 transparent Opportunity Score
+
+This patch replaces the leaderboard's temporary Screen score ordering with the first transparent cross-pool **Opportunity Score**.
+
+The objective is unchanged: rank pools by their probability of increasing net portfolio wealth after realistic costs and risk, not by headline APR.
+
+The score is a 0-100 weighted model made from six inspectable components:
+
+- **Net economics — 30%:** fresh deep Profit Lab net economics are preferred. Screen economics or gross fee proxies can keep a pool visible, but they receive weaker evidence treatment and cannot masquerade as equivalent to a deep-analysed result.
+- **Range durability — 15%:** uses deep Range Quality when available; otherwise the score reflects that deep range evidence is still pending.
+- **Liquidity quality — 15%:** rewards genuine TVL depth on a logarithmic scale rather than allowing very large pools to dominate linearly.
+- **Sustainable activity — 10%:** combines volume with turnover quality. Very high volume is useful, but implausibly extreme turnover is explicitly discounted rather than rewarded without limit.
+- **Risk / friction quality — 15%:** applies visible penalties for validation mismatch, thin liquidity, anomalous turnover, intervention-cost drag and existing portfolio overlap.
+- **Evidence quality — 15%:** combines market freshness, provider validation, Profit Lab readiness and deep-analysis maturity.
+
+APR is therefore only one input into expected economics and cannot buy a high rank on its own.
+
+Evidence maturity also imposes explicit score caps. A fresh deep-analysed pool can use the full 0-100 range; stale, screen-only, unverified or deep-negative pools are capped so incomplete evidence cannot silently compete as though it were equally decision-ready.
+
+The Opportunities leaderboard now sorts by Opportunity Score and exposes the score confidence plus the original Screen score as secondary discovery context. Clicking the score opens a breakdown showing every component, its weight, points contributed, evidence cap and plain-English reasons.
+
+The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
+
+### v0.9.7.3.1 live sign-off feeding v0.9.7.4
+
+The capital-consistency hotfix is accepted from live testing.
+
+- QNT/WETH was correctly removed when its deep result did not survive the actual proposed allocation economics.
+- A later ARB/WETH Advisor run proposed **£270** with a capital-adjusted validated 3-day hold of approximately **£0.66**.
+- Profit Lab opened at the same **£270 / 3-day** basis and recalculated approximately **£0.66 expected net**, confirming that the Advisor handoff now matches the execution-range authority.
+- A prior research-only ARB investigation prefilled **£681.78** before a fresh allocation existed. This did not affect the later validated allocation path, but the research-only capital prefill is retained as a later UX/state-cleanup item.
+
+## Deferred v0.9.7 live-test backlog
+
+These observations are deliberately retained rather than being mixed into the current feature patch:
+
+- **Background deep-analysis rotation:** the Top 20-25 leaderboard should eventually receive scheduled/rotating Profit Lab evidence automatically. The operator should not need to click every pool manually before it can become deep-confirmed.
+- **Advisor breadth:** Portfolio Advisor can still collapse to one or zero allocation candidates. Later work should distinguish a genuinely empty deployable set from evidence that simply has not completed deep analysis yet.
+- **Research-only capital prefill:** investigate why a research-only ARB/WETH click-through used £681.78 before the later validated £270 allocation. Research mode should clearly state where its capital assumption came from.
+- **Range intelligence/explainability:** symmetric ranges are acceptable when genuinely optimal, but later UI/analysis must make regime, volatility, skew, replay evidence, intervention cost and the reason the selected geometry won easier to inspect.
+- **Robinhood / owned-pool breadth:** ensure DELTA, PONS, HOOKR and other relevant owned/watchlist assets seed discovery appropriately rather than relying only on generic provider pages.
+- **V4 discovery and position visibility:** wallet/position discovery still needs explicit V4 support. The canonical opportunity model is already V4-safe.
+- **Investor Ledger automation:** improve deterministic transfer classification and reduce review items that can be safely auto-resolved.
+- **Performance Log continuity:** reconstruct or explicitly mark offline/missing days rather than silently losing a day when the application was not running.
+- **System cost observability:** show provider/API costs where available alongside existing AI usage/costs.
+- **UI cleanup:** continue removing long internal names, overflow, duplicate controls and awkward click-throughs once all v0.9.7 feature surfaces are present.
+- **Provider/API architecture:** a later optimisation pass may replace or batch provider access for broader/smoother scans, but the feature model should be completed first as agreed.
+- **Packaging/test handoff:** each test build remains one flat project ZIP, accompanied by exact PowerShell launch commands and a focused test brief.
