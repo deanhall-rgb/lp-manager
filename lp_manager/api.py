@@ -85,6 +85,7 @@ from .discovery_lab import DiscoveryLab
 from .candidate_universe import CandidateUniverse
 from .provider_coordinator import ProviderCoordinator
 from .evidence_warmer import EvidenceWarmService
+from .opportunity_leaderboard import OpportunityLeaderboard
 from .product import APP_VERSION, app_metadata
 
 
@@ -411,6 +412,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     evidence_warmer = EvidenceWarmService(
         store, live.market, candidate_universe, provider_coordinator,
     )
+    opportunity_leaderboard = OpportunityLeaderboard(store, candidate_universe)
     # Repair confirmed LP Manager closes from their exact transaction receipt.
     # This is intentionally receipt-only and never performs a historical block scan.
     try:
@@ -1239,6 +1241,14 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 "message":str(exc)[:800],
             }
 
+    @app.get("/api/opportunities/leaderboard")
+    def opportunities_leaderboard(limit: int = 25):
+        return opportunity_leaderboard.rebuild(limit=max(5,min(100,int(limit))))
+
+    @app.post("/api/opportunities/leaderboard/rebuild")
+    def opportunities_leaderboard_rebuild(limit: int = 25):
+        return opportunity_leaderboard.rebuild(limit=max(5,min(100,int(limit))))
+
     @app.get("/api/candidate-universe/{chain}")
     def candidate_universe_cached(chain: str):
         try:
@@ -1271,6 +1281,12 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             result["evidence_prewarm"]={
                 "queued_now":queued,
                 "status":evidence_warmer.status(),
+            }
+            board=opportunity_leaderboard.rebuild()
+            result["leaderboard_status"]={
+                "shown":int((board.get("funnel") or {}).get("shown") or 0),
+                "eligible":int((board.get("funnel") or {}).get("leaderboard_eligible") or 0),
+                "chains_with_snapshots":int((board.get("funnel") or {}).get("chains_with_snapshots") or 0),
             }
             return result
         except ValueError as exc:
@@ -1605,6 +1621,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 "provider_statuses":{str(x.get("provider") or "UNKNOWN"):str(x.get("status") or "UNKNOWN") for x in providers},
             })
 
+        candidates=opportunity_leaderboard.attach_analysis_state(candidates)
         result=rank_opportunities(
             candidates,available_capital=max(0.0,_display_capital_to_usd(intent.available_capital)),
             reserve_pct=max(0.0,min(90.0,intent.reserve_pct)),
@@ -1637,6 +1654,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         }
         result["ai_advice"]=None
         result["ai_advice_status"]="ON_DEMAND_NOT_IN_CRITICAL_PATH"
+        result["leaderboard_state"]=opportunity_leaderboard.rebuild()
         if result.get("allocations"):
             top=result["allocations"][0]
             hour=int(time.time()//3600)
