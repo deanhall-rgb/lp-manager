@@ -276,7 +276,7 @@ class DiscoveryLab:
                 url=f"{DEXSCREENER_BASE}/token-pairs/v1/{slug}/{token}"
                 payload=self._request_json(
                     "DEXSCREENER",f"token-pairs:{slug}:{str(token).lower()}","GET",url,
-                    ttl_seconds=45,stale_seconds=10*60,timeout=15,
+                    ttl_seconds=45,stale_seconds=0,timeout=15,
                 )
                 pairs=payload if isinstance(payload,list) else (payload.get("pairs") or [])
                 for pair in pairs:
@@ -351,7 +351,7 @@ class DiscoveryLab:
                 url=f"{THEGRAPH_BASE}/{subgraph}"
                 payload=self._request_json(
                     "THEGRAPH",f"v3-pools:{chain_key}:{subgraph}:{requested}","POST",url,
-                    ttl_seconds=3*60,stale_seconds=30*60,
+                    ttl_seconds=3*60,stale_seconds=0,
                     json={"query":query,"variables":{"first":requested}},
                     headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"},
                     timeout=25,
@@ -539,7 +539,7 @@ class DiscoveryLab:
             url=f"{DEXSCREENER_BASE}/latest/dex/pairs/{slug}/{address}"
             response=self._request_status_json(
                 "DEXSCREENER",f"pair:{slug}:{str(address).lower()}",url,
-                ttl_seconds=30,stale_seconds=5*60,timeout=12,
+                ttl_seconds=30,stale_seconds=0,timeout=12,
             )
             if int(response.get("status_code") or 0)==404:
                 return None,None
