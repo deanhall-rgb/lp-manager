@@ -428,3 +428,22 @@ This corrective patch closes the issues found during the live v0.9.7.2 stress te
 - Advisor remains a **quick allocation screen**; Profit Lab remains the execution-range authority. This patch makes that boundary visible without prematurely folding the full deep-analysis workload into every Advisor run.
 - Execution Desk transaction construction, browser-wallet signing authority, wallet accounting, campaign accounting and provider-coordinator behaviour are unchanged.
 
+## v0.9.7.3 persistent cross-chain leaderboard foundation
+
+This patch turns the shared Candidate Universe into a persistent cross-chain decision surface before any larger provider/API redesign.
+
+- Opportunities now begins with a persistent Top-25 cross-chain leaderboard built from cached Candidate Universe snapshots across all six supported chains.
+- Refreshing one Candidate Universe chain updates that chain while the leaderboard retains useful snapshots from the others.
+- The board shows the discovery funnel, per-chain freshness, protocol/version, Profit Lab readiness and persisted deep-analysis state.
+- Freshness is explicit: FRESH / RECENT / AGING / STALE evidence cannot silently compete as current data.
+- Protocol/version is explicit from the foundation layer so later V4 support does not require a leaderboard redesign.
+- Deep-analysis state distinguishes SCREEN ONLY, DEEP +VE, DEEP -VE and DEEP STALE from persisted Profit Lab results.
+- Portfolio Advisor still performs its fast screening pass, but a candidate must also have fresh positive deep Profit Lab evidence before it can clear the final allocation gate.
+- The current Screen score is intentionally provisional. It is not the final Opportunity Score; v0.9.7.4 adds the transparent cross-pool scoring model.
+- Existing Profit Lab to Execution Desk workflow remains unchanged.
+- No new broad provider sweep is introduced here. Leaderboard rebuilds use already-persisted Candidate Universe evidence; larger provider/batch changes remain a later optimisation stage.
+
+Current lifecycle:
+
+**Discovered → Market validated → Profit ready → Deep analysed → Leaderboard eligible → Allocation eligible**
+
