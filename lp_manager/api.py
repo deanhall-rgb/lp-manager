@@ -1254,12 +1254,25 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         validate_limit: int = 20,
     ):
         try:
-            return candidate_universe.refresh(
+            result=candidate_universe.refresh(
                 chain.upper(),
                 graph_limit=max(50,min(1000,int(graph_limit))),
                 shortlist_limit=max(5,min(100,int(shortlist_limit))),
                 validate_limit=max(0,min(50,int(validate_limit))),
             )
+            warm_rows=[
+                dict(x) for x in (result.get("shortlist") or [])
+                if x.get("research_ready") and x.get("pool_address")
+            ][:4]
+            queued=evidence_warmer.enqueue(warm_rows)
+            if queued:
+                evidence_warmer.kick()
+            result["provider_coordination"]=provider_coordinator.status()
+            result["evidence_prewarm"]={
+                "queued_now":queued,
+                "status":evidence_warmer.status(),
+            }
+            return result
         except ValueError as exc:
             raise HTTPException(400,str(exc)) from exc
         except Exception as exc:
@@ -1639,7 +1652,48 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 ))
             except Exception:
                 pass
+
+        # Prime Profit Lab history for the pools the user is most likely to click
+        # next. This is background-only; it cannot change Advisor ranking/allocation.
+        allocation_keys={
+            (str(x.get("chain") or "").upper(),str(x.get("pool_address") or "").lower())
+            for x in (result.get("allocations") or [])
+        }
+        likely=[
+            x for x in candidates
+            if (str(x.get("chain") or "").upper(),str(x.get("pool_address") or "").lower()) in allocation_keys
+        ]
+        if len(likely)<4:
+            ranked_for_warm=sorted(
+                candidates,
+                key=lambda x:max(
+                    float((x.get("evaluation") or {}).get("core_pre_score") or 0),
+                    float((x.get("evaluation") or {}).get("tactical_pre_score") or 0),
+                ),
+                reverse=True,
+            )
+            for row in ranked_for_warm:
+                if row not in likely:
+                    likely.append(row)
+                if len(likely)>=4:
+                    break
+        queued=evidence_warmer.enqueue(likely[:4])
+        if queued:
+            evidence_warmer.kick()
+        result["provider_coordination"]=provider_coordinator.status()
+        result["evidence_prewarm"]={
+            "queued_now":queued,
+            "status":evidence_warmer.status(),
+        }
         return result
+
+    @app.get("/api/system/providers")
+    def system_provider_status():
+        return {
+            "provider_coordinator":provider_coordinator.status(),
+            "evidence_warmer":evidence_warmer.status(),
+            "note":"Request/caching observability only. Provider and AI monetary cost accounting is scheduled for the later v0.9.7 cleanup.",
+        }
 
     @app.get("/api/automation")
     def automation_view():
