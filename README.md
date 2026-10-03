@@ -413,3 +413,18 @@ This patch makes provider traffic a shared application resource instead of allow
 - Strategy-facing discovery deliberately does **not** promote the coordinator's stale payload fallback into a newly fresh Candidate Universe. If DEX Screener/The Graph cannot refresh after their short cache expires, the existing Candidate Universe stale-cache path is used and downstream allocation marks that evidence as not refreshed. GeckoTerminal retains its own explicitly tagged provider-cooldown fallback.
 - **Not part of v0.9.7.2:** opportunity breadth, persistent cross-chain universe rotation, Opportunity Score, leaderboard ranking, deeper range-intelligence explanations, V4 discovery and final cost/accounting UI. Those remain staged for the later v0.9.7 patches.
 
+## v0.9.7.2.1 range intelligence correction
+
+This corrective patch closes the issues found during the live v0.9.7.2 stress test before the persistent leaderboard work begins.
+
+- Profit Lab now tests a **denser directional range neighbourhood**. Tactical candidates include sub-1.5% placement steps and the exact regime target (plus softer variants), so short 1d / 3d / 7d holds are no longer forced to choose only between a centred range and coarse directional jumps.
+- The volatility guardrail now allows **bounded evidence-led asymmetry**. Neutral markets remain constrained, while a confident trend/breakout can legitimately place more room in the supported direction without permitting extreme geometry.
+- Range selection remains **profit-first**. A directional candidate can replace the centred candidate only when it remains inside the existing near-best expected-net band and does not materially weaken range quality.
+- Profit Lab now returns an auditable **range placement decision**: centred / higher-ratio skew / lower-ratio skew, target skew, selected skew, whether a same-direction candidate existed, centred-vs-directional expected net where available, and a plain-English reason for the choice.
+- The former Profit Lab **profit score** is now presented as **Range Quality**. It compares candidate geometries inside one pool and is explicitly not the cross-pool Opportunity Score planned for the leaderboard.
+- Candidate Universe now exposes **Profit Lab readiness** separately from market/research readiness. Stable-quoted pools can show a direct history path; non-stable pools without validated pair-ratio history show HISTORY NEEDED; fresh validated history shows PROFIT READY; and recent background history failures show HISTORY FAILED before click-through.
+- The background evidence warmer now persists a **per-pool readiness result**, allowing Candidate Universe and Advisor to reflect successful/failed deep-history preparation rather than hiding that state in an aggregate worker counter.
+- Portfolio Advisor carries the same deep-analysis readiness marker into its rows. A pool with an explicit recent HISTORY FAILED state is no longer allocation-eligible, while pools that merely still need warming remain visible for investigation instead of being silently removed.
+- Advisor remains a **quick allocation screen**; Profit Lab remains the execution-range authority. This patch makes that boundary visible without prematurely folding the full deep-analysis workload into every Advisor run.
+- Execution Desk transaction construction, browser-wallet signing authority, wallet accounting, campaign accounting and provider-coordinator behaviour are unchanged.
+
