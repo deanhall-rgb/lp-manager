@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-APP_VERSION = "0.9.7.2.1"
-APP_RELEASE = "Range intelligence correction"
+APP_VERSION = "0.9.7.3"
+APP_RELEASE = "Persistent opportunity leaderboard"
 APP_DISPLAY_VERSION = f"v{APP_VERSION}"
 APP_USER_AGENT = f"LP-Manager/{APP_VERSION}"
 
