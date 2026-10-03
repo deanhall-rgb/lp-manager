@@ -351,7 +351,7 @@ class CandidateUniverse:
             warm={}
         checked=_f(warm.get("checked_at") or warm.get("last_run_at"))
         warm_age=max(0.0,time.time()-checked) if checked>0 else None
-        warm_samples=int(_f(warm.get("samples"),0))
+        warm_samples=int(_f(warm.get("samples")))
         if warm.get("ok") and warm_samples>=24 and (
             bool(warm.get("fresh")) or (warm_age is not None and warm_age<=8*3600)
         ):
