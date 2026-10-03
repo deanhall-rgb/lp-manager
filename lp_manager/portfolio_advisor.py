@@ -123,6 +123,14 @@ def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str) -> list[s
     readiness=row.get("profit_lab_readiness") or {}
     if str(readiness.get("status") or "").upper()=="HISTORY_FAILED":
         reasons.append("Profit Lab history failed for this pool")
+    deep=row.get("deep_analysis") or {}
+    deep_status=str(deep.get("status") or "NOT_ANALYSED").upper()
+    if deep_status=="NOT_ANALYSED":
+        reasons.append("deep Profit Lab validation required before allocation")
+    elif deep_status=="DEEP_STALE":
+        reasons.append("deep Profit Lab validation is stale")
+    elif deep_status=="DEEP_NON_POSITIVE":
+        reasons.append("deep Profit Lab expected net is not positive")
     if score < threshold:
         reasons.append(f"score {score:.0f} below {threshold:.0f} {sleeve.lower().replace('_',' ')} threshold")
     return reasons
@@ -215,7 +223,7 @@ def rank_opportunities(
         {"chain": r.get("chain"), "pair": r.get("pair"), "pool_address": r.get("pool_address"), "sleeve": r.get("sleeve"),
          "score": r.get("portfolio_score"), "operating_net_month": r.get("operating_net_month"), "reject_reasons": r.get("reject_reasons") or [],
          "market_evidence_status": r.get("market_evidence_status"), "profit_lab_readiness": r.get("profit_lab_readiness") or {},
-         "existing_exposure": r.get("existing_exposure") or {}}
+         "deep_analysis": r.get("deep_analysis") or {}, "existing_exposure": r.get("existing_exposure") or {}}
         for r in scored[:8] if r.get("reject_reasons")
     ][:3]
 
@@ -232,7 +240,7 @@ def rank_opportunities(
             "available_capital": capital, "reserve_floor": reserve_floor, "reserve": capital,
             "deployable": deployable, "allocated": 0, "unallocated": deployable, "allocations": [], "ranked": scored,
             "near_misses": near_misses, "portfolio_context": portfolio_context,
-            "reason": "No opportunity currently clears both the profit, freshness and risk gates. The closest candidates are shown for Strategy Lab investigation rather than being silently discarded.",
+            "reason": "No opportunity currently clears the screen, freshness, risk and deep Profit Lab validation gates. The closest candidates remain research-only until deep economics confirm positive expected net.",
             "sleeve_filter": sleeve_filter, "allocation_mode": allocation_mode,
         }
 
@@ -310,6 +318,7 @@ def rank_opportunities(
             "economics_confidence": economics.get("confidence"), "economics_mode": economics.get("mode"), "why": row.get("why") or [],
             "market_evidence_status": row.get("market_evidence_status"),
             "profit_lab_readiness": row.get("profit_lab_readiness") or {},
+            "deep_analysis": row.get("deep_analysis") or {},
             "advisor_calibration": economics.get("advisor_calibration") or {},
             "existing_exposure": existing,
             "post_allocation": {
@@ -334,5 +343,5 @@ def rank_opportunities(
         "allocations": allocations, "ranked": scored, "near_misses": near_misses, "sleeve_filter": sleeve_filter, "allocation_mode": allocation_mode,
         "portfolio_context": portfolio_context,
         "unallocated_reason": "Existing portfolio exposure leaves no eligible candidate with more concentration room." if unallocated > 0.01 and concentration_limited else ("No eligible candidate has remaining concentration capacity." if unallocated > 0.01 else None),
-        "guardrail": "PROFIT_FIRST_WITH_PORTFOLIO_CONTEXT: current live economics drive ranking; stale cache cannot allocate; owned/history evidence is bounded to exact-pool calibration; existing open LP exposure constrains incremental concentration.",
+        "guardrail": "SCREEN_THEN_DEEP_VALIDATE: current live economics rank candidates; stale cache cannot allocate; deep Profit Lab economics must confirm positive expected net before allocation; existing open LP exposure constrains incremental concentration.",
     }
