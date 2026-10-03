@@ -1,3 +1,3 @@
-"""LP Manager v0.9.7.2.1 - range intelligence and deep-analysis readiness."""
+"""LP Manager v0.9.7.3 - persistent cross-chain opportunity leaderboard."""
 
-__version__ = "0.9.7.2.1"
+__version__ = "0.9.7.3"
