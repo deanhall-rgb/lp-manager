@@ -101,37 +101,62 @@ def _candidate_widths(sleeve: str, horizon_days: float) -> tuple[float, ...]:
 
 
 def _candidate_skews(regime: dict[str, Any], sleeve: str) -> tuple[float, ...]:
-    desired = _f(regime.get("range_skew_pct"))
-    if str(sleeve).upper() == "CORE_INCOME":
-        clipped=max(-7.5,min(7.5,desired))
-        vals = {-7.5, -5, -2.5, 0, 2.5, 5, 7.5, round(clipped / 2.5) * 2.5}
-    else:
-        clipped=max(-4.5,min(4.5,desired))
-        vals = {-4.5, -3, -1.5, 0, 1.5, 3, 4.5, round(clipped / 1.5) * 1.5}
-    return tuple(sorted(vals))
+    """Generate a dense directional neighbourhood around spot.
+
+    Earlier Tactical searches jumped in 1.5% steps while the asymmetry guardrail
+    rejected many of those jumps for short holds. That combination made 0% skew
+    survive far too often. v0.9.7.2.1 keeps a centred candidate, but also gives
+    the selector genuinely comparable directional placements.
+    """
+    desired=_f(regime.get("range_skew_pct"))
+    core=str(sleeve).upper()=="CORE_INCOME"
+    cap=8.0 if core else 6.0
+    step=1.25 if core else 0.75
+    clipped=max(-cap,min(cap,desired))
+    vals={0.0}
+    n=int(round(cap/step))
+    for i in range(1,n+1):
+        v=round(i*step,3)
+        if v<=cap+1e-9:
+            vals.update({v,-v})
+    # Explicitly test the model's exact directional target and softer versions of
+    # it rather than forcing every forecast onto a coarse fixed grid.
+    for factor in (0.50,0.75,1.0):
+        raw=max(-cap,min(cap,clipped*factor))
+        vals.add(round(raw,3))
+        vals.add(round(raw/step)*step)
+    return tuple(sorted(round(float(v),3) for v in vals if abs(float(v))<=cap+1e-9))
 
 
 def _volatility_edge_limits(sleeve: str, horizon_days: float, regime: dict[str, Any]) -> dict[str, float]:
-    """Translate realised daily volatility into a believable horizon envelope."""
+    """Translate volatility + directional conviction into believable edge limits."""
     h=max(1.0,float(horizon_days))
     vol=max(0.75,_f(regime.get("realised_volatility_pct"),1.5))
     sigma_h=vol*math.sqrt(h)
+    target=abs(_f(regime.get("range_skew_pct")))
+    confidence=max(0.0,min(100.0,_f(regime.get("confidence"),50.0)))
+    direction_strength=min(1.0,target/8.0)*min(1.0,confidence/65.0)
+    breakout=str(regime.get("breakout_state") or "").upper()
+    breakout_bonus=0.35 if breakout in {"UPSIDE_BREAKOUT","DOWNSIDE_BREAKDOWN"} else 0.0
     if str(sleeve).upper()=="CORE_INCOME":
         hard_cap=18.0 if h<=7 else 23.0 if h<=14 else 30.0 if h<=30 else 40.0
         max_far=min(hard_cap,max(8.0,sigma_h*2.0+3.0))
         min_near=max(2.5,min(7.0,sigma_h*0.35))
-        max_asymmetry=2.0
+        max_asymmetry=min(3.25,2.10+0.90*direction_strength+breakout_bonus)
     else:
         hard_cap=14.0 if h<=7 else 18.0 if h<=14 else 24.0 if h<=30 else 30.0
         max_far=min(hard_cap,max(5.0,sigma_h*1.55+1.5))
         min_near=max(1.5,min(5.0,sigma_h*0.28))
-        max_asymmetry=1.75
+        # Tactical campaigns may deliberately leave more room in the direction
+        # supported by current evidence. Neutral regimes still remain constrained.
+        max_asymmetry=min(4.25,2.10+1.80*direction_strength+breakout_bonus)
     return {
         "daily_realised_volatility_pct":round(vol,3),
         "horizon_one_sigma_pct":round(sigma_h,3),
         "min_nearest_edge_pct":round(min_near,3),
         "max_farthest_edge_pct":round(max_far,3),
-        "max_asymmetry_ratio":max_asymmetry,
+        "max_asymmetry_ratio":round(max_asymmetry,3),
+        "directional_strength":round(direction_strength,3),
     }
 
 
@@ -272,16 +297,17 @@ def _boundary_inventory_outcomes(
 
 
 def _select_regime_aware_best(rows: list[dict[str, Any]], regime: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Keep profit primary while letting regime evidence choose near-equal geometry.
+    """Keep cash profit primary while making directional placement auditable.
 
-    The highest expected-net candidate establishes the economic ceiling. Candidates
-    within a small confidence-scaled tolerance are economically equivalent enough
-    that range geometry should be decided by the richer profit/risk/regime score.
+    A centred range is still valid, but only after competing with finer skewed
+    geometries. When a same-direction range sits inside the near-best profit band,
+    regime alignment and range quality may select it instead of defaulting to 0%.
     """
     if not rows:
         raise ValueError("No eligible candidates")
     max_net=max(_f((r.get("forecast") or {}).get("expected_net_usd"),-1e18) for r in rows)
     confidence=max(0.0,min(100.0,_f(regime.get("confidence"),50.0)))
+    target=_f(regime.get("range_skew_pct"))
     tolerance_pct=3.0+5.0*(confidence/100.0)
     tolerance_usd=max(0.25,max(0.0,max_net)*tolerance_pct/100.0)
     near_best=[
@@ -290,23 +316,84 @@ def _select_regime_aware_best(rows: list[dict[str, Any]], regime: dict[str, Any]
     ]
     near_best.sort(
         key=lambda r:(
-            _f(r.get("profit_score")),
+            _f(r.get("range_quality_score"),_f(r.get("profit_score"))),
             _f(r.get("regime_alignment_score")),
             _f((r.get("forecast") or {}).get("expected_net_usd"),-1e18),
         ),
         reverse=True,
     )
     best=near_best[0]
+
+    # For a meaningful, reasonably confident directional regime, explicitly
+    # compare a same-direction candidate. It may win only inside the existing
+    # economic near-best band and when its range quality is not materially worse.
+    direction=1 if target>0 else -1 if target<0 else 0
+    directional_preference_applied=False
+    same_direction=[
+        r for r in near_best
+        if direction and _f(r.get("skew_pct"))*direction>0
+    ]
+    same_direction.sort(
+        key=lambda r:(
+            _f(r.get("regime_alignment_score")),
+            _f(r.get("range_quality_score"),_f(r.get("profit_score"))),
+            _f((r.get("forecast") or {}).get("expected_net_usd"),-1e18),
+        ),
+        reverse=True,
+    )
+    if abs(target)>=1.0 and confidence>=45.0 and same_direction:
+        directional=same_direction[0]
+        quality_floor=_f(best.get("range_quality_score"),_f(best.get("profit_score")))-8.0
+        if (
+            _f(directional.get("range_quality_score"),_f(directional.get("profit_score")))>=quality_floor
+            and _f(directional.get("regime_alignment_score"))>=_f(best.get("regime_alignment_score"))
+        ):
+            best=directional
+            directional_preference_applied=True
+
+    centered=max(
+        (r for r in near_best if abs(_f(r.get("skew_pct"))) < 0.10),
+        key=lambda r:_f((r.get("forecast") or {}).get("expected_net_usd"),-1e18),
+        default=None,
+    )
+    selected_skew=_f(best.get("skew_pct"))
+    placement=(
+        "CENTERED" if abs(selected_skew)<0.10
+        else "HIGHER_RATIO_SKEW" if selected_skew>0
+        else "LOWER_RATIO_SKEW"
+    )
+    centered_net=_f((centered.get("forecast") or {}).get("expected_net_usd")) if centered else None
+    directional_row=same_direction[0] if same_direction else None
+    if placement=="CENTERED":
+        if abs(target)<1.0:
+            reason="Centred range won because the current regime has low directional conviction."
+        elif directional_row is None:
+            reason="Centred range won because no same-direction candidate passed the current volatility and horizon guardrails."
+        else:
+            reason="Centred range retained the stronger near-best profit/range-quality trade-off after directional alternatives were tested."
+    else:
+        reason=(
+            "Skewed range won because the same-direction geometry stayed inside the near-best profit band "
+            "and improved regime alignment without materially weakening range quality."
+        )
+
     return best,{
-        "method":"MAX_EXPECTED_NET_THEN_REGIME_AWARE_NEAR_BEST_SELECTION",
+        "method":"MAX_EXPECTED_NET_THEN_AUDITED_DIRECTIONAL_NEAR_BEST_SELECTION",
         "max_expected_net_usd":round(max_net,2),
         "profit_tolerance_pct":round(tolerance_pct,2),
         "profit_tolerance_usd":round(tolerance_usd,2),
         "near_best_candidates":len(near_best),
         "regime_confidence_pct":round(confidence,1),
-        "target_skew_pct":round(_f(regime.get("range_skew_pct")),2),
-        "selected_skew_pct":round(_f(best.get("skew_pct")),2),
+        "target_skew_pct":round(target,2),
+        "selected_skew_pct":round(selected_skew,2),
         "selected_regime_alignment":round(_f(best.get("regime_alignment_score")),1),
+        "selected_placement":placement,
+        "placement_reason":reason,
+        "directional_preference_applied":directional_preference_applied,
+        "same_direction_candidate_available":bool(same_direction),
+        "best_same_direction_skew_pct":round(_f(directional_row.get("skew_pct")),2) if directional_row else None,
+        "best_same_direction_expected_net_usd":round(_f((directional_row.get("forecast") or {}).get("expected_net_usd")),2) if directional_row else None,
+        "centered_expected_net_usd":round(centered_net,2) if centered_net is not None else None,
     }
 
 
@@ -1044,6 +1131,11 @@ def _recommend_single_pool(
             - intervention_penalty
         )
         row["profit_score"] = round(max(0.0, min(100.0, score)), 1)
+        # Compatibility alias: older consumers still read profit_score. The score
+        # itself compares range geometries *inside this pool*; it is not the
+        # cross-pool Opportunity Score planned for the leaderboard.
+        row["range_quality_score"] = row["profit_score"]
+        row["score_semantics"] = "RELATIVE_RANGE_GEOMETRY_QUALITY_NOT_OPPORTUNITY_SCORE"
         row["price_lens"] = pool_price_lens(pool, lower=row["lower"], upper=row["upper"], current=spot)
         row["selection_evidence"] = {
             "profit_normalised": round(profit_norm, 1),
