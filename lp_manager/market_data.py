@@ -39,7 +39,7 @@ class GeckoTerminalClient:
             return self.coordinator.request(
                 "GECKOTERMINAL",key,
                 lambda:self._get_direct(path,params),
-                ttl_seconds=ttl,stale_seconds=stale,
+                ttl_seconds=ttl,stale_seconds=0,
                 wait_timeout_seconds=30 if is_ohlcv else 40,
             )
         return self._get_direct(path,params)
