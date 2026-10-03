@@ -375,3 +375,23 @@ This final foundation hotfix addresses the blockers found in the full v0.9.7.1 s
 - Product metadata and browser asset cache keys now expose **v0.9.7.1.1** in the sidebar so the operator can confirm the exact hotfix is running.
 - Execution Desk's earlier v0.9.7.1 pool-ratio USD-mark fallback remains in place and is covered by regression tests; the intended QNT/WETH path is Portfolio Advisor → Profit Lab → auto-sized Execution Desk.
 
+
+
+### v0.9.7.1.1 live sign-off
+
+Operator live testing signed off the v0.9.7.1 foundation/hotfix sequence.
+
+Verified in the live application:
+
+- sidebar reports **v0.9.7.1.1**;
+- Candidate Universe refresh completes successfully;
+- Portfolio Advisor presentation is materially cleaner and QNT/WETH can flow into Profit Lab;
+- Profit Lab successfully recalculates the same live pool across **7-day, 3-day and 1-day** holding periods without the previous zero-history failure;
+- the £270 capital amount is preserved correctly through the flow;
+- Execution Desk receives the selected pool and range, automatically sizes both QNT and WETH, and the browser-wallet signing flow remains functional.
+
+Deferred observations for later v0.9.7 stages:
+
+- **Opportunity breadth:** the Advisor can still collapse to a single allocation-eligible pool even after broad discovery. Before the leaderboard is considered useful, the cross-chain candidate/validation funnel must expose a materially broader set of genuinely comparable opportunities rather than making the market look artificially empty.
+- **Range intelligence:** symmetric ranges such as roughly ±6% may genuinely be optimal sometimes, but the product must prove that rather than appearing to default to a centred guess. Later Profit Lab work should make volatility, regime, skew, replay evidence, intervention cost and downside asymmetry more visible in the selected geometry, and explain why a symmetric range wins when it does.
+- **Packaging/testing handoff:** each future test build should be delivered as one downloadable ZIP containing the project directly, not a ZIP containing another ZIP. Each handoff should include the exact PowerShell command(s) needed to launch that build and a short focused test brief.
