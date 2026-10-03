@@ -35,7 +35,7 @@ def _row(
             "confidence": "MODERATE",
         },
         "regime": {"confidence": 70},
-        "deep_analysis": {"status": "DEEP_PROFITABLE", "fresh": True, "expected_net_usd": 5.0},
+        "deep_analysis": {"status": "DEEP_PROFITABLE", "fresh": True, "capital_usd": 1000, "expected_fees_usd": 100, "expected_intervention_cost_usd": 1, "expected_net_usd": 99.0, "required_horizon_days": 3},
     }
 
 
