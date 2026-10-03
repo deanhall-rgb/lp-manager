@@ -355,3 +355,10 @@ This patch starts the v0.9.7 programme by cleaning the shared data contract and 
 - Removed internal patch-history wording from the everyday UI. The sidebar now displays only the current application version at runtime; Opportunities, Provider diagnostics and Candidate Universe use stable product names rather than old patch numbers.
 - Internal shared-discovery source names are now versionless (SHARED_CANDIDATE_UNIVERSE) so persisted evidence does not encode a temporary implementation release into its semantic source.
 - Advisor ranking, Portfolio Advisor allocation semantics, Profit Lab range/economic maths, wallet/position refresh behaviour and Execution Desk signing boundaries are intentionally unchanged in v0.9.7.1.
+
+Live-sweep follow-up fixes:
+
+- Profit Lab stale fallback is now **request-exact only**. A validated result for the same pool but a different holding period, capital amount, sleeve or target can no longer be displayed underneath new form inputs during a provider failure.
+- Changing Profit Lab chain, pool, holding period, style, capital or target now hides the previous result until the operator re-runs optimisation, preventing a stale 7-day / £1,000 result from visually masquerading as a 1-day / £270 result.
+- Execution Desk capital auto-sizing can now complete a missing token USD mark from the verified on-chain pool ratio when the other token has a live USD mark. Known USD stables can act as the anchor. This specifically restores QNT/WETH-style Profit Lab → Execution Desk auto-population without fabricating prices for an unanchored volatile/volatile pair.
+- Robinhood candidate breadth, owned/watchlist pool seeding, the leaderboard/Advisor presentation, offline Performance Log gap reconstruction, Investor Ledger auto-classification refinement and full provider/API cost observability remain scoped to later v0.9.7 stages rather than being mixed into this stability fix.
