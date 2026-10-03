@@ -212,3 +212,57 @@ def test_non_positive_deep_profit_evidence_blocks_screen_result():
         for reason in result["near_misses"][0]["reject_reasons"]
     )
 
+def test_positive_deep_result_at_large_capital_cannot_validate_smaller_negative_allocation():
+    row = _row(pair="QNT/WETH", address="0x4444444444444444444444444444444444444444")
+    row["deep_analysis"] = {
+        "status": "DEEP_PROFITABLE",
+        "fresh": True,
+        "capital_usd": 1000,
+        "expected_fees_usd": 24.54,
+        "expected_intervention_cost_usd": 10.23,
+        "expected_net_usd": 14.31,
+        "required_horizon_days": 7,
+    }
+    result = rank_opportunities([row], available_capital=1000, reserve_pct=10)
+
+    # Tactical concentration proposes about $270. Fee income scales down with
+    # capital but the explicit intervention cash cost does not, so the deep
+    # forecast becomes negative at the proposed size and must block allocation.
+    assert result["allocations"] == []
+    assert result["near_misses"]
+    miss = result["near_misses"][0]
+    assert any("non-positive at proposed allocation size" in x for x in miss["reject_reasons"])
+    adjusted = miss["deep_analysis"]["capital_adjusted"]
+    assert adjusted["capital_usd"] == 270.0
+    assert adjusted["expected_net_usd"] < 0
+    assert adjusted["minimum_positive_capital_usd"] > 270
+
+
+def test_successful_advisor_allocation_exposes_size_matched_deep_hold_economics():
+    row = _row(pair="GOOD/WETH", address="0x5555555555555555555555555555555555555555")
+    row["deep_analysis"] = {
+        "status": "DEEP_PROFITABLE",
+        "fresh": True,
+        "capital_usd": 1000,
+        "expected_fees_usd": 100,
+        "expected_intervention_cost_usd": 5,
+        "expected_net_usd": 95,
+        "required_horizon_days": 3,
+    }
+    result = rank_opportunities([row], available_capital=1000, reserve_pct=10)
+    assert result["allocations"]
+    allocation = result["allocations"][0]
+    assert allocation["amount"] == 270.0
+    assert allocation["validated_horizon_days"] == 3
+    assert allocation["validated_expected_net_hold"] == 22.0
+    assert allocation["deep_analysis"]["capital_adjusted"]["expected_fees_usd"] == 27.0
+
+
+def test_advisor_ui_clickthrough_carries_validated_horizon_and_shows_deep_hold():
+    root = Path(__file__).parents[1]
+    js = (root / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "Validated hold" in js
+    assert "deep estimate @ proposed size" in js
+    assert "function openAdvisorStrategy(chain,pool,sleeve,capital,horizonDays=null)" in js
+    assert "$('#profit-days').value=String(Number(horizonDays))" in js
+
