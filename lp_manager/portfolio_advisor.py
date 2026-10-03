@@ -120,6 +120,9 @@ def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str) -> list[s
         reasons.append("fee operating return does not currently clear zero")
     if _f(quality.get("factor"), 1.0) < 0.20:
         reasons.append("current activity is too anomalous to extrapolate")
+    readiness=row.get("profit_lab_readiness") or {}
+    if str(readiness.get("status") or "").upper()=="HISTORY_FAILED":
+        reasons.append("Profit Lab history failed for this pool")
     if score < threshold:
         reasons.append(f"score {score:.0f} below {threshold:.0f} {sleeve.lower().replace('_',' ')} threshold")
     return reasons
@@ -211,7 +214,8 @@ def rank_opportunities(
     near_misses = [
         {"chain": r.get("chain"), "pair": r.get("pair"), "pool_address": r.get("pool_address"), "sleeve": r.get("sleeve"),
          "score": r.get("portfolio_score"), "operating_net_month": r.get("operating_net_month"), "reject_reasons": r.get("reject_reasons") or [],
-         "market_evidence_status": r.get("market_evidence_status"), "existing_exposure": r.get("existing_exposure") or {}}
+         "market_evidence_status": r.get("market_evidence_status"), "profit_lab_readiness": r.get("profit_lab_readiness") or {},
+         "existing_exposure": r.get("existing_exposure") or {}}
         for r in scored[:8] if r.get("reject_reasons")
     ][:3]
 
@@ -305,6 +309,7 @@ def rank_opportunities(
             "expected_net_month": round(monthly, 2), "expected_net_month_pct": round(monthly / max(amount, 1e-9) * 100, 2),
             "economics_confidence": economics.get("confidence"), "economics_mode": economics.get("mode"), "why": row.get("why") or [],
             "market_evidence_status": row.get("market_evidence_status"),
+            "profit_lab_readiness": row.get("profit_lab_readiness") or {},
             "advisor_calibration": economics.get("advisor_calibration") or {},
             "existing_exposure": existing,
             "post_allocation": {
