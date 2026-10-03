@@ -102,6 +102,50 @@ def bounded_advisor_calibration(economics: dict[str, Any], calibration: dict[str
     return base
 
 
+def _capital_adjusted_deep(deep: dict[str, Any] | None, amount_usd: float) -> dict[str, Any]:
+    """Project a persisted Profit Lab result onto the proposed allocation size.
+
+    Profit Lab fee income scales with capital, while its explicit intervention
+    cash cost is fixed for the hold. This is intentionally not a replacement for
+    an exact rerun; it is a safety gate preventing a profitable £1k deep result
+    from validating a much smaller allocation that turns negative after costs.
+    """
+    d=dict(deep or {})
+    amount=max(0.0,_f(amount_usd))
+    source_capital=max(0.0,_f(d.get("capital_usd")))
+    source_fees=max(0.0,_f(d.get("expected_fees_usd")))
+    source_net=_f(d.get("expected_net_usd"))
+    fixed_cost=max(0.0,_f(d.get("expected_intervention_cost_usd")))
+    if fixed_cost<=0 and source_fees>0:
+        fixed_cost=max(0.0,source_fees-source_net)
+    if source_capital<=0 or source_fees<=0 or amount<=0:
+        return {
+            "available":False,
+            "capital_usd":round(amount,2),
+            "source_capital_usd":round(source_capital,2),
+            "required_horizon_days":_f(d.get("required_horizon_days"),_f(d.get("horizon_days"))),
+            "reason":"DEEP_CAPITAL_SCALING_UNAVAILABLE",
+        }
+    scale=amount/source_capital
+    fees=source_fees*scale
+    net=fees-fixed_cost
+    minimum=(source_capital*fixed_cost/source_fees) if source_fees>0 else None
+    return {
+        "available":True,
+        "capital_usd":round(amount,2),
+        "source_capital_usd":round(source_capital,2),
+        "capital_scale":round(scale,6),
+        "required_horizon_days":_f(d.get("required_horizon_days"),_f(d.get("horizon_days"))),
+        "expected_fees_usd":round(fees,2),
+        "fixed_cash_cost_usd":round(fixed_cost,2),
+        "expected_net_usd":round(net,2),
+        "net_horizon_return_pct":round(net/max(amount,1e-9)*100.0,3),
+        "minimum_positive_capital_usd":round(minimum,2) if minimum is not None else None,
+        "source_forecast_id":str(d.get("forecast_id") or ""),
+        "method":"SCALE_FEES_KEEP_FIXED_CASH_COSTS",
+    }
+
+
 def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str) -> list[str]:
     economics = _economics(row)
     evaluation = row.get("evaluation") or {}
@@ -131,6 +175,15 @@ def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str) -> list[s
         reasons.append("deep Profit Lab validation is stale")
     elif deep_status=="DEEP_NON_POSITIVE":
         reasons.append("deep Profit Lab expected net is not positive")
+    elif deep_status=="DEEP_CAPITAL_NON_POSITIVE":
+        adjusted=deep.get("capital_adjusted") or {}
+        minimum=_f(adjusted.get("minimum_positive_capital_usd"))
+        reasons.append(
+            "deep Profit Lab becomes non-positive at proposed allocation size"
+            + (f"; minimum positive capital about {minimum:.2f}" if minimum>0 else "")
+        )
+    elif deep_status=="DEEP_CAPITAL_UNVERIFIED":
+        reasons.append("deep Profit Lab capital scaling unavailable for proposed allocation")
     if score < threshold:
         reasons.append(f"score {score:.0f} below {threshold:.0f} {sleeve.lower().replace('_',' ')} threshold")
     return reasons
@@ -139,7 +192,7 @@ def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str) -> list[s
 def rank_opportunities(
     rows: list[dict[str, Any]], *, available_capital: float, reserve_pct: float = 10.0,
     max_positions: int = 4, sleeve_filter: str = "ANY", allocation_mode: str = "DIVERSIFIED",
-    open_positions: list[dict[str, Any]] | None = None,
+    open_positions: list[dict[str, Any]] | None = None, _capital_retry: int = 0,
 ) -> dict[str, Any]:
     capital = max(0.0, _f(available_capital))
     reserve_floor = capital * max(0.0, min(90.0, _f(reserve_pct))) / 100.0
@@ -281,6 +334,42 @@ def rank_opportunities(
         for i, room, w in candidates:
             amounts[i] += min(room, leftover * w / tw)
 
+    # Deep validation must survive the *actual proposed size*. A positive
+    # forecast at the source capital cannot validate a smaller allocation when
+    # fixed intervention costs turn that smaller hold negative.
+    capital_projections: dict[tuple[str, str], dict[str, Any]] = {}
+    failed_keys: set[tuple[str, str]] = set()
+    for row, amount in zip(eligible, amounts):
+        key=_pool_key(row)
+        projected=_capital_adjusted_deep(row.get("deep_analysis") or {},amount)
+        capital_projections[key]=projected
+        if (not projected.get("available")) or _f(projected.get("expected_net_usd"))<=0:
+            failed_keys.add(key)
+    if failed_keys and _capital_retry < 8:
+        retry_rows=[]
+        for original in rows:
+            row=dict(original)
+            key=_pool_key(row)
+            if key in failed_keys:
+                deep=dict(row.get("deep_analysis") or {})
+                projected=capital_projections.get(key) or {}
+                deep["capital_adjusted"]=projected
+                deep["status"]="DEEP_CAPITAL_NON_POSITIVE" if projected.get("available") else "DEEP_CAPITAL_UNVERIFIED"
+                deep["label"]="DEEP -VE @ SIZE" if projected.get("available") else "DEEP SIZE CHECK"
+                deep["allocation_confirmed"]=False
+                row["deep_analysis"]=deep
+            retry_rows.append(row)
+        return rank_opportunities(
+            retry_rows,
+            available_capital=capital,
+            reserve_pct=reserve_pct,
+            max_positions=max_positions,
+            sleeve_filter=sleeve_filter,
+            allocation_mode=allocation_mode,
+            open_positions=open_positions,
+            _capital_retry=_capital_retry+1,
+        )
+
     by_pool_new: dict[tuple[str, str], float] = {}
     by_pair_new: dict[tuple[str, str], float] = {}
     by_chain_new: dict[str, float] = {}
@@ -318,7 +407,15 @@ def rank_opportunities(
             "economics_confidence": economics.get("confidence"), "economics_mode": economics.get("mode"), "why": row.get("why") or [],
             "market_evidence_status": row.get("market_evidence_status"),
             "profit_lab_readiness": row.get("profit_lab_readiness") or {},
-            "deep_analysis": row.get("deep_analysis") or {},
+            "deep_analysis": {
+                **(row.get("deep_analysis") or {}),
+                "capital_adjusted": capital_projections.get((chain,address)) or {},
+            },
+            "validated_horizon_days":_f((capital_projections.get((chain,address)) or {}).get("required_horizon_days")),
+            "validated_expected_net_hold":_f((capital_projections.get((chain,address)) or {}).get("expected_net_usd")),
+            "validated_expected_fees_hold":_f((capital_projections.get((chain,address)) or {}).get("expected_fees_usd")),
+            "validated_minimum_capital_usd":_f((capital_projections.get((chain,address)) or {}).get("minimum_positive_capital_usd")),
+            "screen_expected_net_month":round(monthly,2),
             "advisor_calibration": economics.get("advisor_calibration") or {},
             "existing_exposure": existing,
             "post_allocation": {
@@ -343,5 +440,5 @@ def rank_opportunities(
         "allocations": allocations, "ranked": scored, "near_misses": near_misses, "sleeve_filter": sleeve_filter, "allocation_mode": allocation_mode,
         "portfolio_context": portfolio_context,
         "unallocated_reason": "Existing portfolio exposure leaves no eligible candidate with more concentration room." if unallocated > 0.01 and concentration_limited else ("No eligible candidate has remaining concentration capacity." if unallocated > 0.01 else None),
-        "guardrail": "SCREEN_THEN_DEEP_VALIDATE: current live economics rank candidates; stale cache cannot allocate; deep Profit Lab economics must confirm positive expected net before allocation; existing open LP exposure constrains incremental concentration.",
+        "guardrail": "SCREEN_THEN_SIZE_AWARE_DEEP_VALIDATE: current live economics rank candidates; stale cache cannot allocate; matching-horizon Profit Lab evidence must remain positive after scaling to the actual proposed capital while fixed cash costs stay fixed; existing open LP exposure constrains incremental concentration.",
     }
