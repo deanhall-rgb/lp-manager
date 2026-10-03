@@ -126,10 +126,37 @@ class OpportunityLeaderboard:
         return payload
 
     def attach_analysis_state(self, rows):
-        now=time.time(); idx=self._deep_index(); out=[]
+        """Attach strategy-horizon-matched deep evidence for Portfolio Advisor.
+
+        Tactical screening is confirmed against a 3-day Profit Lab run; Core is
+        confirmed against 30 days. This prevents a profitable 1-day plan from
+        silently validating a different 7/30-day decision context.
+        """
+        now=time.time(); out=[]
+        try: forecasts=self.store.list_forecast_snapshots(500)
+        except Exception: forecasts=[]
         for item in rows:
-            row=dict(item); key=(str(row.get('chain') or '').upper(),str(row.get('pool_address') or '').lower())
-            row['deep_analysis']=self._deep_state(idx.get(key),now); out.append(row)
+            row=dict(item)
+            chain=str(row.get("chain") or "").upper()
+            pool=str(row.get("pool_address") or "").lower()
+            evaluation=row.get("evaluation") or {}
+            sleeve=str(row.get("sleeve") or evaluation.get("preferred_sleeve") or "").upper()
+            if not sleeve:
+                sleeve="CORE_INCOME" if _f(evaluation.get("core_pre_score"))>=_f(evaluation.get("tactical_pre_score")) else "TACTICAL_CAMPAIGN"
+            required=30.0 if sleeve=="CORE_INCOME" else 3.0
+            match=None
+            for candidate in forecasts:
+                if str(candidate.get("chain") or "").upper()!=chain: continue
+                if str(candidate.get("pool_address") or "").lower()!=pool: continue
+                if abs(_f(candidate.get("horizon_days"))-required)>0.01: continue
+                match=candidate
+                break
+            deep=self._deep_state(match,now)
+            deep["required_horizon_days"]=required
+            deep["horizon_match"]=bool(match)
+            deep["advisor_sleeve"]=sleeve
+            row["deep_analysis"]=deep
+            out.append(row)
         return out
 
     def cached(self):
