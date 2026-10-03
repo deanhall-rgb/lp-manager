@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-APP_VERSION = "0.9.7.3.1"
-APP_RELEASE = "Capital-aware Advisor validation hotfix"
+APP_VERSION = "0.9.7.4"
+APP_RELEASE = "Transparent Opportunity Score"
 APP_DISPLAY_VERSION = f"v{APP_VERSION}"
 APP_USER_AGENT = f"LP-Manager/{APP_VERSION}"
 
