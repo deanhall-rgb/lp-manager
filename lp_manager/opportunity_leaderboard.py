@@ -43,6 +43,7 @@ class OpportunityLeaderboard:
                 "created_at":_f(r.get("created_at")),"horizon_days":_f(r.get("horizon_days")),
                 "capital_usd":_f(r.get("capital_usd")),"expected_net_usd":_f(r.get("expected_net_usd")),
                 "expected_fees_usd":_f(r.get("expected_fees_usd")),"forecast_fee_apr_pct":_f(r.get("forecast_fee_apr_pct")),
+                "expected_intervention_cost_usd":_f(forecast.get("expected_intervention_cost_usd")),
                 "range_quality_score":_f(best.get("range_quality_score",best.get("profit_score"))),
                 "net_horizon_return_pct":_f(forecast.get("net_horizon_return_pct",forecast.get("expected_net_pct"))),
                 "sleeve":str(r.get("sleeve") or ""),"forecast_id":str(r.get("id") or "")
@@ -66,11 +67,21 @@ class OpportunityLeaderboard:
     @staticmethod
     def _deep_state(deep,now):
         if not deep:return {"status":"NOT_ANALYSED","label":"SCREEN ONLY","fresh":False,"allocation_confirmed":False}
-        age=max(0.0,now-_f(deep.get("created_at")));fresh=age<=21600;net=_f(deep.get("expected_net_usd"))
+        row=dict(deep)
+        payload=dict(row.get("payload") or {})
+        best=dict(payload.get("recommended_range") or {})
+        forecast=dict(best.get("forecast") or {})
+        if "expected_intervention_cost_usd" not in row:
+            row["expected_intervention_cost_usd"]=_f(forecast.get("expected_intervention_cost_usd"))
+        if "expected_fees_usd" not in row or row.get("expected_fees_usd") is None:
+            row["expected_fees_usd"]=_f(forecast.get("expected_fees_usd"))
+        if "expected_net_usd" not in row or row.get("expected_net_usd") is None:
+            row["expected_net_usd"]=_f(forecast.get("expected_net_usd"))
+        age=max(0.0,now-_f(row.get("created_at")));fresh=age<=21600;net=_f(row.get("expected_net_usd"))
         if not fresh:status,label="DEEP_STALE","DEEP STALE"
         elif net>0:status,label="DEEP_PROFITABLE","DEEP +VE"
         else:status,label="DEEP_NON_POSITIVE","DEEP -VE"
-        return {**deep,"status":status,"label":label,"fresh":fresh,"age_seconds":round(age,1),"allocation_confirmed":bool(fresh and net>0)}
+        return {**row,"status":status,"label":label,"fresh":fresh,"age_seconds":round(age,1),"allocation_confirmed":bool(fresh and net>0)}
 
     @staticmethod
     def _screen_score(row,freshness):
