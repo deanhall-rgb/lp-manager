@@ -22,8 +22,8 @@ def test_browser_assets_are_cache_busted_and_no_store():
 
     assert "disable_browser_asset_cache" in api
     assert "no-store, no-cache, must-revalidate, max-age=0" in api
-    assert "/static/styles.css?v=0.9.7.2" in html
-    assert "/static/app.js?v=0.9.7.2" in html
+    assert "/static/styles.css?v=0.9.7.3" in html
+    assert "/static/app.js?v=0.9.7.3" in html
     assert 'id="app-version-label"' in html
 
 
