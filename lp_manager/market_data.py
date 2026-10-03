@@ -19,8 +19,9 @@ class MarketDataError(RuntimeError):
 class GeckoTerminalClient:
     BASE = "https://api.geckoterminal.com/api/v2"
 
-    def __init__(self, session: requests.Session | None = None):
+    def __init__(self, session: requests.Session | None = None, coordinator=None):
         self.session = session or requests.Session()
+        self.coordinator = coordinator
         self.session.headers.update({"Accept": "application/json;version=20230203", "User-Agent": APP_USER_AGENT})
         self._cache: dict[str, tuple[float, dict]] = {}
         self._last_request_at = 0.0
@@ -30,6 +31,20 @@ class GeckoTerminalClient:
         self._min_request_gap = 0.55
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> dict:
+        is_ohlcv="/ohlcv/" in path
+        ttl=15*60 if is_ohlcv else 45
+        stale=24*60*60 if is_ohlcv else 30*60
+        if self.coordinator is not None:
+            key=path+"?"+"&".join(f"{k}={v}" for k,v in sorted((params or {}).items()))
+            return self.coordinator.request(
+                "GECKOTERMINAL",key,
+                lambda:self._get_direct(path,params),
+                ttl_seconds=ttl,stale_seconds=stale,
+                wait_timeout_seconds=30 if is_ohlcv else 40,
+            )
+        return self._get_direct(path,params)
+
+    def _get_direct(self, path: str, params: dict[str, Any] | None = None) -> dict:
         url = f"{self.BASE}{path}"
         cache_key = url + "?" + "&".join(f"{k}={v}" for k,v in sorted((params or {}).items()))
         cached = self._cache.get(cache_key)
@@ -140,6 +155,17 @@ class GeckoTerminalClient:
 
 
     def _alchemy_token_prices(self, chain_key: str, addresses: list[str]) -> dict[str, float]:
+        unique=sorted({str(x or "").lower() for x in addresses if str(x or "").strip()})
+        if self.coordinator is not None and unique:
+            key=f"token-prices:{str(chain_key).upper()}:{','.join(unique)}"
+            return self.coordinator.request(
+                "ALCHEMY",key,
+                lambda:self._alchemy_token_prices_direct(chain_key,addresses),
+                ttl_seconds=30,stale_seconds=5*60,wait_timeout_seconds=25,
+            )
+        return self._alchemy_token_prices_direct(chain_key,addresses)
+
+    def _alchemy_token_prices_direct(self, chain_key: str, addresses: list[str]) -> dict[str, float]:
         """Prefer the configured Alchemy Prices API for current token marks.
 
         This keeps the small GeckoTerminal public request budget available for
@@ -180,6 +206,17 @@ class GeckoTerminalClient:
         return out
 
     def _alchemy_historical_token(self, chain_key: str, token: dict[str, Any], *, days: int, timeframe: str) -> list[dict[str, Any]]:
+        identity=str(token.get("address") or token.get("symbol") or "").lower()
+        if self.coordinator is not None and identity:
+            key=f"history:{str(chain_key or 'GLOBAL').upper()}:{identity}:{int(days)}:{str(timeframe).lower()}"
+            return self.coordinator.request(
+                "ALCHEMY",key,
+                lambda:self._alchemy_historical_token_direct(chain_key,token,days=days,timeframe=timeframe),
+                ttl_seconds=15*60,stale_seconds=24*60*60,wait_timeout_seconds=35,
+            )
+        return self._alchemy_historical_token_direct(chain_key,token,days=days,timeframe=timeframe)
+
+    def _alchemy_historical_token_direct(self, chain_key: str, token: dict[str, Any], *, days: int, timeframe: str) -> list[dict[str, Any]]:
         """Historical token price points from Alchemy, used when pool OHLC is rate limited."""
         api_key=os.getenv("ALCHEMY_API_KEY", "").strip()
         if not api_key:
