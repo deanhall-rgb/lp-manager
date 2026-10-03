@@ -625,7 +625,7 @@ function profitRegimeSelectionHtml(r){
   }
   const placement=String(p.selected_placement||'').replaceAll('_',' ').toLowerCase();
   const why=String(p.placement_reason||'');
-  return `<div class="notice lower"><b>Range direction audit:</b> ${esc(lean)} · regime target skew ${target>=0?'+':''}${num(target,2)}% · selected skew ${Number(p.selected_skew_pct||0)>=0?'+':''}${num(p.selected_skew_pct||0,2)}% · alignment ${num(p.selected_regime_alignment||0,0)}/100 · ${num(p.near_best_candidates||0,0)} candidate(s) inside ${pct(p.profit_tolerance_pct||0,1)} near-best profit band.${placement||why?`<div class="meta lower-tight">${placement?esc(placement)+' · ':''}${esc(why)}</div>`:''}</div>`;
+  return `<div class="notice lower"><b>Range direction audit:</b> ${esc(lean)} · regime target skew ${target>=0?'+':''}${num(target,2)}% · selected skew ${Number(p.selected_skew_pct||0)>=0?'+':''}${num(p.selected_skew_pct||0,2)}% · alignment ${num(p.selected_regime_alignment||0,0)}/100 · ${num(p.near_best_candidates||0,0)} candidate(s) inside ${pct(p.profit_tolerance_pct||0,1)} near-best profit band.${placement||why?`<div class="meta lower-tight"><b>Range placement:</b> ${placement?esc(placement)+' · ':''}${esc(why)}</div>`:''}</div>`;
 }
 function profitAlternativeLabel(style){
   const key=String(style||'').toUpperCase();
