@@ -787,7 +787,7 @@ async function runPortfolioAdvisor(){
     const rows=r.allocations||[], near=r.near_misses||[], pc=r.portfolio_context||{}, ud=r.universe_diagnostics||{}, us=ud.summary||{};
     const deployable=Math.max(0,Number(r.deployable||0));
     const universeLine=r.data_source==='SHARED_CANDIDATE_UNIVERSE'
-      ?`<div class="meta advisor-universe-line">Shared Candidate Universe: ${num(us.chains_requested||0,0)} chains checked · ${num(us.ranking_candidates||0,0)} ranked candidates · ${num(us.fresh_cache_hits||0,0)} fresh-cache reuses · ${num(us.elapsed_ms||0,0)}ms</div>`
+      ?`<div class="meta advisor-universe-line">Shared Candidate Universe: ${num(us.chains_requested||0,0)} chains checked · ${num(us.ranking_candidates||0,0)} ranked candidates · ${num(us.fresh_cache_hits||0,0)} fresh-cache reuses · ${num(us.rate_limit_events||0,0)} rate-limit events · ${num(us.elapsed_ms||0,0)}ms</div>`
       :'';
     const context=`<div class="notice advisor-capital-plan"><b>New capital plan</b><div class="advisor-capital-line">${money(r.available_capital||0)} entered <span>·</span> ${money(r.reserve_floor||0)} reserve <span>·</span> <strong>${money(deployable)} available to deploy</strong></div><div class="meta">Existing open LP book: ${money(pc.existing_open_value||0)}. Existing pool exposure is concentration context only and does not reduce your new-capital budget.</div>${universeLine}</div>`;
     const header='<div class="allocation-row header"><span>Rank</span><span>Opportunity</span><span>Sleeve</span><span>Add</span><span>Operating net/mo</span><span>Score</span><span>Action</span></div>';
@@ -796,7 +796,7 @@ async function runPortfolioAdvisor(){
       const cards=rows.map(x=>{
         const ex=x.existing_exposure||{},post=x.post_allocation||{},cal=x.advisor_calibration||{};
         const evidence=x.market_evidence_status==='LIVE_CURRENT'?badge('LIVE','good'):badge(x.market_evidence_status||'UNKNOWN','watch');
-        const calText=cal.applied?`${num(cal.factor||1,2)}× owned-pool calibration`:'live market model';
+        const calText=cal.applied?`${num(cal.factor||1,2)}× owned-pool calibration`:'live model; no ranking boost from owned history';
         return `<div class="allocation-row advisor-row"><b>#${x.rank}</b><span class="advisor-opportunity"><b>${esc(x.pair)}</b><div class="meta">${esc(x.chain)} · ${short(x.pool_address)} · ${evidence}</div><div class="meta">Existing pool ${money(ex.pool_value||0)} → ${money(post.pool_value||0)} after addition (${pct(post.pool_pct||0,1)})</div></span><span class="advisor-sleeve">${badge(x.sleeve==='CORE_INCOME'?'Core':'Tactical',x.sleeve==='CORE_INCOME'?'core':'tactical')}</span><b>+${money(x.incremental_amount??x.amount)}</b><span><b>${money(x.expected_net_month)}</b><div class="meta">${pct(x.expected_net_month_pct||0)} · ${esc(x.economics_confidence||'')}</div><div class="meta">${esc(calText)}</div></span><span><b>${num(x.score,0)}/100</b>${Number(x.concentration_penalty||0)>0?`<div class="meta">-${num(x.concentration_penalty,1)} concentration</div>`:''}</span><button class="btn secondary small advisor-action" onclick="openAdvisorStrategy('${esc(x.chain)}','${esc(x.pool_address)}','${esc(x.sleeve)}',${Number(x.amount)||0})">Profit plan</button></div>`;
       }).join('');
       const modeLabel=r.allocation_mode==='BEST_ONLY'?'Best single opportunity':'Diversified';
