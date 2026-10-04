@@ -4,15 +4,20 @@ from lp_manager.asset_lens import pool_price_lens
 from lp_manager.candidate_universe import CandidateUniverse
 
 
-def test_fast_shared_refresh_can_skip_gecko_without_disabling_manual_universe():
+def test_shared_universe_is_background_maintained_without_hidden_advisor_mini_scan():
     root = Path(__file__).parents[1]
     api = (root / "lp_manager" / "api.py").read_text(encoding="utf-8")
     cu = (root / "lp_manager" / "candidate_universe.py").read_text(encoding="utf-8")
+    maintenance = (root / "lp_manager" / "candidate_universe_maintenance.py").read_text(encoding="utf-8")
 
     assert "include_gecko: bool = True" in cu
-    assert "SKIPPED_CONSUMER_PROFILE" in cu
-    assert "graph_limit=200,shortlist_limit=24,validate_limit=6,include_gecko=False" in api
-    assert "_UNIVERSE_FRESH_SECONDS = 300.0" in api
+    assert "preserve_existing_on_failure: bool = False" in cu
+    assert "CandidateUniverseMaintenanceService" in api
+    assert "graph_limit=500" in maintenance
+    assert "shortlist_limit=40" in maintenance
+    assert "validate_limit=20" in maintenance
+    assert "_UNIVERSE_FRESH_SECONDS = 900.0" in api
+    assert "graph_limit=200,shortlist_limit=24,validate_limit=6,include_gecko=False" not in api
 
 
 def test_browser_assets_are_cache_busted_and_no_store():
