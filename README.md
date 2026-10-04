@@ -491,6 +491,23 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.4.1 economics standardisation
+
+Live HLX/USDC testing exposed an important naming/authority fault underneath the otherwise accepted v0.9.7.4 Opportunity Score. Uniswap showed about **$356.5k TVL**, **$957.77 24h fees** and **98.07% Total APR**. The same arithmetic is $957.77 / $356,500 x 365 = about **98.06%**. LP Manager was instead showing a concentrated-position estimate around 690% under the label "Pool 24h fee APR", making whole-pool economics and position economics look interchangeable.
+
+v0.9.7.4.1 corrects that foundation without changing the accepted leaderboard architecture:
+
+- **Pool APR - 24h annualised** is now a canonical whole-pool benchmark. An explicit `fees_24h_usd` observation over matching canonical `tvl_usd` is preferred; if no observed fee field is available, a volume x fee-tier fallback is explicitly typed as derived rather than observed.
+- **Modelled position APR** is separate. It remains the concentrated-range forecast for the exact capital, range and holding period and no longer masquerades as a pool statistic.
+- Every position forecast carries an economics evidence class and confidence. Large position-vs-pool uplift is allowed to remain visible, but unsupported >4x uplift is automatically marked low confidence until stronger empirical evidence confirms it.
+- Opportunity Score keeps the same six-component architecture, but fresh deep range analysis fed by same-pair or screen-transferred fee economics receives less economics/evidence authority than exact-pool or directly modelled evidence.
+- Profit Lab always headlines the executable pool ratio/token-price range. Small-token market cap is retained only as secondary context and can no longer replace the mintable range.
+- The legacy `spot_24h_pool_derived_fee_apr_pct` field is retained for compatibility but now contains the corrected whole-pool benchmark rather than concentrated-position APR.
+- Profit Lab -> Execution Desk remains unchanged: the exact selected chain, pool, lower/upper execution prices and capital continue through to browser-wallet signing.
+- Background Top-20/25 deep-analysis rotation and Tactical/Core leaderboard views remain intentionally deferred to the next v0.9.7 stages; economic correctness is the release gate for this hotfix.
+
+Release regression coverage includes the HLX 98.06% benchmark, observed-vs-derived evidence typing, 1/3/7-day capital/horizon reconciliation, small-token executable-price primacy, typed Opportunity Score authority and UI naming.
+
 ### v0.9.7.3.1 live sign-off feeding v0.9.7.4
 
 The capital-consistency hotfix is accepted from live testing.
