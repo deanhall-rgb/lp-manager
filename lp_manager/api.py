@@ -1307,6 +1307,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 "status":evidence_warmer.status(),
             }
             board=opportunity_leaderboard.rebuild()
+            candidate_universe_maintenance.kick()
             deep_analysis_rotation.kick()
             result["leaderboard_status"]={
                 "shown":int((board.get("funnel") or {}).get("shown") or 0),
