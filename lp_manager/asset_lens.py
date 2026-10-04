@@ -36,11 +36,11 @@ def pool_price_lens(pool: dict[str, Any], *, lower: float | None = None, upper: 
         "market_cap_usd":mc or None,"fdv_usd":fdv or None,
         "implied_supply":supply,"supply_source":supply_source,
         "unit":explicit_unit,"unit_label":explicit_label,
-        # Market-cap display is useful for small campaign tokens, but wrapped
-        # network assets and majors should stay in executable pool-price units.
-        # Provider market-cap/FDV fields can refer to the provider's original
-        # token orientation, which made WPOL ranges look like a spurious ~$20m MC.
-        "primary_display":"MARKET_CAP" if supply and should_use_market_cap_display(base_symbol) else "TOKEN_PRICE",
+        # Executable pool price is always the primary Profit Lab range. Market
+        # cap remains useful context for small campaign assets, but it must never
+        # replace the mintable token/pool-ratio range.
+        "primary_display":"TOKEN_PRICE",
+        "secondary_display":"MARKET_CAP" if supply and should_use_market_cap_display(base_symbol) else None,
     }
     if supply:
         if lower and lower > 0: result["lower_market_cap_usd"]=_f(lower)*supply
