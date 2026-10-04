@@ -78,6 +78,31 @@ def _deep_monthly_net_pct(deep: dict[str, Any]) -> float | None:
     return net / capital * 100.0 * (30.0 / horizon)
 
 
+def _deep_economics_authority(deep: dict[str, Any]) -> float:
+    """Authority multiplier for the fee evidence behind a fresh deep plan.
+
+    Range analysis can be deep while fee evidence is still transferred from a
+    weaker prior. Keep those cases visible without granting them the same
+    economics authority as exact-pool or directly modelled pool evidence.
+    """
+    evidence = str(deep.get("economics_evidence_class") or "").upper()
+    confidence = str(deep.get("economics_confidence") or "").upper()
+    if not evidence or evidence == "LEGACY_DEEP_FORECAST":
+        return 1.0
+    authority = {
+        "MODELLED_POSITION_FROM_EXACT_OWNED_OBSERVATION": 1.0,
+        "MODELLED_CONCENTRATED_POSITION": 0.95,
+        "MODELLED_POSITION": 0.90,
+        "MODELLED_POSITION_FROM_SAME_PAIR_PRIOR": 0.75,
+        "MODELLED_POSITION_FROM_SCREEN_PRIOR": 0.65,
+    }.get(evidence, 0.85)
+    if confidence == "LOW":
+        authority = min(authority, 0.75)
+    elif confidence == "MODERATE":
+        authority = min(authority, 0.90)
+    return max(0.50, min(1.0, authority))
+
+
 def _quick_monthly_net_pct(row: dict[str, Any]) -> float | None:
     econ = dict(row.get("quick_economics") or {})
     for key in ("estimated_net_month_pct", "operating_net_month_pct", "expected_net_month_pct"):
@@ -113,10 +138,13 @@ def score_opportunity(row: dict[str, Any]) -> dict[str, Any]:
     # 1) Net economics: deep net at its analysed capital/horizon is preferred.
     deep_monthly = _deep_monthly_net_pct(deep)
     quick_monthly = _quick_monthly_net_pct(row)
+    deep_authority = _deep_economics_authority(deep)
     if deep_monthly is not None:
-        economics_score = _return_score(deep_monthly)
+        economics_score = _return_score(deep_monthly) * deep_authority
         economics_basis = "DEEP_NET"
         notes.append(f"Deep economics imply {deep_monthly:.2f}% net per 30d equivalent.")
+        if deep_authority < 0.99:
+            notes.append(f"Fee-evidence authority is {deep_authority*100:.0f}% because the position forecast relies on {str(deep.get('economics_evidence_class') or 'typed fallback').lower()}.")
     elif quick_monthly is not None:
         economics_score = _return_score(quick_monthly) * 0.85
         economics_basis = "SCREEN_NET"
@@ -223,6 +251,8 @@ def score_opportunity(row: dict[str, Any]) -> dict[str, Any]:
         "DEEP_STALE": 45.0,
         "NOT_ANALYSED": 45.0,
     }.get(deep_status, 45.0)
+    if _deep_is_fresh(deep):
+        deep_score *= deep_authority
     evidence_score = _clamp(0.25 * fresh_score + 0.25 * validation_score + 0.20 * readiness_score + 0.30 * deep_score)
 
     components = {
@@ -250,6 +280,8 @@ def score_opportunity(row: dict[str, Any]) -> dict[str, Any]:
         cap_reason = "fresh deep Profit Lab analysis is still required"
     elif not readiness.get("ready"):
         score_cap, cap_reason = 72.0, "Profit Lab evidence is incomplete"
+    elif _deep_is_fresh(deep) and deep_authority < 0.80:
+        score_cap, cap_reason = min(score_cap, 82.0), "fresh range analysis uses lower-authority transferred fee economics"
 
     final_score = round(min(raw, score_cap), 1)
     confidence = "HIGH" if evidence_score >= 80 and _deep_is_fresh(deep) else "MEDIUM" if evidence_score >= 60 else "LOW"
@@ -263,6 +295,8 @@ def score_opportunity(row: dict[str, Any]) -> dict[str, Any]:
         "cap_reason": cap_reason,
         "confidence": confidence,
         "basis": economics_basis,
+        "economics_evidence_class": str(deep.get("economics_evidence_class") or ("SCREEN_NET" if economics_basis == "SCREEN_NET" else economics_basis)),
+        "economics_authority": round(deep_authority, 3) if deep_monthly is not None else (0.85 if economics_basis == "SCREEN_NET" else 0.70 if economics_basis == "GROSS_FEE_PROXY" else 0.0),
         "monthly_net_pct_equivalent": round(deep_monthly if deep_monthly is not None else quick_monthly, 3) if (deep_monthly is not None or quick_monthly is not None) else None,
         "components": components,
         "weighted_components": weighted,
