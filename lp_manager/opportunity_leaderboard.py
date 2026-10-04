@@ -34,13 +34,28 @@ class OpportunityLeaderboard:
 
     def _deep_index(self):
         out={}
+        priority={}
         try: rows=self.store.list_forecast_snapshots(500)
         except Exception: rows=[]
         for r in rows:
             key=(str(r.get("chain") or "").upper(),str(r.get("pool_address") or "").lower())
-            if not key[0] or not key[1] or key in out:continue
+            if not key[0] or not key[1]:continue
             payload=dict(r.get("payload") or {});best=dict(payload.get("recommended_range") or {})
             forecast=dict(best.get("forecast") or {})
+            basis=dict(payload.get("leaderboard_deep_basis") or {})
+            economics_model=str(payload.get("economics_model_version") or forecast.get("economics_model_version") or "")
+            # Once v0.9.7.5 has produced a standard 7-day / display-£1k
+            # leaderboard snapshot, later ad-hoc 1d/3d Profit Lab investigations
+            # must not silently replace the cross-pool comparison basis.
+            standard_basis=bool(basis and str(payload.get("analysis_source") or "")=="BACKGROUND_LEADERBOARD_V0975")
+            pref=(
+                2 if standard_basis and economics_model==ECONOMICS_MODEL_VERSION else
+                1 if economics_model==ECONOMICS_MODEL_VERSION else
+                0,
+                _f(r.get("created_at")),
+            )
+            if key in out and pref<=priority.get(key,(-1,0.0)):continue
+            priority[key]=pref
             out[key]={
                 "created_at":_f(r.get("created_at")),"horizon_days":_f(r.get("horizon_days")),
                 "capital_usd":_f(r.get("capital_usd")),"expected_net_usd":_f(r.get("expected_net_usd")),
@@ -49,14 +64,17 @@ class OpportunityLeaderboard:
                 "pool_apr_evidence_class":str((forecast.get("pool_apr_24h_evidence") or {}).get("evidence_class") or ""),
                 "pool_apr_is_observed":bool((forecast.get("pool_apr_24h_evidence") or {}).get("observed")),
                 "modelled_position_apr_pct":forecast.get("modelled_position_apr_pct",r.get("forecast_fee_apr_pct")),
-                "economics_model_version":str(payload.get("economics_model_version") or forecast.get("economics_model_version") or ""),
+                "economics_model_version":economics_model,
                 "economics_evidence_class":str(forecast.get("position_economics_evidence_class") or "LEGACY_DEEP_FORECAST"),
                 "economics_confidence":str(forecast.get("position_economics_confidence") or ""),
                 "position_to_pool_apr_uplift_ratio":forecast.get("position_to_pool_apr_uplift_ratio"),
                 "expected_intervention_cost_usd":_f(forecast.get("expected_intervention_cost_usd")),
                 "range_quality_score":_f(best.get("range_quality_score",best.get("profit_score"))),
                 "net_horizon_return_pct":_f(forecast.get("net_horizon_return_pct",forecast.get("expected_net_pct"))),
-                "sleeve":str(r.get("sleeve") or ""),"forecast_id":str(r.get("id") or "")
+                "sleeve":str(r.get("sleeve") or ""),"forecast_id":str(r.get("id") or ""),
+                "analysis_source":str(payload.get("analysis_source") or "MANUAL_PROFIT_LAB"),
+                "leaderboard_deep_basis":basis,
+                "standard_basis":standard_basis,
             }
         return out
 
