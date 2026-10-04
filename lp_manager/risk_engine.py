@@ -49,6 +49,7 @@ def assess_pool_risk(candidate: dict[str, Any], *, sleeve: str) -> dict[str, Any
     liquidity_stability = _f(candidate.get("liquidity_stability"), 50.0)
     fee_consistency = _f(candidate.get("fee_consistency"), 50.0)
     pool_age = _f(candidate.get("pool_age_days"), 0.0)
+    pool_age_known = bool(candidate.get("pool_age_known")) if "pool_age_known" in candidate else bool(candidate.get("pool_age_days") not in (None, ""))
     tvl = max(0.0, _f(candidate.get("tvl_usd"), 0.0))
     volatility = max(0.0, _f(candidate.get("historical_volatility"), 50.0))
     concentration = _f(candidate.get("liquidity_concentration_risk"), 50.0)
@@ -68,7 +69,10 @@ def assess_pool_risk(candidate: dict[str, Any], *, sleeve: str) -> dict[str, Any
         "contract": _clamp(contract_risk),
         "stablecoin": _clamp(stablecoin_risk),
         "execution": _clamp(execution_drag * 15.0),
-        "history": _clamp(100.0 - min(100.0, pool_age / (90.0 if core else 14.0) * 100.0)),
+        "history": (
+            _clamp(100.0 - min(100.0, pool_age / (90.0 if core else 14.0) * 100.0))
+            if pool_age_known else 55.0
+        ),
     }
 
     weights = {
@@ -95,8 +99,10 @@ def assess_pool_risk(candidate: dict[str, Any], *, sleeve: str) -> dict[str, Any
             blockers.append("CORE_ASSET_CONVICTION")
         if liquidity_stability < 75 or exit_liquidity < 75:
             blockers.append("CORE_LIQUIDITY_QUALITY")
-        if pool_age < 30:
+        if pool_age_known and pool_age < 30:
             blockers.append("CORE_HISTORY_TOO_SHORT")
+        elif not pool_age_known:
+            evidence.append("POOL_AGE_UNKNOWN")
         if tvl < 1_000_000:
             blockers.append("CORE_TVL_TOO_LOW")
         if contract_risk > 35:
@@ -109,8 +115,10 @@ def assess_pool_risk(candidate: dict[str, Any], *, sleeve: str) -> dict[str, Any
             blockers.append("TACTICAL_TOKEN_QUALITY")
         if liquidity_stability < 40 or exit_liquidity < 40:
             blockers.append("TACTICAL_EXIT_LIQUIDITY")
-        if pool_age < 2:
+        if pool_age_known and pool_age < 2:
             blockers.append("TACTICAL_HISTORY_TOO_SHORT")
+        elif not pool_age_known:
+            evidence.append("POOL_AGE_UNKNOWN")
         if tvl < 150_000:
             blockers.append("TACTICAL_TVL_TOO_LOW")
         if contract_risk > 60:
