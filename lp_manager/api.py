@@ -86,6 +86,7 @@ from .candidate_universe import CandidateUniverse
 from .provider_coordinator import ProviderCoordinator
 from .evidence_warmer import EvidenceWarmService
 from .opportunity_leaderboard import OpportunityLeaderboard
+from .deep_analysis_rotation import DeepAnalysisRotationService
 from .product import APP_VERSION, app_metadata
 
 
@@ -413,6 +414,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         store, live.market, candidate_universe, provider_coordinator,
     )
     opportunity_leaderboard = OpportunityLeaderboard(store, candidate_universe)
+    deep_analysis_rotation = DeepAnalysisRotationService(
+        store, live.market, opportunity_leaderboard, provider_coordinator,
+    )
     # Repair confirmed LP Manager closes from their exact transaction receipt.
     # This is intentionally receipt-only and never performs a historical block scan.
     try:
@@ -776,9 +780,11 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     async def lifespan(_app: FastAPI):
         live.start_background()
         evidence_warmer.start_background()
+        deep_analysis_rotation.start_background()
         try:
             yield
         finally:
+            deep_analysis_rotation.stop_background()
             evidence_warmer.stop_background()
             live.stop_background()
             configure_provider_coordinator(None)
@@ -1243,11 +1249,16 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     @app.get("/api/opportunities/leaderboard")
     def opportunities_leaderboard(limit: int = 25):
-        return opportunity_leaderboard.rebuild(limit=max(5,min(100,int(limit))))
+        result=opportunity_leaderboard.rebuild(limit=max(5,min(100,int(limit))))
+        result["background_deep_analysis"]=deep_analysis_rotation.status()
+        return result
 
     @app.post("/api/opportunities/leaderboard/rebuild")
     def opportunities_leaderboard_rebuild(limit: int = 25):
-        return opportunity_leaderboard.rebuild(limit=max(5,min(100,int(limit))))
+        result=opportunity_leaderboard.rebuild(limit=max(5,min(100,int(limit))))
+        deep_analysis_rotation.kick()
+        result["background_deep_analysis"]=deep_analysis_rotation.status()
+        return result
 
     @app.get("/api/candidate-universe/{chain}")
     def candidate_universe_cached(chain: str):
@@ -1283,6 +1294,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 "status":evidence_warmer.status(),
             }
             board=opportunity_leaderboard.rebuild()
+            deep_analysis_rotation.kick()
             result["leaderboard_status"]={
                 "shown":int((board.get("funnel") or {}).get("shown") or 0),
                 "eligible":int((board.get("funnel") or {}).get("leaderboard_eligible") or 0),
@@ -1710,6 +1722,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         return {
             "provider_coordinator":provider_coordinator.status(),
             "evidence_warmer":evidence_warmer.status(),
+            "deep_analysis_rotation":deep_analysis_rotation.status(),
             "note":"Request/caching observability only. Provider and AI monetary cost accounting is scheduled for the later v0.9.7 cleanup.",
         }
 
