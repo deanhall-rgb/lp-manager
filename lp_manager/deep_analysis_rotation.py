@@ -6,6 +6,7 @@ from typing import Any
 
 from .profit_engine import recommend_profit_range
 from .provider_coordinator import ProviderDeferred
+from .fx import display_amount_to_usd, money_context
 
 
 class DeepAnalysisRotationService:
@@ -22,12 +23,13 @@ class DeepAnalysisRotationService:
     """
 
     STANDARD_HORIZON_DAYS = 7.0
-    STANDARD_CAPITAL_USD = 1000.0
+    STANDARD_CAPITAL_DISPLAY = 1000.0
     STANDARD_MONTHLY_TARGET_PCT = 10.0
     TARGET_LIMIT = 25
     TOP_ZONE = 20
 
-    def __init__(self, store, market, leaderboard, provider_coordinator=None):
+    def __init__(self, settings, store, market, leaderboard, provider_coordinator=None):
+        self.settings = settings
         self.store = store
         self.market = market
         self.leaderboard = leaderboard
@@ -106,6 +108,12 @@ class DeepAnalysisRotationService:
         targets = self.targets()
         selected = targets[:max(1, min(2, int(max_items)))]
         results = []
+        money = money_context(self.settings, self.store)
+        display_currency = str(money.get("display_currency") or "USD")
+        capital_usd = max(
+            1.0,
+            float(display_amount_to_usd(self.STANDARD_CAPITAL_DISPLAY, self.settings, self.store)),
+        )
 
         for row in selected:
             chain = str(row.get("chain") or "").upper()
@@ -129,7 +137,7 @@ class DeepAnalysisRotationService:
                             chain,
                             address,
                             horizon_days=self.STANDARD_HORIZON_DAYS,
-                            capital=self.STANDARD_CAPITAL_USD,
+                            capital=capital_usd,
                             sleeve="AUTO",
                             monthly_target_pct=self.STANDARD_MONTHLY_TARGET_PCT,
                             pool_fallback=row,
@@ -142,7 +150,7 @@ class DeepAnalysisRotationService:
                         chain,
                         address,
                         horizon_days=self.STANDARD_HORIZON_DAYS,
-                        capital=self.STANDARD_CAPITAL_USD,
+                        capital=capital_usd,
                         sleeve="AUTO",
                         monthly_target_pct=self.STANDARD_MONTHLY_TARGET_PCT,
                         pool_fallback=row,
@@ -151,7 +159,9 @@ class DeepAnalysisRotationService:
                 result["generated_at"] = time.time()
                 result["analysis_source"] = "BACKGROUND_LEADERBOARD_V0975"
                 result["leaderboard_deep_basis"] = {
-                    "capital_usd": self.STANDARD_CAPITAL_USD,
+                    "capital_usd": round(capital_usd, 2),
+                    "capital_display": self.STANDARD_CAPITAL_DISPLAY,
+                    "display_currency": display_currency,
                     "horizon_days": self.STANDARD_HORIZON_DAYS,
                     "monthly_target_pct": self.STANDARD_MONTHLY_TARGET_PCT,
                     "sleeve": "AUTO",
@@ -225,7 +235,9 @@ class DeepAnalysisRotationService:
             "enabled": bool(self.market),
             "mode": "TOP_20_PLUS_5_CHALLENGER_ROTATION",
             "standard_basis": {
-                "capital_usd": self.STANDARD_CAPITAL_USD,
+                "capital_usd": round(capital_usd, 2),
+                    "capital_display": self.STANDARD_CAPITAL_DISPLAY,
+                    "display_currency": display_currency,
                 "horizon_days": self.STANDARD_HORIZON_DAYS,
                 "monthly_target_pct": self.STANDARD_MONTHLY_TARGET_PCT,
                 "sleeve": "AUTO",
