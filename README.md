@@ -491,6 +491,22 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.5.1 persistent universe + Advisor alignment
+
+Live v0.9.7.5 testing proved that automatic deep analysis works: the 25-row board progressively filled with AUTO STANDARD evidence and the queue reached zero. The same test also exposed two orchestration gaps that must be closed before Tactical/Core presentation work starts.
+
+- **Candidate Universe upkeep is now automatic across all six chains.** A background maintenance service refreshes one oldest/due chain at a time at low provider priority. Its target cadence is roughly 12 minutes per snapshot, with provider deferrals/retries rather than foreground contention.
+- **The leaderboard can no longer disappear because a snapshot crosses a freshness boundary.** Previously, rows older than the hard STALE threshold were excluded entirely, so a valid persistent board could suddenly fall from 25 rows to zero. Stale source evidence now remains visible with a freshness penalty and cannot be allocation-confirmed until refreshed.
+- **Freshness windows now match the maintained persistent-board design.** FRESH is up to 15 minutes, RECENT to 30 minutes, AGING to two hours, then STALE. This avoids a healthy background-maintained board turning yellow after only a few minutes.
+- **Failed background discovery cannot wipe a good universe.** Maintenance refreshes preserve the last valid snapshot when providers return no usable candidate rows.
+- **Deep analysis pauses on genuinely stale source universes.** The board stays visible, but the background Profit Lab worker waits for universe maintenance instead of spending provider budget deep-analysing stale market inputs.
+- **Portfolio Advisor Best Overall is now downstream of the leaderboard.** Its candidate set comes from the current Top-25 persistent board and its cross-pool base ranking uses Opportunity Score. Advisor then adds portfolio concentration, allocation-size, live-evidence and capital gates rather than inventing a second unrelated ranking.
+- **AUTO STANDARD evidence flows into Best Overall Advisor.** A current 7-day standard leaderboard result is no longer shown as DEEP RECHECK merely because the older Advisor path was looking for an unrelated 3-day Tactical or 30-day Core snapshot. Explicit Tactical/Core filters retain their matching-horizon behaviour for the later dedicated views.
+- **Advisor no longer performs a smaller hidden Candidate Universe refresh.** That old path could overwrite the persistent board with a narrower 200/24/6 scan. Routine refresh now belongs to the shared maintenance service; synchronous discovery is only used when no usable snapshot exists.
+- **UI observability:** Opportunities now shows Universe upkeep state, due-chain count/oldest age and current chain refresh alongside Auto deep rotation. Best Overall Advisor explicitly labels itself as leaderboard-aligned.
+
+Known issue retained: an intentionally very large manual Ethereum Candidate Universe scan can still hit the interactive request timeout. Background upkeep avoids using that oversized path and remains provider-coordinated/non-blocking.
+
 ## v0.9.7.5 background deep-analysis rotation
 
 v0.9.7.4.2 closed the economics-standardisation work after live HLX testing. v0.9.7.5 moves the persistent Opportunity Leaderboard from a manually deep-analysed board to a progressively self-populating research surface.
