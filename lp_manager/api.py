@@ -1590,6 +1590,12 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         stale_fallbacks=0
         rate_limits=0
         timeouts=0
+        best_overall=str(intent.sleeve_filter or "ANY").upper() in {"ANY","ALL",""}
+        leaderboard_state=opportunity_leaderboard.rebuild(limit=25)
+        leaderboard_by_key={
+            (str(x.get("chain") or "").upper(),str(x.get("pool_address") or "").lower()):x
+            for x in (leaderboard_state.get("rows") or [])
+        }
 
         # Deliberately scan through the shared Candidate Universe rather than a
         # separate one-page Advisor query. Runs are sequential so the shared
@@ -1611,8 +1617,24 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             targeted=int(float((snap.get("summary") or {}).get("targeted_live_requests") or 0))
             total_provider_requests+=provider_requests+targeted
             enriched=_enrich_universe_rows(chain,snap,fresh=fresh)
-            selected=_fair_chain_candidates(enriched,8)
+            if best_overall:
+                selected=[
+                    row for row in enriched
+                    if (chain,str(row.get("pool_address") or "").lower()) in leaderboard_by_key
+                ]
+                selected.sort(
+                    key=lambda row:int(
+                        leaderboard_by_key.get(
+                            (chain,str(row.get("pool_address") or "").lower()),{}
+                        ).get("rank") or 999
+                    )
+                )
+            else:
+                selected=_fair_chain_candidates(enriched,8)
             for row in selected:
+                leaderboard_row=leaderboard_by_key.get(
+                    (chain,str(row.get("pool_address") or "").lower()),{}
+                )
                 evaluation=row.get("evaluation") or preliminary_pool_evaluation(row)
                 sleeve=row.get("sleeve") or evaluation.get("preferred_sleeve") or (
                     "CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
@@ -1630,6 +1652,10 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     **row,"evaluation":evaluation,"sleeve":sleeve,"economics":advisor_economics,
                     "advisor_calibration":advisor_economics.get("advisor_calibration") or {},
                     "regime":{"confidence":50,"label":"QUICK_ADVISOR_SCREEN"},
+                    "leaderboard_rank":leaderboard_row.get("rank"),
+                    "opportunity_score":dict(leaderboard_row.get("opportunity_score") or {}),
+                    "deep_analysis":dict(leaderboard_row.get("deep_analysis") or row.get("deep_analysis") or {}),
+                    "advisor_ranking_basis":"LEADERBOARD_OPPORTUNITY_SCORE" if best_overall else "SLEEVE_SCREEN",
                 })
             summary=snap.get("summary") or {}
             chain_diagnostics.append({
@@ -1646,7 +1672,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 "provider_statuses":{str(x.get("provider") or "UNKNOWN"):str(x.get("status") or "UNKNOWN") for x in providers},
             })
 
-        candidates=opportunity_leaderboard.attach_analysis_state(candidates)
+        if not best_overall:
+            candidates=opportunity_leaderboard.attach_analysis_state(candidates)
         result=rank_opportunities(
             candidates,available_capital=max(0.0,_display_capital_to_usd(intent.available_capital)),
             reserve_pct=max(0.0,min(90.0,intent.reserve_pct)),
@@ -1658,7 +1685,13 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         allocated_chains=sorted({str(x.get("chain") or "") for x in result.get("allocations") or [] if x.get("chain")})
         result["scan_errors"]=errors
         result["candidate_count"]=len(candidates)
-        result["data_source"]="SHARED_CANDIDATE_UNIVERSE"
+        result["data_source"]="LEADERBOARD_ALIGNED_SHARED_UNIVERSE" if best_overall else "SHARED_CANDIDATE_UNIVERSE"
+        result["leaderboard_alignment"]={
+            "enabled":best_overall,
+            "leaderboard_candidates":len(leaderboard_by_key),
+            "advisor_candidates":len(candidates),
+            "basis":"OPPORTUNITY_SCORE_PLUS_PORTFOLIO_CONCENTRATION_AND_CAPITAL_GATES" if best_overall else "SLEEVE_SPECIFIC_SCREEN",
+        }
         result["universe_diagnostics"]={
             "chains":chain_diagnostics,
             "summary":{
