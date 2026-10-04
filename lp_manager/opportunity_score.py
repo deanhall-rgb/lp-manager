@@ -88,7 +88,9 @@ def _deep_economics_authority(deep: dict[str, Any]) -> float:
     evidence = str(deep.get("economics_evidence_class") or "").upper()
     confidence = str(deep.get("economics_confidence") or "").upper()
     if not evidence or evidence == "LEGACY_DEEP_FORECAST":
-        return 1.0
+        # Old snapshots predate the conservative horizon blend and must not keep
+        # full economics authority after the model contract changes.
+        return 0.55
     authority = {
         "MODELLED_POSITION_FROM_EXACT_OWNED_OBSERVATION": 1.0,
         "MODELLED_CONCENTRATED_POSITION": 0.95,
@@ -249,6 +251,7 @@ def score_opportunity(row: dict[str, Any]) -> dict[str, Any]:
         "DEEP_CAPITAL_NON_POSITIVE": 100.0,
         "DEEP_CAPITAL_UNVERIFIED": 80.0,
         "DEEP_STALE": 45.0,
+        "DEEP_RECHECK_REQUIRED": 50.0,
         "NOT_ANALYSED": 45.0,
     }.get(deep_status, 45.0)
     if _deep_is_fresh(deep):
@@ -275,6 +278,8 @@ def score_opportunity(row: dict[str, Any]) -> dict[str, Any]:
         score_cap, cap_reason = 55.0, "fresh deep economics are non-positive"
     elif deep_status == "DEEP_STALE":
         score_cap, cap_reason = 72.0, "deep analysis is stale"
+    elif deep_status == "DEEP_RECHECK_REQUIRED":
+        score_cap, cap_reason = 70.0, "deep result predates the current conservative economics model and needs recalculation"
     elif deep_status in {"NOT_ANALYSED", ""}:
         score_cap = 79.0 if readiness.get("ready") else 68.0
         cap_reason = "fresh deep Profit Lab analysis is still required"
