@@ -207,16 +207,19 @@ def test_v0973_persistent_board_combines_cached_chains():
     assert OpportunityLeaderboard.STORE_KEY in store.settings
 
 
-def test_v0973_stale_chain_does_not_compete_as_current():
+def test_v0973_stale_chain_remains_visible_but_cannot_confirm_allocation():
     fresh = _leaderboard_candidate("ETHEREUM", "0x" + "3" * 40, "WETH/USDC", 50)
     stale = _leaderboard_candidate("BASE", "0x" + "4" * 40, "WETH/USDC", 99)
     board = OpportunityLeaderboard(_LeaderboardStore(), _LeaderboardUniverse({
         "ETHEREUM": _leaderboard_snapshot("ETHEREUM", [fresh], 30),
-        "BASE": _leaderboard_snapshot("BASE", [stale], 7200),
+        "BASE": _leaderboard_snapshot("BASE", [stale], 10800),
     }))
     result = board.rebuild()
     assert any(x["chain"] == "ETHEREUM" for x in result["rows"])
-    assert not any(x["chain"] == "BASE" for x in result["rows"])
+    stale_row = next(x for x in result["rows"] if x["chain"] == "BASE")
+    assert stale_row["freshness"]["state"] == "STALE"
+    assert stale_row["market_fresh_for_allocation"] is False
+    assert stale_row["allocation_confirmed"] is False
 
 
 def test_v0974_opportunity_score_is_final_and_v4_ready():
