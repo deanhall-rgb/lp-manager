@@ -61,6 +61,8 @@ class DeepAnalysisRotationService:
         readiness = row.get("profit_lab_readiness") or {}
         if readiness.get("ready") is not True:
             return False
+        if str((row.get("freshness") or {}).get("state") or "").upper()=="STALE":
+            return False
         return cls._deep_status(row) in {
             "NOT_ANALYSED",
             "DEEP_RECHECK_REQUIRED",
