@@ -108,7 +108,7 @@ def test_opportunity_score_reduces_authority_for_transferred_fee_economics():
 def test_profit_ui_names_pool_and_position_apr_separately_and_keeps_price_primary():
     app = (Path(__file__).resolve().parents[1] / "lp_manager" / "static" / "app.js").read_text(encoding="utf-8")
 
-    assert "Pool APR · 24h annualised" in app
+    assert "Pool APR · 24h (" in app
     assert "Modelled position APR" in app
     assert "Pool 24h fee APR" not in app
     assert "primary_display==='MARKET_CAP'" not in app
