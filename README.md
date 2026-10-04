@@ -491,6 +491,22 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.5 background deep-analysis rotation
+
+v0.9.7.4.2 closed the economics-standardisation work after live HLX testing. v0.9.7.5 moves the persistent Opportunity Leaderboard from a manually deep-analysed board to a progressively self-populating research surface.
+
+- **Automatic Top-20 + 5 challenger rotation:** the background worker continuously inspects the strongest 25 leaderboard rows and runs one missing/stale/recheck Profit Lab analysis at a time. Operators no longer need to click every pool manually before it can gain deep evidence.
+- **One common comparison basis:** background leaderboard analysis uses the configured display-currency equivalent of **1,000**, a **7-day hold**, **AUTO** sleeve and **10% monthly reporting target**. This is intentionally a neutral cross-pool comparison basis; Tactical/Core-specific boards remain the next-stage work.
+- **Interactive work always wins:** the worker runs inside Provider Coordinator background priority. If Candidate Universe, Profit Lab, wallet refresh or another foreground feature is using a provider, background work is deferred rather than competing for the same request budget.
+- **Non-blocking startup:** wallet/live services and the UI start normally. Deep rotation waits for the initial runway and then processes only one candidate per quiet cycle.
+- **Evidence priority:** `DEEP RECHECK` rows are recalculated first, followed by unanalysed screen-only rows and then stale deep results. Fresh current-model deep evidence is left alone.
+- **Standard basis is sticky:** once a pool has a v0.9.7.5 standard background result, a later ad-hoc 1-day or 3-day Profit Lab investigation cannot silently replace that cross-pool leaderboard basis.
+- **Visible progress:** the leaderboard now exposes automatic rotation state, pending count/current pool and marks standard automatically generated deep evidence.
+- **Retry discipline:** provider deferrals receive a short retry delay; genuine failures cool down before retrying so a problematic pool cannot hammer the provider loop.
+- **No allocation/autosigning change:** this service only creates the same persisted Profit Lab evidence the operator could create manually. It never opens, closes or signs a position.
+
+Known issue retained from v0.9.7.4.2 live testing: a very large Ethereum Candidate Universe scan can still hit the interactive request timeout. The successful smaller/normal scans and provider-degradation fallback remain usable, so this does not block v0.9.7.5. Provider/API batching and large-scan latency remain in the later optimisation backlog.
+
 ## v0.9.7.4.2 conservative economics closure
 
 Live v0.9.7.4.1 testing confirmed that the pool-vs-position APR labels and executable range display were fixed, but exposed one remaining modelling problem: short 1-day/3-day concentrated ranges could extrapolate the current tick's active-liquidity share too aggressively. On HLX/USDC, the whole-pool benchmark was about 124% while modelled position APR rose to roughly 2,400-2,900% as the range tightened. The percentage arithmetic was internally correct; the forward fee-share assumption was not conservative enough.
@@ -538,7 +554,7 @@ The capital-consistency hotfix is accepted from live testing.
 
 These observations are deliberately retained rather than being mixed into the current feature patch:
 
-- **Background deep-analysis rotation:** the Top 20-25 leaderboard should eventually receive scheduled/rotating Profit Lab evidence automatically. The operator should not need to click every pool manually before it can become deep-confirmed.
+- **Background deep-analysis rotation:** completed in v0.9.7.5. The remaining next step is separate Tactical/Core leaderboard treatment rather than more manual deep clicks.
 - **Advisor breadth:** Portfolio Advisor can still collapse to one or zero allocation candidates. Later work should distinguish a genuinely empty deployable set from evidence that simply has not completed deep analysis yet.
 - **Research-only capital prefill:** investigate why a research-only ARB/WETH click-through used £681.78 before the later validated £270 allocation. Research mode should clearly state where its capital assumption came from.
 - **Range intelligence/explainability:** symmetric ranges are acceptable when genuinely optimal, but later UI/analysis must make regime, volatility, skew, replay evidence, intervention cost and the reason the selected geometry won easier to inspect.
