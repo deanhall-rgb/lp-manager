@@ -449,11 +449,27 @@ def rank_opportunities(
     allocated = sum(x["amount"] for x in allocations)
     unallocated = max(0.0, deployable - allocated)
     concentration_limited = any(_f(c.get("incremental_room_after_existing")) + 0.01 < _f(c.get("incremental_cap")) for c in cap_details)
+    rejected_count = sum(1 for x in scored if x.get("reject_reasons"))
+    if unallocated > 0.01:
+        if rejected_count and len(eligible) < max(1, int(max_positions)):
+            unallocated_reason = "Remaining capital held back because the next candidates did not clear current risk, freshness or size-adjusted deep-profit gates."
+        elif concentration_limited:
+            unallocated_reason = "Remaining capital held back by existing-position concentration limits."
+        else:
+            unallocated_reason = "Remaining capital held back by the configured per-pool diversification caps."
+    else:
+        unallocated_reason = None
     return {
         "available_capital": round(capital, 2), "reserve_floor": round(reserve_floor, 2), "unallocated": round(unallocated, 2),
         "reserve": round(reserve_floor + unallocated, 2), "deployable": round(deployable, 2), "allocated": round(allocated, 2),
         "allocations": allocations, "ranked": scored, "near_misses": near_misses, "sleeve_filter": sleeve_filter, "allocation_mode": allocation_mode,
         "portfolio_context": portfolio_context,
-        "unallocated_reason": "Existing portfolio exposure leaves no eligible candidate with more concentration room." if unallocated > 0.01 and concentration_limited else ("No eligible candidate has remaining concentration capacity." if unallocated > 0.01 else None),
+        "candidate_gate_summary": {
+            "ranked": len(scored),
+            "eligible_after_gates": len(eligible),
+            "rejected": rejected_count,
+            "near_misses": len(near_misses),
+        },
+        "unallocated_reason": unallocated_reason,
         "guardrail": "SCREEN_THEN_SIZE_AWARE_DEEP_VALIDATE: current live economics rank candidates; stale cache cannot allocate; matching-horizon Profit Lab evidence must remain positive after scaling to the actual proposed capital while fixed cash costs stay fixed; existing open LP exposure constrains incremental concentration.",
     }
