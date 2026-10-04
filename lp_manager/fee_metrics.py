@@ -39,6 +39,95 @@ def pool_fee_revenue_rate(volume_24h_usd: float, fee_tier_bps: float) -> dict[st
     }
 
 
+
+def pool_apr_24h_benchmark(
+    pool: dict[str, Any] | None,
+    *,
+    fee_tier_bps: float | None = None,
+) -> dict[str, Any]:
+    """Canonical whole-pool 24h APR benchmark.
+
+    Prefer an explicit 24h pool-fee observation already carried on the canonical
+    pool snapshot. When that is unavailable, expose a clearly typed nominal
+    volume x fee-tier fallback instead of confusing a concentrated-position
+    estimate with whole-pool economics.
+    """
+    pool = dict(pool or {})
+    tvl = max(0.0, _f(pool.get("tvl_usd")))
+    validation = str(pool.get("economic_validation") or "").upper()
+    providers = [str(x) for x in (pool.get("providers") or []) if str(x)]
+    provider_basis = str(pool.get("source") or pool.get("provider") or "")
+    if not provider_basis and providers:
+        provider_basis = "+".join(providers)
+
+    observed_fees = 0.0
+    observed_field = ""
+    for field in ("fees_24h_usd", "fee_24h_usd", "fees24h_usd"):
+        value = max(0.0, _f(pool.get(field)))
+        if value > 0:
+            observed_fees = value
+            observed_field = field
+            break
+
+    if tvl > 0 and observed_fees > 0:
+        apr = observed_fees / tvl * 365.0 * 100.0
+        confidence = (
+            "HIGH" if validation == "CROSS_VALIDATED"
+            else "MODERATE" if validation in {"LIVE_VALIDATED", "TVL_MISMATCH"}
+            else "LOW"
+        )
+        return {
+            "available": True,
+            "observed": True,
+            "label": "Pool APR - 24h annualised",
+            "apr_pct": round(apr, 2),
+            "fees_24h_usd": round(observed_fees, 4),
+            "tvl_usd": round(tvl, 4),
+            "fee_basis": observed_field,
+            "tvl_basis": "tvl_usd",
+            "evidence_class": "OBSERVED_POOL_FEES_TVL",
+            "confidence": confidence,
+            "provider_basis": provider_basis or None,
+            "time_basis": "CANONICAL_POOL_24H_SNAPSHOT",
+            "basis_note": "Pool fees and TVL are taken from the same canonical pool snapshot.",
+        }
+
+    bps = max(0.0, _f(fee_tier_bps, _f(pool.get("fee_tier_bps"))))
+    flow = pool_fee_revenue_rate(_f(pool.get("volume_24h_usd")), bps)
+    nominal_fees = _f(flow.get("nominal_pool_fee_revenue_24h_usd"))
+    if tvl > 0 and nominal_fees > 0:
+        apr = nominal_fees / tvl * 365.0 * 100.0
+        return {
+            "available": True,
+            "observed": False,
+            "label": "Pool APR - 24h annualised",
+            "apr_pct": round(apr, 2),
+            "fees_24h_usd": round(nominal_fees, 4),
+            "tvl_usd": round(tvl, 4),
+            "fee_basis": "volume_24h_usd_x_fee_tier",
+            "tvl_basis": "tvl_usd",
+            "evidence_class": "DERIVED_VOLUME_FEE_TIER_TVL",
+            "confidence": "MODERATE" if validation in {"CROSS_VALIDATED", "LIVE_VALIDATED"} else "LOW",
+            "provider_basis": provider_basis or None,
+            "time_basis": "CANONICAL_POOL_24H_SNAPSHOT",
+            "basis_note": "Observed fee field unavailable; benchmark is derived from canonical 24h volume x fee tier over the same snapshot TVL.",
+        }
+
+    return {
+        "available": False,
+        "observed": False,
+        "label": "Pool APR - 24h annualised",
+        "apr_pct": None,
+        "fees_24h_usd": None,
+        "tvl_usd": round(tvl, 4) if tvl > 0 else None,
+        "evidence_class": "INSUFFICIENT_POOL_ECONOMICS",
+        "confidence": "LOW",
+        "provider_basis": provider_basis or None,
+        "time_basis": "CANONICAL_POOL_24H_SNAPSHOT",
+        "basis_note": "A matching 24h fee/TVL benchmark could not be established.",
+    }
+
+
 def observed_fee_metrics(tracker: dict[str, Any] | None, capital_usd: float) -> dict[str, Any]:
     tracker = tracker or {}
     capital = max(0.0, _f(capital_usd))
