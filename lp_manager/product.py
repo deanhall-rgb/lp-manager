@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-APP_VERSION = "0.9.7.4.1"
-APP_RELEASE = "Economics Standardisation"
+APP_VERSION = "0.9.7.4.2"
+APP_RELEASE = "Conservative Economics Closure"
 APP_DISPLAY_VERSION = f"v{APP_VERSION}"
 APP_USER_AGENT = f"LP-Manager/{APP_VERSION}"
 
@@ -9,6 +9,7 @@ APP_USER_AGENT = f"LP-Manager/{APP_VERSION}"
 # It is intentionally separate from the application release number so later
 # ranking/UI patches can evolve without silently changing persisted data shape.
 OPPORTUNITY_SCHEMA_VERSION = "1.0"
+ECONOMICS_MODEL_VERSION = "ECONOMICS_V2_CONSERVATIVE_HORIZON_BLEND"
 
 
 def app_metadata() -> dict[str, str]:
@@ -18,4 +19,5 @@ def app_metadata() -> dict[str, str]:
         "display_version": APP_DISPLAY_VERSION,
         "release": APP_RELEASE,
         "opportunity_schema_version": OPPORTUNITY_SCHEMA_VERSION,
+        "economics_model_version": ECONOMICS_MODEL_VERSION,
     }
