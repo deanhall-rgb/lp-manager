@@ -83,6 +83,7 @@ from .capital_ledger import (
 )
 from .discovery_lab import DiscoveryLab
 from .candidate_universe import CandidateUniverse
+from .candidate_universe_maintenance import CandidateUniverseMaintenanceService
 from .provider_coordinator import ProviderCoordinator
 from .evidence_warmer import EvidenceWarmService
 from .opportunity_leaderboard import OpportunityLeaderboard
@@ -414,6 +415,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         store, live.market, candidate_universe, provider_coordinator,
     )
     opportunity_leaderboard = OpportunityLeaderboard(store, candidate_universe)
+    candidate_universe_maintenance = CandidateUniverseMaintenanceService(
+        store, candidate_universe, provider_coordinator,
+    )
     deep_analysis_rotation = DeepAnalysisRotationService(
         settings, store, live.market, opportunity_leaderboard, provider_coordinator,
     )
@@ -553,7 +557,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             row={**row,"historical_current":ctx}
         return row
 
-    _UNIVERSE_FRESH_SECONDS = 300.0
+    _UNIVERSE_FRESH_SECONDS = 900.0
 
     def _shared_universe_snapshot(chain: str, *, force_refresh: bool = False) -> tuple[dict[str,Any],str,list[str]]:
         """One candidate source for Scout and Advisor, with short-lived cache reuse.
@@ -568,9 +572,18 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             fresh=candidate_universe.fresh_cached(key,max_age_seconds=_UNIVERSE_FRESH_SECONDS)
             if fresh:
                 return fresh,"FRESH_CACHE",[]
+            # v0.9.7.5.1: Advisor no longer performs a separate small synchronous
+            # refresh that can overwrite the persistent leaderboard universe.
+            # Background maintenance owns routine refresh. A stale cache may be
+            # displayed for research, but allocation is blocked downstream until
+            # current evidence returns.
+            if isinstance(prior,dict) and prior.get("ok"):
+                candidate_universe_maintenance.kick()
+                return prior,"STALE_CACHE",["Candidate Universe is queued for background refresh."]
         try:
             snap=candidate_universe.refresh(
-                key,graph_limit=200,shortlist_limit=24,validate_limit=6,include_gecko=False,
+                key,graph_limit=500,shortlist_limit=40,validate_limit=20,include_gecko=True,
+                preserve_existing_on_failure=True,
             )
             if snap.get("ok"):
                 return snap,"REFRESH",list(snap.get("targeted_validation_errors") or [])
@@ -578,13 +591,8 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         except Exception as exc:
             snap={}
             error=str(exc)[:300]
-        # A stale universe may still be useful to *show* what was recently known,
-        # but its rows are marked NOT_REFRESHED downstream and cannot allocate.
         if isinstance(prior,dict) and prior.get("ok"):
-            try:
-                store.set_setting(f"candidate_universe:{key}",{k:v for k,v in prior.items() if k not in {"cached","fresh_cache","cache_age_seconds"}})
-            except Exception:
-                pass
+            candidate_universe_maintenance.kick()
             return prior,"STALE_CACHE",[error]
         return snap or {"ok":False,"chain":key,"shortlist":[],"summary":{},"providers":[]},"FAILED",[error]
 
@@ -780,11 +788,13 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     async def lifespan(_app: FastAPI):
         live.start_background()
         evidence_warmer.start_background()
+        candidate_universe_maintenance.start_background()
         deep_analysis_rotation.start_background()
         try:
             yield
         finally:
             deep_analysis_rotation.stop_background()
+            candidate_universe_maintenance.stop_background()
             evidence_warmer.stop_background()
             live.stop_background()
             configure_provider_coordinator(None)
@@ -1251,13 +1261,16 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     def opportunities_leaderboard(limit: int = 25):
         result=opportunity_leaderboard.rebuild(limit=max(5,min(100,int(limit))))
         result["background_deep_analysis"]=deep_analysis_rotation.status()
+        result["candidate_universe_maintenance"]=candidate_universe_maintenance.status()
         return result
 
     @app.post("/api/opportunities/leaderboard/rebuild")
     def opportunities_leaderboard_rebuild(limit: int = 25):
         result=opportunity_leaderboard.rebuild(limit=max(5,min(100,int(limit))))
+        candidate_universe_maintenance.kick()
         deep_analysis_rotation.kick()
         result["background_deep_analysis"]=deep_analysis_rotation.status()
+        result["candidate_universe_maintenance"]=candidate_universe_maintenance.status()
         return result
 
     @app.get("/api/candidate-universe/{chain}")
@@ -1722,6 +1735,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         return {
             "provider_coordinator":provider_coordinator.status(),
             "evidence_warmer":evidence_warmer.status(),
+            "candidate_universe_maintenance":candidate_universe_maintenance.status(),
             "deep_analysis_rotation":deep_analysis_rotation.status(),
             "note":"Request/caching observability only. Provider and AI monetary cost accounting is scheduled for the later v0.9.7 cleanup.",
         }
