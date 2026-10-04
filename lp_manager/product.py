@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-APP_VERSION = "0.9.7.5"
-APP_RELEASE = "Background Deep Analysis Rotation"
+APP_VERSION = "0.9.7.5.1"
+APP_RELEASE = "Persistent Universe and Advisor Alignment"
 APP_DISPLAY_VERSION = f"v{APP_VERSION}"
 APP_USER_AGENT = f"LP-Manager/{APP_VERSION}"
 
