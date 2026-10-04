@@ -415,7 +415,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
     )
     opportunity_leaderboard = OpportunityLeaderboard(store, candidate_universe)
     deep_analysis_rotation = DeepAnalysisRotationService(
-        store, live.market, opportunity_leaderboard, provider_coordinator,
+        settings, store, live.market, opportunity_leaderboard, provider_coordinator,
     )
     # Repair confirmed LP Manager closes from their exact transaction receipt.
     # This is intentionally receipt-only and never performs a historical block scan.
