@@ -16,6 +16,7 @@ from .price_units import assert_sane_display_lens
 from .range_lab import analyse_range, candle_activity_fraction, generate_range_candidates, infer_candles_per_day
 from .strategy_lab import _pool_from_onchain
 from .campaign_sentiment import execution_skew_pct, thesis_is_fresh
+from .product import ECONOMICS_MODEL_VERSION
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -932,6 +933,7 @@ def _recommend_single_pool(
             width_pct=candidate.width_pct, regime=regime,
             expected_interventions_per_month=interventions_month, lifecycle_cost_per_intervention=1.5,
             lower_price=candidate.lower, upper_price=candidate.upper,
+            horizon_days=horizon,
         )
         empirical_day=0.0
         empirical_width_scale=1.0
@@ -1033,20 +1035,24 @@ def _recommend_single_pool(
         )
         current_day = _f((econ.get("estimated_fee_income") or {}).get("daily"))
         fee_forecast_source="PUBLIC_POOL_VOLUME_MODEL"
-        if empirical_day>0 and (
+        if empirical_day>0 and empirical_source=="EXACT_OWNED_POOL":
+            # Mature exact-pool owned fee production is stronger evidence than a
+            # generic active-liquidity forecast, even when public volume exists.
+            current_day=empirical_day
+            fee_forecast_source="EXACT_OWNED_POOL_OBSERVED_OVERRIDE"
+        elif empirical_day>0 and (
             _f(pool.get("volume_24h_usd"))<=0
             or current_day<=0
             or empirical_source=="ADVISOR_CANONICAL_ECONOMICS"
         ):
             current_day=empirical_day
             fee_forecast_source=(
-                "EXACT_OWNED_POOL_OBSERVED_FALLBACK" if empirical_source=="EXACT_OWNED_POOL"
-                else "ADVISOR_CANONICAL_ECONOMICS" if empirical_source=="ADVISOR_CANONICAL_ECONOMICS"
+                "ADVISOR_CANONICAL_ECONOMICS" if empirical_source=="ADVISOR_CANONICAL_ECONOMICS"
                 else "SAME_PAIR_OWNED_FEE_PRIOR"
             )
         p_month = _f(econ.get("persistence_haircut_factor"), 0.65)
         p_h = _horizon_persistence(p_month, horizon)
-        calibration_factor=1.0 if fee_forecast_source in {"EXACT_OWNED_POOL_OBSERVED_FALLBACK","SAME_PAIR_OWNED_FEE_PRIOR","ADVISOR_CANONICAL_ECONOMICS"} else _f(calibration.get("factor"), 1.0)
+        calibration_factor=1.0 if fee_forecast_source in {"EXACT_OWNED_POOL_OBSERVED_OVERRIDE","SAME_PAIR_OWNED_FEE_PRIOR","ADVISOR_CANONICAL_ECONOMICS"} else _f(calibration.get("factor"), 1.0)
         calibrated_day = current_day * calibration_factor
         forecast_fees = max(0.0, calibrated_day * horizon * p_h)
         intervention_cost = max(0.0, interventions_month) * 1.5 * horizon / 30.4375
@@ -1066,7 +1072,7 @@ def _recommend_single_pool(
         )
         position_evidence_class = {
             "PUBLIC_POOL_VOLUME_MODEL": "MODELLED_CONCENTRATED_POSITION",
-            "EXACT_OWNED_POOL_OBSERVED_FALLBACK": "MODELLED_POSITION_FROM_EXACT_OWNED_OBSERVATION",
+            "EXACT_OWNED_POOL_OBSERVED_OVERRIDE": "MODELLED_POSITION_FROM_EXACT_OWNED_OBSERVATION",
             "SAME_PAIR_OWNED_FEE_PRIOR": "MODELLED_POSITION_FROM_SAME_PAIR_PRIOR",
             "ADVISOR_CANONICAL_ECONOMICS": "MODELLED_POSITION_FROM_SCREEN_PRIOR",
         }.get(fee_forecast_source, "MODELLED_POSITION")
@@ -1106,7 +1112,9 @@ def _recommend_single_pool(
             "inventory_outcomes": inventory,
             "forecast": {
                 "horizon_days": round(horizon, 3),
+                "economics_model_version": ECONOMICS_MODEL_VERSION,
                 "raw_model_fee_day_usd": round(current_day, 4),
+                "fee_share_blend": dict(econ.get("fee_share_blend") or {}),
                 "fee_day_current_calibrated_usd": round(calibrated_day, 4),
                 "fee_forecast_source":fee_forecast_source,
                 "owned_pool_observed_apr_pct":observed_pool.get("annualised_fee_apr_pct"),
@@ -1279,6 +1287,7 @@ def _recommend_single_pool(
 
     return {
         "objective": "MAXIMISE_EXPECTED_NET_LP_FEE_PROFIT_FOR_HOLDING_PERIOD",
+        "economics_model_version": ECONOMICS_MODEL_VERSION,
         "chain": str(chain).upper(), "pool_address": address, "pair": pool.get("pair"),
         "sleeve": sleeve_u, "capital_usd": round(capital, 2), "horizon_days": round(horizon, 3),
         "monthly_target_pct": round(float(monthly_target_pct), 3), "spot": spot,
