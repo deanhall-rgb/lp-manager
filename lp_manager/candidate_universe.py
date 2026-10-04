@@ -8,6 +8,8 @@ from .chain_registry import CHAINS
 from .discovery_lab import _addr, _f, _normalise_dex_pair
 from .asset_registry import CORE_MAJOR_SYMBOLS
 from .opportunity_model import canonical_opportunity, normalise_protocol, PROTOCOL_UNISWAP_V3
+from .economics_engine import infer_fee_tier_bps
+from .fee_metrics import pool_apr_24h_benchmark
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
@@ -148,9 +150,14 @@ class CandidateUniverse:
     def _discovery_metrics(row: dict[str,Any]) -> dict[str,Any]:
         tvl=max(0.0,_f(row.get("tvl_usd")))
         volume=max(0.0,_f(row.get("volume_24h_usd")))
-        fees=max(0.0,_f(row.get("fees_24h_usd")))
         turnover=volume/max(tvl,1.0)
-        gross_fee_apr=(fees*365.0/tvl*100.0) if fees>0 and tvl>0 else 0.0
+        fee_bps,fee_source=infer_fee_tier_bps(row)
+        # A pair-class assumption is useful inside modelling but is not strong
+        # enough to populate a public leaderboard APR proxy. For the discovery
+        # surface require explicit pool/name fee-tier evidence, or actual fees.
+        benchmark_fee_bps=0.0 if fee_source=="PAIR_CLASS_ASSUMPTION" else fee_bps
+        benchmark=pool_apr_24h_benchmark(row,fee_tier_bps=benchmark_fee_bps)
+        gross_fee_apr=max(0.0,_f(benchmark.get("apr_pct"))) if benchmark.get("available") else 0.0
         tvl_score=_log_score(tvl,10_000.0)
         volume_score=_log_score(volume,10_000.0)
         turnover_score=_clamp(turnover/2.5*100.0)
@@ -160,6 +167,9 @@ class CandidateUniverse:
             "discovery_score":round(score,1),
             "turnover_24h":round(turnover,3),
             "gross_fee_apr_proxy":round(gross_fee_apr,1),
+            "fee_apr_proxy_evidence_class":str(benchmark.get("evidence_class") or "INSUFFICIENT_POOL_ECONOMICS"),
+            "fee_apr_proxy_observed":bool(benchmark.get("observed")),
+            "fee_apr_proxy_fee_tier_source":fee_source,
         }
 
     @staticmethod
