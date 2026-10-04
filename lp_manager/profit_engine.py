@@ -11,7 +11,7 @@ from .economics_engine import estimate_lp_economics, infer_fee_tier_bps, volume_
 from .market_regime import analyse_regime
 from .pool_chain import read_v3_pool_metadata, discover_v3_pair_fee_tiers, read_v3_observation_history
 from .profit_calibration import fee_calibration_for_pool, observed_pool_fee_rate, observed_pair_fee_prior
-from .fee_metrics import forecast_fee_metrics, pool_fee_revenue_rate
+from .fee_metrics import forecast_fee_metrics, pool_fee_revenue_rate, pool_apr_24h_benchmark
 from .price_units import assert_sane_display_lens
 from .range_lab import analyse_range, candle_activity_fraction, generate_range_candidates, infer_candles_per_day
 from .strategy_lab import _pool_from_onchain
@@ -915,6 +915,8 @@ def _recommend_single_pool(
     calibration = fee_calibration_for_pool(store, {**pool, "chain": str(chain).upper()}, sleeve=sleeve_u)
     observed_pool = observed_pool_fee_rate(store, {**pool, "chain": str(chain).upper()})
     observed_pair = observed_pair_fee_prior(store, {**pool, "chain": str(chain).upper()})
+    benchmark_fee_bps, _benchmark_fee_source = infer_fee_tier_bps(pool)
+    pool_apr_benchmark = pool_apr_24h_benchmark(pool, fee_tier_bps=benchmark_fee_bps)
     widths = _candidate_widths(sleeve_u, horizon)
     skews = _candidate_skews(regime, sleeve_u)
     candidates = [c for c in generate_range_candidates(spot, half_widths_pct=widths, skews_pct=skews) if c.lower <= spot <= c.upper]
@@ -1055,6 +1057,31 @@ def _recommend_single_pool(
             expected_cash_costs_usd=intervention_cost,
         )
         expected_net = _f(fee_framework.get("expected_net_usd"))
+        modelled_position_apr = _f(fee_framework.get("forecast_fee_apr_pct"))
+        pool_benchmark_apr = _f(pool_apr_benchmark.get("apr_pct"))
+        uplift_ratio = (
+            modelled_position_apr / pool_benchmark_apr
+            if modelled_position_apr > 0 and pool_benchmark_apr > 0
+            else None
+        )
+        position_evidence_class = {
+            "PUBLIC_POOL_VOLUME_MODEL": "MODELLED_CONCENTRATED_POSITION",
+            "EXACT_OWNED_POOL_OBSERVED_FALLBACK": "MODELLED_POSITION_FROM_EXACT_OWNED_OBSERVATION",
+            "SAME_PAIR_OWNED_FEE_PRIOR": "MODELLED_POSITION_FROM_SAME_PAIR_PRIOR",
+            "ADVISOR_CANONICAL_ECONOMICS": "MODELLED_POSITION_FROM_SCREEN_PRIOR",
+        }.get(fee_forecast_source, "MODELLED_POSITION")
+        position_confidence = str(econ.get("confidence") or "LOW").upper()
+        economics_warning = None
+        if position_evidence_class in {"MODELLED_POSITION_FROM_SAME_PAIR_PRIOR", "MODELLED_POSITION_FROM_SCREEN_PRIOR"}:
+            position_confidence = "LOW"
+        elif uplift_ratio is not None and uplift_ratio >= 4.0 and position_evidence_class != "MODELLED_POSITION_FROM_EXACT_OWNED_OBSERVATION":
+            position_confidence = "LOW"
+            economics_warning = (
+                f"Modelled concentrated-position APR is {uplift_ratio:.1f}x the whole-pool 24h benchmark; "
+                "treat the uplift as low-confidence until owned/deeper empirical fee evidence confirms it."
+            )
+        elif uplift_ratio is not None and uplift_ratio >= 2.5 and position_confidence in {"HIGH", "MODERATE_TO_HIGH"}:
+            position_confidence = "MODERATE"
         train = wf.get("train") or {}
         holdout = wf.get("holdout") or {}
         historical_fee_ok = bool(wf.get("fee_economics_available"))
@@ -1090,10 +1117,19 @@ def _recommend_single_pool(
                 "expected_intervention_cost_usd": round(intervention_cost, 2),
                 "expected_net_usd": round(expected_net, 2),
                 "expected_net_pct": round(expected_net / capital * 100.0, 3),
+                "pool_apr_24h_annualised_pct": pool_apr_benchmark.get("apr_pct"),
+                "pool_apr_24h_evidence": pool_apr_benchmark,
+                "modelled_position_apr_pct": fee_framework.get("forecast_fee_apr_pct"),
                 "forecast_fee_apr_pct": fee_framework.get("forecast_fee_apr_pct"),
                 "forecast_fee_return_pct": fee_framework.get("forecast_fee_return_pct"),
                 "net_horizon_return_pct": fee_framework.get("net_horizon_return_pct"),
-                "spot_24h_pool_derived_fee_apr_pct": round(_f(econ.get("gross_apr_pct")), 2),
+                "position_economics_evidence_class": position_evidence_class,
+                "position_economics_confidence": position_confidence,
+                "position_to_pool_apr_uplift_ratio": round(uplift_ratio, 3) if uplift_ratio is not None else None,
+                "economics_warning": economics_warning,
+                # Compatibility alias retained, but corrected: this is now a
+                # whole-pool benchmark rather than a concentrated-position APR.
+                "spot_24h_pool_derived_fee_apr_pct": pool_apr_benchmark.get("apr_pct"),
                 "low_net_usd": round(low, 2), "high_net_usd": round(high, 2),
                 "target_horizon_usd": round(target_horizon, 2),
                 "target_attainment_pct": round(expected_net / target_horizon * 100.0, 1) if target_horizon > 0 else 0.0,
