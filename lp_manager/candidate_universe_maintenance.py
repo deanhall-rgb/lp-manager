@@ -17,10 +17,10 @@ class CandidateUniverseMaintenanceService:
     the last valid snapshot if a degraded refresh returns no usable candidates.
     """
 
-    TARGET_REFRESH_SECONDS = 12 * 60.0
+    TARGET_REFRESH_SECONDS = 8 * 60.0
     MISSING_RETRY_SECONDS = 90.0
     FAILURE_RETRY_SECONDS = 5 * 60.0
-    CYCLE_SECONDS = 75.0
+    CYCLE_SECONDS = 45.0
 
     def __init__(self, store, candidate_universe, provider_coordinator=None):
         self.store = store
@@ -168,17 +168,23 @@ class CandidateUniverseMaintenanceService:
             for x in states
             if x.get("ok") and x.get("age_seconds") != float("inf")
         ]
+        due_chains = sum(
+            1
+            for x in states
+            if (not x.get("ok")) or float(x.get("age_seconds") or 0) >= self.TARGET_REFRESH_SECONDS
+        )
+        next_due_values = [
+            max(0.0, self.TARGET_REFRESH_SECONDS - float(x.get("age_seconds") or 0))
+            for x in states if x.get("ok") and x.get("age_seconds") != float("inf")
+        ]
         payload = {
             "ok": result.get("ok") if result else True,
             "enabled": True,
             "target_refresh_seconds": self.TARGET_REFRESH_SECONDS,
             "chains_total": len(states),
             "chains_with_snapshots": sum(1 for x in states if x.get("ok")),
-            "due_chains": sum(
-                1
-                for x in states
-                if (not x.get("ok")) or float(x.get("age_seconds") or 0) >= self.TARGET_REFRESH_SECONDS
-            ),
+            "due_chains": due_chains,
+            "next_due_seconds": 0.0 if due_chains else (round(min(next_due_values), 1) if next_due_values else None),
             "oldest_age_seconds": round(max(ages), 1) if ages else None,
             "last_run_at": time.time(),
             "elapsed_ms": round((time.time() - started) * 1000.0, 1),
