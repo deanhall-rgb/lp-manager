@@ -804,7 +804,8 @@ function renderOpportunityLeaderboard(r){
   const bgHeadline=bgActive?'ACTIVE':'STARTING / PAUSED';
   const bgDetail=bgCurrent.pair?`Analysing ${esc(bgCurrent.pair)} · rank #${num(bgCurrent.rank||0,0)}`:`${num(bg.pending||0,0)} candidate(s) waiting · standard ${num(bgBasis.horizon_days||7,0)}d / ${esc(bgCurrency)} ${bgCapital} basis`;
   const umCurrent=um.current||{},umHeadline=um.background_refresh===true?'ACTIVE':'STARTING / PAUSED';
-  const umDetail=umCurrent.chain?`Refreshing ${esc(umCurrent.chain)}`:`${num(um.due_chains||0,0)} chain(s) due · oldest ${um.oldest_age_seconds!=null?num(Number(um.oldest_age_seconds)/60,1)+'m':'—'}`;
+  const umDue=num(um.due_chains||0,0),umOld=um.oldest_age_seconds!=null?num(Number(um.oldest_age_seconds)/60,1)+'m':'—',umNext=um.next_due_seconds!=null?num(Number(um.next_due_seconds)/60,1)+'m':'—';
+  const umDetail=umCurrent.chain?`Refreshing ${esc(umCurrent.chain)}`:umDue>0?`${umDue} chain(s) due · oldest ${umOld}`:`all current · next refresh ~${umNext} · oldest ${umOld}`;
   const rows=leaderboardRows.length?`<table class="table"><thead><tr><th>Rank</th><th>Pair</th><th>Chain</th><th>Version</th><th>Opportunity score</th><th>TVL</th><th>24h volume</th><th>Fee APR proxy</th><th>Profit state</th><th>Deep analysis</th><th>Freshness</th><th>Action</th></tr></thead><tbody>${leaderboardRows.map((x,i)=>{
     const pr=x.profit_lab_readiness||{},prStatus=String(pr.status||''),prTone=pr.ready===true?'good':prStatus==='HISTORY_FAILED'?'bad':'watch';
     const d=x.deep_analysis||{},deepBasis=d.leaderboard_deep_basis||{},deepAuto=d.standard_basis===true?badge('AUTO STANDARD','good'):'';const deepDetail=d.status==='DEEP_RECHECK_REQUIRED'?'<div class="meta">Previous deep result uses the older economics model · queued for background recheck</div>':d.status&&d.status!=='NOT_ANALYSED'?`<div class="meta">${money(d.expected_net_usd||0)} net · ${num(d.horizon_days||0,0)}d @ ${money(d.capital_usd||0)} basis ${deepAuto}</div>`:'<div class="meta">Queued for automatic Profit Lab analysis</div>';
@@ -863,7 +864,7 @@ async function runPortfolioAdvisor(){
   try{
     const capital=Number($('#advisor-capital').value||0), reserve=Number($('#advisor-reserve').value||10);
     const r=await api('/api/portfolio-advisor',{method:'POST',timeoutMs:120000,body:JSON.stringify({available_capital:capital,reserve_pct:reserve,max_positions:4,sleeve_filter:$('#advisor-sleeve').value,allocation_mode:$('#advisor-mode').value})});
-    const rows=r.allocations||[], near=r.near_misses||[], pc=r.portfolio_context||{}, ud=r.universe_diagnostics||{}, us=ud.summary||{};
+    const rows=r.allocations||[], near=r.near_misses||[], pc=r.portfolio_context||{}, ud=r.universe_diagnostics||{}, us=ud.summary||{}, gate=r.candidate_gate_summary||{};
     const deployable=Math.max(0,Number(r.deployable||0));
     const pcTotals=r.provider_coordination?.totals||{},prewarm=r.evidence_prewarm||{};
     const aligned=r.data_source==='LEADERBOARD_ALIGNED_SHARED_UNIVERSE',align=r.leaderboard_alignment||{};
@@ -885,7 +886,8 @@ async function runPortfolioAdvisor(){
       }).join('');
       const modeLabel=r.allocation_mode==='BEST_ONLY'?'Best single opportunity':'Diversified';
       const sleeveLabel=r.sleeve_filter==='CORE_INCOME'?'Core only':r.sleeve_filter==='TACTICAL_CAMPAIGN'?'Tactical only':'Best overall';
-      target.innerHTML=`${context}<div class="allocation-summary"><b>${esc(modeLabel)} · ${esc(sleeveLabel)}</b><span><strong>${money(r.allocated)}</strong> allocated · ${money(r.unallocated||0)} unallocated</span></div>${header}${cards}<p class="meta advisor-footnote">Advisor screens first, then checks that matching-horizon Profit Lab economics stay positive at the actual proposed capital after fixed cash costs. Profit Lab remains the execution-range authority.${r.unallocated_reason?` ${esc(r.unallocated_reason)}`:''}</p>${r.ai_advice?renderBrief(r.ai_advice):''}`;
+      const rejectedSummary=(Number(r.unallocated||0)>0.01&&near.length)?`<div class="warning-box lower"><b>Why some capital stayed back.</b> ${esc(r.unallocated_reason||'Additional candidates did not clear the current gates.')}<div class="meta lower-tight">Top rejected: ${near.map(x=>`${esc(x.pair||'?')} — ${esc((x.reject_reasons||[]).slice(0,2).join('; ')||'gate not cleared')}`).join(' · ')}</div></div>`:''; 
+      target.innerHTML=`${context}<div class="allocation-summary"><b>${esc(modeLabel)} · ${esc(sleeveLabel)}</b><span><strong>${money(r.allocated)}</strong> allocated · ${money(r.unallocated||0)} unallocated</span></div><div class="meta advisor-universe-line">Allocation gates: ${num(gate.eligible_after_gates||rows.length,0)} eligible from ${num(gate.ranked||rows.length,0)} ranked · ${num(gate.rejected||0,0)} rejected</div>${header}${cards}<p class="meta advisor-footnote">Advisor starts from the leaderboard, then checks risk, freshness, concentration and whether deep Profit Lab economics stay positive at the actual proposed capital after fixed cash costs. Profit Lab remains the execution-range authority.</p>${rejectedSummary}${r.ai_advice?renderBrief(r.ai_advice):''}`;
     }else{
       const investigateCapital=Math.max(100,capital*(1-reserve/100));
       const nearHtml=near.map((x,i)=>{
