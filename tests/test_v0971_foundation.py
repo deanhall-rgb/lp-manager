@@ -13,7 +13,7 @@ from lp_manager.opportunity_model import (
     canonical_opportunity,
     freshness_state,
 )
-from lp_manager.product import APP_VERSION, APP_DISPLAY_VERSION, OPPORTUNITY_SCHEMA_VERSION
+from lp_manager.product import APP_VERSION, APP_DISPLAY_VERSION, OPPORTUNITY_SCHEMA_VERSION, ECONOMICS_MODEL_VERSION
 from lp_manager.opportunity_leaderboard import OpportunityLeaderboard
 import time
 
@@ -244,8 +244,8 @@ def test_v0973_advisor_deep_state_matches_strategy_horizon_not_latest_other_hold
     address = "0x" + "9" * 40
     now = time.time()
     store = _LeaderboardStore([
-        {"chain": "ETHEREUM", "pool_address": address, "created_at": now, "horizon_days": 1, "expected_net_usd": 9},
-        {"chain": "ETHEREUM", "pool_address": address, "created_at": now - 1, "horizon_days": 3, "expected_net_usd": -2},
+        {"chain": "ETHEREUM", "pool_address": address, "created_at": now, "horizon_days": 1, "expected_net_usd": 9, "economics_model_version": ECONOMICS_MODEL_VERSION},
+        {"chain": "ETHEREUM", "pool_address": address, "created_at": now - 1, "horizon_days": 3, "expected_net_usd": -2, "economics_model_version": ECONOMICS_MODEL_VERSION},
     ])
     board = OpportunityLeaderboard(store, _LeaderboardUniverse({}))
     rows = board.attach_analysis_state([{
