@@ -223,7 +223,19 @@ def rank_opportunities(
         quality_penalty = 25.0 if quality_factor < 0.20 else 10.0 if quality_factor < 0.35 else 0.0
         # Profit is a material driver, but a single hot day cannot buy its way past risk controls.
         profit_score = max(0.0, min(100.0, 50.0 + operating_pct * 3.0)) if economics.get("mode") != "INSUFFICIENT_DATA" else 25.0
-        base_score = max(0.0, min(100.0, 0.46 * pre + 0.34 * profit_score + 0.20 * regime_conf - risk_penalty - quality_penalty))
+        leaderboard_score = _f((row.get("opportunity_score") or {}).get("score"))
+        if (
+            str(row.get("advisor_ranking_basis") or "").upper()=="LEADERBOARD_OPPORTUNITY_SCORE"
+            and leaderboard_score > 0
+        ):
+            # Best Overall is now downstream of the persistent leaderboard. The
+            # Opportunity Score already combines economics, durability, liquidity,
+            # activity, risk/friction and evidence quality. Advisor adds portfolio
+            # concentration and allocation-size gates rather than inventing a
+            # second unrelated cross-pool ranking.
+            base_score = max(0.0, min(100.0, leaderboard_score))
+        else:
+            base_score = max(0.0, min(100.0, 0.46 * pre + 0.34 * profit_score + 0.20 * regime_conf - risk_penalty - quality_penalty))
 
         chain, address = _pool_key(row)
         pair = _pair_key(str(row.get("pair") or ""))
@@ -250,6 +262,9 @@ def rank_opportunities(
             **row,
             "sleeve": sleeve,
             "base_portfolio_score": round(base_score, 1),
+            "ranking_basis": str(row.get("advisor_ranking_basis") or "SLEEVE_SCREEN"),
+            "leaderboard_rank": row.get("leaderboard_rank"),
+            "leaderboard_opportunity_score": round(leaderboard_score,1) if leaderboard_score>0 else None,
             "concentration_penalty": round(concentration_penalty, 1),
             "portfolio_score": round(score, 1),
             "reject_reasons": reject,
