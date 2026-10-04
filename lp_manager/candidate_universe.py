@@ -398,10 +398,11 @@ class CandidateUniverse:
             out.append(row)
         return out
 
-    def refresh(self, chain_key: str, *, graph_limit: int = 500, shortlist_limit: int = 40, validate_limit: int = 20, include_gecko: bool = True) -> dict[str,Any]:
+    def refresh(self, chain_key: str, *, graph_limit: int = 500, shortlist_limit: int = 40, validate_limit: int = 20, include_gecko: bool = True, preserve_existing_on_failure: bool = False) -> dict[str,Any]:
         chain_key=str(chain_key or "").upper()
         if chain_key not in CHAINS:
             raise ValueError(f"Unsupported chain: {chain_key}")
+        prior=self.cached(chain_key) if preserve_existing_on_failure else None
         started=time.perf_counter()
         rows,providers=self._broad_candidates(chain_key,max(50,min(1000,int(graph_limit))),include_gecko=include_gecko)
         ctx=self._portfolio_context(chain_key)
@@ -478,6 +479,14 @@ class CandidateUniverse:
             "targeted_validation_errors":target_errors[:5],
             "note":"Discovery score only controls the cheap shortlist. Scout and Portfolio Advisor apply their own risk/economics ranking to this shared universe; Profit Lab remains on-demand.",
         }
+        if preserve_existing_on_failure and not snapshot.get("ok") and isinstance(prior,dict) and prior.get("ok"):
+            return {
+                **prior,
+                "background_refresh_preserved":True,
+                "background_refresh_error":"No usable candidate rows were returned; preserved the previous valid universe snapshot.",
+                "refresh_attempted_at":time.time(),
+                "providers":provider_summary,
+            }
         try:
             self.store.set_setting(f"candidate_universe:{chain_key}",snapshot)
         except Exception:
