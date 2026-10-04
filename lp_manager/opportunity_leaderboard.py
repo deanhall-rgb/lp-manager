@@ -3,6 +3,7 @@ import time
 from typing import Any
 from .chain_registry import CHAINS
 from .opportunity_score import SCORE_VERSION, score_opportunity
+from .product import ECONOMICS_MODEL_VERSION
 
 DEFAULT_CHAINS=("ETHEREUM","BASE","ARBITRUM","OPTIMISM","POLYGON","ROBINHOOD_CHAIN")
 VALID={"CROSS_VALIDATED","LIVE_VALIDATED","TVL_MISMATCH"}
@@ -48,6 +49,7 @@ class OpportunityLeaderboard:
                 "pool_apr_evidence_class":str((forecast.get("pool_apr_24h_evidence") or {}).get("evidence_class") or ""),
                 "pool_apr_is_observed":bool((forecast.get("pool_apr_24h_evidence") or {}).get("observed")),
                 "modelled_position_apr_pct":forecast.get("modelled_position_apr_pct",r.get("forecast_fee_apr_pct")),
+                "economics_model_version":str(payload.get("economics_model_version") or forecast.get("economics_model_version") or ""),
                 "economics_evidence_class":str(forecast.get("position_economics_evidence_class") or "LEGACY_DEEP_FORECAST"),
                 "economics_confidence":str(forecast.get("position_economics_confidence") or ""),
                 "position_to_pool_apr_uplift_ratio":forecast.get("position_to_pool_apr_uplift_ratio"),
@@ -85,11 +87,26 @@ class OpportunityLeaderboard:
             row["expected_fees_usd"]=_f(forecast.get("expected_fees_usd"))
         if "expected_net_usd" not in row or row.get("expected_net_usd") is None:
             row["expected_net_usd"]=_f(forecast.get("expected_net_usd"))
-        age=max(0.0,now-_f(row.get("created_at")));fresh=age<=21600;net=_f(row.get("expected_net_usd"))
-        if not fresh:status,label="DEEP_STALE","DEEP STALE"
-        elif net>0:status,label="DEEP_PROFITABLE","DEEP +VE"
-        else:status,label="DEEP_NON_POSITIVE","DEEP -VE"
-        return {**row,"status":status,"label":label,"fresh":fresh,"age_seconds":round(age,1),"allocation_confirmed":bool(fresh and net>0)}
+        age=max(0.0,now-_f(row.get("created_at")));time_fresh=age<=21600;net=_f(row.get("expected_net_usd"))
+        economics_current=str(row.get("economics_model_version") or "")==ECONOMICS_MODEL_VERSION
+        if not economics_current:
+            status,label="DEEP_RECHECK_REQUIRED","DEEP RECHECK"
+        elif not time_fresh:
+            status,label="DEEP_STALE","DEEP STALE"
+        elif net>0:
+            status,label="DEEP_PROFITABLE","DEEP +VE"
+        else:
+            status,label="DEEP_NON_POSITIVE","DEEP -VE"
+        fresh=bool(time_fresh and economics_current)
+        return {
+            **row,
+            "status":status,"label":label,"fresh":fresh,
+            "time_fresh":time_fresh,
+            "economics_model_current":economics_current,
+            "required_economics_model_version":ECONOMICS_MODEL_VERSION,
+            "age_seconds":round(age,1),
+            "allocation_confirmed":bool(fresh and net>0),
+        }
 
     @staticmethod
     def _screen_score(row,freshness):
@@ -120,7 +137,10 @@ class OpportunityLeaderboard:
                     "pair":str(raw.get("pair") or "?"),"chain":chain,"pool_address":raw.get("pool_address"),
                     "protocol":str(raw.get("protocol") or raw.get("protocol_guess") or "UNISWAP_V3"),"protocol_version":_version(raw),
                     "tvl_usd":_f(raw.get("tvl_usd")),"volume_24h_usd":_f(raw.get("volume_24h_usd")),
-                    "fee_apr_proxy":_f(raw.get("gross_fee_apr_proxy")),"turnover_24h":_f(raw.get("turnover_24h"),_f(raw.get("volume_24h_usd"))/max(_f(raw.get("tvl_usd")),1.0)),"discovery_score":_f(raw.get("discovery_score")),
+                    "fee_apr_proxy":_f(raw.get("gross_fee_apr_proxy"),_f(ds.get("pool_apr_24h_annualised_pct"))),
+                    "fee_apr_proxy_evidence_class":str(raw.get("fee_apr_proxy_evidence_class") or ds.get("pool_apr_evidence_class") or ""),
+                    "fee_apr_proxy_observed":bool(raw.get("fee_apr_proxy_observed") or ds.get("pool_apr_is_observed")),
+                    "turnover_24h":_f(raw.get("turnover_24h"),_f(raw.get("volume_24h_usd"))/max(_f(raw.get("tvl_usd")),1.0)),"discovery_score":_f(raw.get("discovery_score")),
                     "screen_score":self._screen_score(raw,fr),"score_type":"PROVISIONAL_SCREEN_SCORE",
                     "economic_validation":validation or "UNVERIFIED","profit_lab_readiness":readiness,
                     "freshness":fr,"snapshot_age_seconds":round(age,1) if age is not None else None,
