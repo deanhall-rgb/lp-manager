@@ -15,10 +15,13 @@ def _f(v,d=0.0):
 def _fresh(age):
     if age is None:return {"state":"UNKNOWN","label":"UNKNOWN","penalty":30.0}
     age=max(0.0,float(age))
-    if age<=180:return {"state":"FRESH","label":"FRESH","penalty":0.0}
-    if age<=900:return {"state":"RECENT","label":"RECENT","penalty":3.0}
-    if age<=3600:return {"state":"AGING","label":"AGING","penalty":min(12.0,3.0+(age-900)/300)}
-    return {"state":"STALE","label":"STALE","penalty":min(30.0,12.0+(age-3600)/400)}
+    # Candidate Universe is now maintained as a background cross-chain service.
+    # A 3-minute expiry made a healthy board turn yellow almost immediately and
+    # eventually disappear despite still-valid persisted candidates.
+    if age<=900:return {"state":"FRESH","label":"FRESH","penalty":0.0}
+    if age<=1800:return {"state":"RECENT","label":"RECENT","penalty":3.0}
+    if age<=7200:return {"state":"AGING","label":"AGING","penalty":min(14.0,3.0+(age-1800)/600)}
+    return {"state":"STALE","label":"STALE","penalty":min(30.0,14.0+(age-7200)/900)}
 
 def _version(row):
     p=str(row.get("protocol") or row.get("protocol_guess") or "").upper()
@@ -150,7 +153,12 @@ class OpportunityLeaderboard:
                 if not pool:continue
                 readiness=dict(raw.get("profit_lab_readiness") or {});validation=str(raw.get("economic_validation") or "").upper()
                 ds=self._deep_state(deep.get((chain,pool)),now);pi=econ.get((chain,pool),{})
-                eligible=bool(raw.get("research_ready") and validation in VALID and fr["state"]!="STALE")
+                # Stale market evidence should lower confidence and block capital
+                # confirmation, not erase a previously valid candidate from the
+                # persistent leaderboard. Background universe maintenance will
+                # refresh the chain independently.
+                eligible=bool(raw.get("research_ready") and validation in VALID)
+                market_fresh_for_allocation=fr["state"]!="STALE"
                 rows.append({
                     "pair":str(raw.get("pair") or "?"),"chain":chain,"pool_address":raw.get("pool_address"),
                     "protocol":str(raw.get("protocol") or raw.get("protocol_guess") or "UNISWAP_V3"),"protocol_version":_version(raw),
@@ -165,7 +173,9 @@ class OpportunityLeaderboard:
                     "portfolio_overlap":bool(raw.get("portfolio_overlap")),"portfolio_exposure":_f(raw.get("portfolio_exposure")),
                     "quick_economics":dict(pi.get("quick_economics") or raw.get("quick_economics") or {}),
                     "preferred_sleeve":pi.get("preferred_sleeve") or "","deep_analysis":ds,
-                    "leaderboard_eligible":eligible,"allocation_confirmed":bool(eligible and readiness.get("ready") and ds.get("allocation_confirmed"))
+                    "leaderboard_eligible":eligible,
+                    "market_fresh_for_allocation":market_fresh_for_allocation,
+                    "allocation_confirmed":bool(eligible and market_fresh_for_allocation and readiness.get("ready") and ds.get("allocation_confirmed"))
                 })
         dedup={}
         for r in rows:
