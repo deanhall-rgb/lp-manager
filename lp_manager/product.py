@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-APP_VERSION = "0.9.7.4.2"
-APP_RELEASE = "Conservative Economics Closure"
+APP_VERSION = "0.9.7.5"
+APP_RELEASE = "Background Deep Analysis Rotation"
 APP_DISPLAY_VERSION = f"v{APP_VERSION}"
 APP_USER_AGENT = f"LP-Manager/{APP_VERSION}"
 
