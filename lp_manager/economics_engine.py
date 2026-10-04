@@ -111,6 +111,7 @@ def estimate_lp_economics(
     lifecycle_cost_per_intervention: float = 1.0,
     lower_price: float | None = None,
     upper_price: float | None = None,
+    horizon_days: float = 30.4375,
 ) -> dict[str, Any]:
     """Estimate fee economics without pretending modelled IL is a cash expense.
 
@@ -140,23 +141,49 @@ def estimate_lp_economics(
     effective_volume = vol24 * quality["factor"]
     effective_pool_fees_day = effective_volume * fee_rate
 
-    share_method = "TVL_RANGE_PROXY"
-    share = 0.0
+    # A narrow V3 position can own a much larger share of liquidity at the
+    # *current tick* than its share of total pool TVL. That is useful evidence,
+    # but extrapolating the instantaneous share across all future swaps caused
+    # short-horizon forecasts to explode into 20x+ whole-pool APR multiples.
+    #
+    # V0.9.7.4.2 therefore blends two independently inspectable fee-share views:
+    #   1) conservative capital/TVL x bounded range concentration;
+    #   2) current-tick active-liquidity share, capped before it can influence
+    #      the forward forecast.
+    # Current-tick authority decays as the requested holding horizon increases.
+    horizon = max(1.0 / 24.0, _f(horizon_days, 30.4375))
+    concentration = max(0.65, min(2.0, 28.0 / width))
+    tvl_range_share = max(0.0, min(1.0, (capital / tvl) * concentration))
     share_detail = None
     if lower_price and upper_price and upper_price > lower_price:
         share_detail = active_liquidity_share_for_capital(
             pool, capital_usd=capital, lower=float(lower_price), upper=float(upper_price)
         )
-    if share_detail:
-        share = _f(share_detail.get("share"))
-        concentration = None
-        share_method = str(share_detail.get("method") or "CURRENT_ACTIVE_LIQUIDITY_PROXY")
+
+    raw_active_share = max(0.0, min(1.0, _f((share_detail or {}).get("share"))))
+    active_weight = max(0.08, min(0.35, 0.35 / (max(1.0, horizon) ** 0.35)))
+    active_cap_multiple = max(
+        2.0,
+        min(3.5, 3.5 - 0.45 * math.log2(max(1.0, horizon))),
+    )
+    capped_active_share = (
+        min(raw_active_share, tvl_range_share * active_cap_multiple)
+        if raw_active_share > 0 and tvl_range_share > 0
+        else 0.0
+    )
+    if share_detail and capped_active_share > 0:
+        share = tvl_range_share * (1.0 - active_weight) + capped_active_share * active_weight
+        share_method = "HORIZON_BLEND_ACTIVE_TVL_RANGE"
     else:
-        concentration = max(0.65, min(2.0, 28.0 / width))
-        share = (capital / tvl) * concentration
+        share = tvl_range_share
+        share_method = "TVL_RANGE_PROXY"
 
     # Current 24h fee opportunity. quality.factor suppresses *forecasting* of
     # abnormal activity but leaves observed raw fee flow visible to the user.
+    raw_current_tick_fee_day = (
+        effective_pool_fees_day * raw_active_share * active
+        if raw_active_share > 0 else 0.0
+    )
     gross_position_day = effective_pool_fees_day * max(0.0, min(1.0, share)) * active
 
     regime = regime or {}
@@ -179,8 +206,10 @@ def estimate_lp_economics(
     if fee_source == "PAIR_CLASS_ASSUMPTION":
         persistence *= 0.80
     persistence *= max(0.20, quality["factor"] ** 0.45)
-    if share_method == "CURRENT_ACTIVE_LIQUIDITY_PROXY":
-        persistence = min(0.90, persistence * 1.12)
+    if share_method == "HORIZON_BLEND_ACTIVE_TVL_RANGE":
+        # The blend already limits current-tick extrapolation; only a modest
+        # persistence uplift is justified for confirmed active-liquidity data.
+        persistence = min(0.84, persistence * 1.05)
 
     decision_gross_month = raw_month * persistence
     friction_month = max(0.0, expected_interventions_per_month) * max(0.0, lifecycle_cost_per_intervention)
@@ -201,8 +230,8 @@ def estimate_lp_economics(
     confidence = "MODERATE"
     if quality["factor"] < 0.35 or fee_source == "PAIR_CLASS_ASSUMPTION":
         confidence = "LOW"
-    elif share_method == "CURRENT_ACTIVE_LIQUIDITY_PROXY" and quality["factor"] >= 0.75:
-        confidence = "MODERATE_TO_HIGH"
+    elif share_method == "HORIZON_BLEND_ACTIVE_TVL_RANGE" and quality["factor"] >= 0.75:
+        confidence = "MODERATE"
 
     return {
         "mode": "ESTIMATED_FROM_ACTIVE_LIQUIDITY" if share_detail else "ESTIMATED_FROM_VOLUME_TVL_RANGE",
@@ -216,7 +245,18 @@ def estimate_lp_economics(
         "fee_share_method": share_method,
         "liquidity_share_baseline_pct": round(max(0.0, min(1.0, share)) * 100.0, 8),
         "active_liquidity_detail": share_detail,
-        "concentration_factor": round(concentration, 3) if concentration is not None else None,
+        "fee_share_blend": {
+            "horizon_days": round(horizon, 3),
+            "tvl_range_share_pct": round(tvl_range_share * 100.0, 8),
+            "current_tick_raw_share_pct": round(raw_active_share * 100.0, 8) if raw_active_share > 0 else None,
+            "current_tick_capped_share_pct": round(capped_active_share * 100.0, 8) if capped_active_share > 0 else None,
+            "current_tick_weight": round(active_weight, 4) if share_detail else 0.0,
+            "current_tick_cap_multiple_vs_tvl_range": round(active_cap_multiple, 3) if share_detail else None,
+            "forecast_share_pct": round(max(0.0, min(1.0, share)) * 100.0, 8),
+            "raw_current_tick_fee_day_usd": round(raw_current_tick_fee_day, 4),
+            "method": share_method,
+        },
+        "concentration_factor": round(concentration, 3),
         "active_time_pct": round(active * 100.0, 2),
         "regime_fee_factor": round(regime_fee_factor, 3),
         "estimated_fee_income": {
