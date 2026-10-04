@@ -491,6 +491,22 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.5.2 Advisor deployment + faster universe cadence
+
+Live v0.9.7.5.1 testing proved that Candidate Universe maintenance now works without manual six-chain rebuilds and that the persistent leaderboard no longer disappears. The test also exposed one final pre-v0.9.7.6 issue: Best Overall Advisor could leave most deployable capital idle because legacy sleeve-risk inputs were rejecting otherwise strong leaderboard candidates for missing metadata rather than real negative evidence.
+
+- **Unknown pool age is no longer treated as zero days old.** Missing creation metadata now adds uncertainty evidence instead of falsely triggering `TACTICAL_HISTORY_TOO_SHORT` / `CORE_HISTORY_TOO_SHORT`.
+- **Liquidity stability is evidence-based.** Preliminary Advisor risk now derives liquidity stability from the pool's actual liquidity score instead of feeding Core risk a hard-coded value of 60 that made high-quality Core pools structurally difficult to approve.
+- **Best Overall can genuinely diversify across multiple valid leaderboard opportunities.** Existing per-pool caps remain intact, but candidates are no longer discarded by the two metadata artefacts above. A four-pool validated Tactical set can deploy the full post-reserve budget rather than stopping at the first 30% cap.
+- **Unused cash remains deliberate, not forced deployment.** If capital still remains unallocated, Advisor now reports how many candidates cleared/rejected the gates and names the top rejection reasons. LP Manager will not manufacture a bad trade just to reach 100% deployment.
+- **Universe upkeep cadence tightened:** target snapshot age is now about **8 minutes**, with one low-priority chain attempt every **45 seconds** when work is due. Foreground provider traffic still pre-empts maintenance.
+- **Idle-looking status fixed:** when zero chains are due, the UI now says **all current · next refresh ~Xm · oldest Ym** instead of only `0 due`, making it clear the service is waiting for its next scheduled refresh rather than frozen.
+
+Known issues / later optimisation:
+- The broad discovery query still repeatedly samples the strongest current provider surface; v0.9.7.5.x does not yet implement rotating/paginated long-tail discovery across thousands of pools. That is a deliberate post-v0.9.7 profit-discovery optimisation.
+- An intentionally oversized manual Ethereum Candidate Universe scan can still hit an interactive timeout. Routine background upkeep avoids that path.
+- AUTO STANDARD uses a neutral 7-day / display-currency 1,000 basis. v0.9.7.6 is the planned Tactical/Core separation so the board can distinguish shorter high-profit campaigns from durable income positions without corrupting the common Best Overall comparison.
+
 ## v0.9.7.5.1 persistent universe + Advisor alignment
 
 Live v0.9.7.5 testing proved that automatic deep analysis works: the 25-row board progressively filled with AUTO STANDARD evidence and the queue reached zero. The same test also exposed two orchestration gaps that must be closed before Tactical/Core presentation work starts.
