@@ -798,11 +798,13 @@ function renderOpportunityLeaderboard(r){
   const target=$('#leaderboard-result');if(!target)return;
   if(!r||r.error){target.innerHTML=`<div class="warning-box"><b>Leaderboard unavailable.</b> ${esc(r?.error||'Unknown error')}</div>`;return}
   leaderboardRows=r.rows||[];
-  const f=r.funnel||{},chains=r.chains||[],bg=r.background_deep_analysis||{},bgBasis=bg.standard_basis||{};
+  const f=r.funnel||{},chains=r.chains||[],bg=r.background_deep_analysis||{},bgBasis=bg.standard_basis||{},um=r.candidate_universe_maintenance||{};
   const chainBadges=chains.map(x=>badge(`${x.chain} · ${x.shortlisted||0}`,x.freshness==='FRESH'?'good':x.has_snapshot?'watch':'')).join('');
   const bgActive=bg.background_refresh===true,bgCurrent=bg.current||{},bgCurrency=String(bgBasis.display_currency||'GBP'),bgCapital=num(bgBasis.capital_display||1000,0);
   const bgHeadline=bgActive?'ACTIVE':'STARTING / PAUSED';
   const bgDetail=bgCurrent.pair?`Analysing ${esc(bgCurrent.pair)} · rank #${num(bgCurrent.rank||0,0)}`:`${num(bg.pending||0,0)} candidate(s) waiting · standard ${num(bgBasis.horizon_days||7,0)}d / ${esc(bgCurrency)} ${bgCapital} basis`;
+  const umCurrent=um.current||{},umHeadline=um.background_refresh===true?'ACTIVE':'STARTING / PAUSED';
+  const umDetail=umCurrent.chain?`Refreshing ${esc(umCurrent.chain)}`:`${num(um.due_chains||0,0)} chain(s) due · oldest ${um.oldest_age_seconds!=null?num(Number(um.oldest_age_seconds)/60,1)+'m':'—'}`;
   const rows=leaderboardRows.length?`<table class="table"><thead><tr><th>Rank</th><th>Pair</th><th>Chain</th><th>Version</th><th>Opportunity score</th><th>TVL</th><th>24h volume</th><th>Fee APR proxy</th><th>Profit state</th><th>Deep analysis</th><th>Freshness</th><th>Action</th></tr></thead><tbody>${leaderboardRows.map((x,i)=>{
     const pr=x.profit_lab_readiness||{},prStatus=String(pr.status||''),prTone=pr.ready===true?'good':prStatus==='HISTORY_FAILED'?'bad':'watch';
     const d=x.deep_analysis||{},deepBasis=d.leaderboard_deep_basis||{},deepAuto=d.standard_basis===true?badge('AUTO STANDARD','good'):'';const deepDetail=d.status==='DEEP_RECHECK_REQUIRED'?'<div class="meta">Previous deep result uses the older economics model · queued for background recheck</div>':d.status&&d.status!=='NOT_ANALYSED'?`<div class="meta">${money(d.expected_net_usd||0)} net · ${num(d.horizon_days||0,0)}d @ ${money(d.capital_usd||0)} basis ${deepAuto}</div>`:'<div class="meta">Queued for automatic Profit Lab analysis</div>';
@@ -812,7 +814,7 @@ function renderOpportunityLeaderboard(r){
   }).join('')}</tbody></table>`:'<div class="empty-state">No cross-chain candidates are leaderboard-eligible yet. Build Candidate Universe snapshots on one or more chains, then refresh this board.</div>';
   target.innerHTML=`<div class="notice good"><b>Persistent cross-chain board.</b> ${num(f.v3_considered||0,0)} V3 considered → ${num(f.shortlisted||0,0)} shortlisted → ${num(f.research_ready||0,0)} research-ready → ${num(f.profit_ready||0,0)} profit-ready → ${num(f.leaderboard_eligible||0,0)} leaderboard-eligible → ${num(f.shown||0,0)} shown.</div>
   <div class="tag-row lower">${chainBadges}</div>
-  <div class="modal-grid lower">${info('Persistent candidates',num(f.persistent_candidates||0,0))}${info('Deep analysed',num(f.deep_analysed||0,0))}${info('Deep positive',num(f.allocation_confirmed||0,0))}${info('Chains with snapshots',`${num(f.chains_with_snapshots||0,0)} / ${num(f.chains_requested||0,0)}`)}${info('Auto deep rotation',bgHeadline)}${info('Deep queue',bgDetail)}</div>
+  <div class="modal-grid lower">${info('Persistent candidates',num(f.persistent_candidates||0,0))}${info('Deep analysed',num(f.deep_analysed||0,0))}${info('Deep positive',num(f.allocation_confirmed||0,0))}${info('Chains with snapshots',`${num(f.chains_with_snapshots||0,0)} / ${num(f.chains_requested||0,0)}`)}${info('Universe upkeep',umHeadline)}${info('Universe refresh',umDetail)}${info('Auto deep rotation',bgHeadline)}${info('Deep queue',bgDetail)}</div>
   <div class="meta lower">Opportunity Score is now the cross-pool ranking. Click a score to inspect the six weighted components, evidence cap and reasoning. Screen score remains visible only as discovery context.</div>
   <div class="lower">${rows}</div>`;
 }
@@ -864,8 +866,9 @@ async function runPortfolioAdvisor(){
     const rows=r.allocations||[], near=r.near_misses||[], pc=r.portfolio_context||{}, ud=r.universe_diagnostics||{}, us=ud.summary||{};
     const deployable=Math.max(0,Number(r.deployable||0));
     const pcTotals=r.provider_coordination?.totals||{},prewarm=r.evidence_prewarm||{};
-    const universeLine=r.data_source==='SHARED_CANDIDATE_UNIVERSE'
-      ?`<div class="meta advisor-universe-line">Shared Candidate Universe: ${num(us.chains_requested||0,0)} chains checked · ${num(us.ranking_candidates||0,0)} ranked candidates · ${num(us.fresh_cache_hits||0,0)} fresh-cache reuses · ${num(us.rate_limit_events||0,0)} rate-limit events · ${num(us.elapsed_ms||0,0)}ms</div><div class="meta advisor-universe-line">Provider coordination: ${num(pcTotals.cache_hits||0,0)} cache hits · ${num(pcTotals.coalesced_waits||0,0)} coalesced waits · ${num(pcTotals.background_deferred||0,0)} background deferrals · evidence queued ${num(prewarm.queued_now||0,0)}</div>`
+    const aligned=r.data_source==='LEADERBOARD_ALIGNED_SHARED_UNIVERSE',align=r.leaderboard_alignment||{};
+    const universeLine=(aligned||r.data_source==='SHARED_CANDIDATE_UNIVERSE')
+      ?`<div class="meta advisor-universe-line">${aligned?'<b>Leaderboard-aligned Best Overall:</b> ':'Shared Candidate Universe: '}${num(us.chains_requested||0,0)} chains checked · ${num(us.ranking_candidates||0,0)} advisor candidates · ${aligned?num(align.leaderboard_candidates||0,0)+' leaderboard candidates · ':''}${num(us.fresh_cache_hits||0,0)} fresh-cache reuses · ${num(us.rate_limit_events||0,0)} rate-limit events · ${num(us.elapsed_ms||0,0)}ms</div><div class="meta advisor-universe-line">Provider coordination: ${num(pcTotals.cache_hits||0,0)} cache hits · ${num(pcTotals.coalesced_waits||0,0)} coalesced waits · ${num(pcTotals.background_deferred||0,0)} background deferrals · evidence queued ${num(prewarm.queued_now||0,0)}</div>`
       :'';
     const context=`<div class="notice advisor-capital-plan"><b>New capital plan</b><div class="advisor-capital-line">${money(r.available_capital||0)} entered <span>·</span> ${money(r.reserve_floor||0)} reserve <span>·</span> <strong>${money(deployable)} available to deploy</strong></div><div class="meta">Existing open LP book: ${money(pc.existing_open_value||0)}. Existing pool exposure is concentration context only and does not reduce your new-capital budget.</div>${universeLine}</div>`;
     const header='<div class="allocation-row header"><span>Rank</span><span>Opportunity</span><span>Sleeve</span><span>Add</span><span>Validated hold</span><span>Score</span><span>Action</span></div>';
