@@ -715,7 +715,7 @@ def test_usdg_profit_uses_owned_exact_pool_fee_evidence_when_public_volume_is_ze
     f=out["recommended_range"]["forecast"]
     assert f["expected_fees_usd"] > 0
     assert f["forecast_fee_apr_pct"] > 0
-    assert f["fee_forecast_source"]=="EXACT_OWNED_POOL_OBSERVED_FALLBACK"
+    assert f["fee_forecast_source"]=="EXACT_OWNED_POOL_OBSERVED_OVERRIDE"
 
 
 def test_core_30_day_range_guardrail_rejects_absurdly_far_edge(monkeypatch):
