@@ -491,6 +491,23 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.4.2 conservative economics closure
+
+Live v0.9.7.4.1 testing confirmed that the pool-vs-position APR labels and executable range display were fixed, but exposed one remaining modelling problem: short 1-day/3-day concentrated ranges could extrapolate the current tick's active-liquidity share too aggressively. On HLX/USDC, the whole-pool benchmark was about 124% while modelled position APR rose to roughly 2,400-2,900% as the range tightened. The percentage arithmetic was internally correct; the forward fee-share assumption was not conservative enough.
+
+v0.9.7.4.2 closes that economics foundation before background deep analysis is added:
+
+- **Conservative horizon blend:** position fee share now combines a bounded capital/TVL range proxy with the current-tick active-liquidity estimate. The current-tick signal is capped before use and its forecast weight decays as the holding horizon increases.
+- **No 20x model-only extrapolation:** instantaneous local liquidity can still improve the position forecast, especially for a tight one-day Tactical range, but it cannot by itself become a 20x+ whole-pool expected APR. The raw current-tick signal remains inspectable in the economics payload.
+- **Owned exact-pool evidence can override the model:** once an owned position has at least 24 hours of exact-pool fee evidence, Profit Lab is allowed to use that empirical production rate instead of forcing the generic conservative blend.
+- **Pool APR source is explicit:** Profit Lab labels the whole-pool 24h APR as **OBSERVED** when matching fee/TVL evidence exists or **DERIVED** when it is calculated from 24h volume x known fee tier / TVL.
+- **Fee APR Proxy uses the same canonical economics:** Candidate Universe and the persistent leaderboard reuse the canonical observed/derived pool APR where evidence is sufficient instead of leaving avoidable blanks.
+- **Old deep results must be rechecked:** persisted Profit Lab snapshots created before the new economics model are marked **DEEP RECHECK** and cannot remain allocation-confirmed until Profit Lab recalculates them under `ECONOMICS_V2_CONSERVATIVE_HORIZON_BLEND`.
+- **Provider failures remain non-blocking:** a failed provider such as The Graph is shown as degraded when other providers successfully complete the Candidate Universe build.
+- **No v0.9.7.5 scope creep:** background Top-20/25 deep-analysis rotation remains the next stage after this economics model is live-tested and signed off.
+
+The release adds regressions for horizon-decaying current-tick authority, model-only APR bounds, observed/derived Candidate Universe APR, deep-snapshot economics-version invalidation and the new UI evidence labels.
+
 ## v0.9.7.4.1 economics standardisation
 
 Live HLX/USDC testing exposed an important naming/authority fault underneath the otherwise accepted v0.9.7.4 Opportunity Score. Uniswap showed about **$356.5k TVL**, **$957.77 24h fees** and **98.07% Total APR**. The same arithmetic is $957.77 / $356,500 x 365 = about **98.06%**. LP Manager was instead showing a concentrated-position estimate around 690% under the label "Pool 24h fee APR", making whole-pool economics and position economics look interchangeable.
