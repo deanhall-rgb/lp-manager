@@ -75,7 +75,7 @@ def _row(rank, status="NOT_ANALYSED", ready=True, score=80):
     }
 
 
-def test_rotation_targets_top_25_and_prioritises_recheck_then_unanalysed_then_stale(monkeypatch):
+def test_rotation_targets_top_25_plus_challengers_and_prioritises_recheck_then_unanalysed_then_stale(monkeypatch):
     rows = [
         _row(1, "NOT_ANALYSED", score=95),
         _row(2, "DEEP_STALE", score=94),
@@ -87,12 +87,28 @@ def test_rotation_targets_top_25_and_prioritises_recheck_then_unanalysed_then_st
     service = DeepAnalysisRotationService(object(), _Store(), object(), _Leaderboard(rows))
     targets = service.targets()
 
-    assert all(int(x["rank"]) <= 25 for x in targets)
+    assert all(int(x["rank"]) <= 40 for x in targets)
     assert targets[0]["rank"] == 3
-    assert targets[0]["rotation_zone"] == "TOP_20"
-    assert any(x["rotation_zone"] == "CHALLENGER_21_25" for x in targets)
+    assert targets[0]["rotation_zone"] == "TOP_25"
+    assert any(x["rotation_zone"] == "CHALLENGER_26_40" for x in targets)
     assert all(x["rank"] != 4 for x in targets)
     assert all(x["rank"] != 5 for x in targets)
+
+
+def test_rotation_skips_retrying_top_rows_and_exposes_rank_26_plus_as_work():
+    rows = [_row(i, "NOT_ANALYSED", score=100-i) for i in range(1, 31)]
+    service = DeepAnalysisRotationService(object(), _Store(), object(), _Leaderboard(rows))
+    now = time.time()
+    for rank in range(1, 5):
+        row = rows[rank - 1]
+        service._retry_after[service._key(row)] = now + 600
+
+    targets = service.targets()
+
+    assert all(x["rank"] not in {1, 2, 3, 4} for x in targets)
+    assert any(x["rank"] == 26 and x["rotation_zone"] == "CHALLENGER_26_40" for x in targets)
+    assert service.TARGET_LIMIT == 40
+    assert service.BOARD_LIMIT == 25
 
 
 def test_rotation_runs_one_standard_background_profit_plan(monkeypatch):
