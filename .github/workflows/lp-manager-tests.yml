@@ -33,6 +33,7 @@ on:
       - "v0.9.7.5"
       - "v0.9.7.5.1"
       - "v0.9.7.5.2"
+      - "v0.9.7.5.3"
   pull_request:
 
 jobs:
@@ -60,7 +61,7 @@ jobs:
 
   package:
     needs: test
-    if: github.ref == 'refs/heads/v0.9.5' || github.ref == 'refs/heads/v0.9.6.1' || github.ref == 'refs/heads/v0.9.6.2' || github.ref == 'refs/heads/v0.9.6.3' || github.ref == 'refs/heads/v0.9.6.4' || github.ref == 'refs/heads/v0.9.6.4.1' || github.ref == 'refs/heads/v0.9.6.4.2' || github.ref == 'refs/heads/v0.9.7.1' || github.ref == 'refs/heads/v0.9.7.2' || github.ref == 'refs/heads/v0.9.7.2.1' || github.ref == 'refs/heads/v0.9.7.3' || github.ref == 'refs/heads/v0.9.7.3.1' || github.ref == 'refs/heads/v0.9.7.4' || github.ref == 'refs/heads/v0.9.7.4.1' || github.ref == 'refs/heads/v0.9.7.4.2' || github.ref == 'refs/heads/v0.9.7.5' || github.ref == 'refs/heads/v0.9.7.5.1' || github.ref == 'refs/heads/v0.9.7.5.2'
+    if: github.ref == 'refs/heads/v0.9.5' || github.ref == 'refs/heads/v0.9.6.1' || github.ref == 'refs/heads/v0.9.6.2' || github.ref == 'refs/heads/v0.9.6.3' || github.ref == 'refs/heads/v0.9.6.4' || github.ref == 'refs/heads/v0.9.6.4.1' || github.ref == 'refs/heads/v0.9.6.4.2' || github.ref == 'refs/heads/v0.9.7.1' || github.ref == 'refs/heads/v0.9.7.2' || github.ref == 'refs/heads/v0.9.7.2.1' || github.ref == 'refs/heads/v0.9.7.3' || github.ref == 'refs/heads/v0.9.7.3.1' || github.ref == 'refs/heads/v0.9.7.4' || github.ref == 'refs/heads/v0.9.7.4.1' || github.ref == 'refs/heads/v0.9.7.4.2' || github.ref == 'refs/heads/v0.9.7.5' || github.ref == 'refs/heads/v0.9.7.5.1' || github.ref == 'refs/heads/v0.9.7.5.2' || github.ref == 'refs/heads/v0.9.7.5.3'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
