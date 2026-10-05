@@ -149,4 +149,4 @@ def test_v09752_ui_explains_refresh_and_advisor_gate_outcomes():
     assert "all current · next refresh ~" in app
     assert "Why some capital stayed back." in app
     assert "Allocation gates:" in app
-    assert "/static/app.js?v=0.9.7.5.3" in html
+    assert "/static/app.js?v=0.9.7.5.4" in html
