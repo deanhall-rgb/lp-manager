@@ -4,6 +4,7 @@ from pathlib import Path
 
 from lp_manager.candidate_universe import CandidateUniverse
 from lp_manager.opportunity_leaderboard import OpportunityLeaderboard
+from lp_manager.portfolio_advisor import rank_opportunities
 
 
 def pool(address, pair, tvl, volume, score_fee=0):
@@ -180,3 +181,56 @@ def test_v0976_ui_exposes_retained_revalidation_state():
     assert "RETAINED ${ageText}" in app
     assert "revalidation pending" in app
     assert "Retained / recheck" in app
+
+
+def test_monthly_target_must_still_clear_after_actual_tactical_allocation_size():
+    row={
+        "chain":"ETHEREUM",
+        "pair":"THIN/USDC",
+        "pool_address":"0x"+"7"*40,
+        "sleeve":"TACTICAL_CAMPAIGN",
+        "advisor_ranking_basis":"LEADERBOARD_OPPORTUNITY_SCORE",
+        "opportunity_score":{"score":80},
+        "evaluation":{
+            "tactical_pre_score":80,
+            "core_pre_score":60,
+            "risk_tactical":{"eligible":True,"blockers":[]},
+            "risk_core":{"eligible":True,"blockers":[]},
+        },
+        "economics":{
+            "mode":"MODELLED",
+            "capital_usd":1000,
+            "estimated_net_month_pct":8,
+            "estimated_operating_net_month_usd":80,
+            "volume_quality":{"factor":1.0},
+        },
+        "regime":{"confidence":50},
+        "market_evidence_status":"LIVE_CURRENT",
+        "profit_lab_readiness":{"ready":True,"status":"READY"},
+        "deep_analysis":{
+            "status":"DEEP_PROFITABLE",
+            "fresh":True,
+            "capital_usd":1000,
+            "horizon_days":7,
+            "required_horizon_days":7,
+            "expected_fees_usd":20,
+            "expected_net_usd":15,
+            "expected_intervention_cost_usd":5,
+        },
+    }
+    result=rank_opportunities(
+        [row],
+        available_capital=1000,
+        reserve_pct=10,
+        monthly_target_pct=5,
+        max_positions=4,
+        sleeve_filter="ANY",
+        allocation_mode="DIVERSIFIED",
+        open_positions=[],
+    )
+    assert result["allocations"]==[]
+    assert result["near_misses"]
+    assert any(
+        "size-adjusted deep net return" in reason and "below 5.0% target" in reason
+        for reason in result["near_misses"][0]["reject_reasons"]
+    )
