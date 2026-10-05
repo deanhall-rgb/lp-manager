@@ -182,7 +182,7 @@ def test_v09751_ui_and_api_expose_universe_upkeep_and_leaderboard_aligned_adviso
     html = (root / "lp_manager" / "static" / "index.html").read_text(encoding="utf-8")
 
     assert "Universe upkeep" in app
-    assert "Leaderboard-aligned Best Overall" in app
+    assert "Leaderboard-aligned Advisor" in app
     assert "candidate_universe_maintenance.start_background()" in api
     assert "candidate_universe_maintenance.stop_background()" in api
     assert "LEADERBOARD_ALIGNED_SHARED_UNIVERSE" in api
