@@ -186,4 +186,4 @@ def test_v09751_ui_and_api_expose_universe_upkeep_and_leaderboard_aligned_adviso
     assert "candidate_universe_maintenance.start_background()" in api
     assert "candidate_universe_maintenance.stop_background()" in api
     assert "LEADERBOARD_ALIGNED_SHARED_UNIVERSE" in api
-    assert "/static/app.js?v=0.9.7.5.4" in html
+    assert "/static/app.js?v=0.9.7.5.5" in html
