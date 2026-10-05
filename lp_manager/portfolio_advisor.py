@@ -362,7 +362,8 @@ def rank_opportunities(
             "available_capital": capital, "reserve_floor": reserve_floor, "reserve": capital,
             "deployable": deployable, "allocated": 0, "unallocated": deployable, "allocations": [], "ranked": scored,
             "near_misses": near_misses, "portfolio_context": portfolio_context,
-            "reason": "No opportunity currently clears the screen, freshness, risk and deep Profit Lab validation gates. The closest candidates remain research-only until deep economics confirm positive expected net.",
+            "monthly_target_pct": round(max(0.0,_f(monthly_target_pct)),2),
+            "reason": "No opportunity currently clears the screen, freshness, risk, monthly profit target and deep Profit Lab validation gates. The closest candidates remain research-only until those gates clear.",
             "sleeve_filter": sleeve_filter, "allocation_mode": allocation_mode,
         }
 
