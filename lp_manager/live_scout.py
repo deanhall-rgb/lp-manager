@@ -5,7 +5,7 @@ from typing import Any
 
 from .risk_engine import assess_pool_risk
 from .economics_engine import volume_quality
-from .asset_registry import RISK_MAJOR_SYMBOLS, STABLE_SYMBOLS, CORE_MAJOR_SYMBOLS
+from .asset_registry import RISK_MAJOR_SYMBOLS, STABLE_SYMBOLS, CORE_MAJOR_SYMBOLS, MATURE_CORE_ASSET_SYMBOLS
 
 # Compatibility aliases: one canonical registry now owns these classifications.
 RISK_MAJORS = RISK_MAJOR_SYMBOLS
@@ -37,6 +37,7 @@ def preliminary_pool_evaluation(pool: dict[str, Any]) -> dict[str, Any]:
     has_stable = bool(symbols & STABLES)
     core_pair = bool(symbols & RISK_MAJORS) and bool(symbols & STABLES)
     stable_pair = len(symbols) >= 2 and symbols.issubset(STABLES)
+    mature_structured_pair = len(symbols) >= 2 and symbols.issubset(MATURE_CORE_ASSET_SYMBOLS)
     asset_quality = 98.0 if major_count == 2 else 82.0 if major_count == 1 else 48.0
     liquidity_score = min(100.0, 35.0 + 13.0 * max(0.0, __import__('math').log10(max(1.0, tvl / 10000))))
     activity = min(100.0, 30.0 + 18.0 * max(0.0, __import__('math').log10(max(1.0, vol / 10000))))
@@ -68,7 +69,7 @@ def preliminary_pool_evaluation(pool: dict[str, Any]) -> dict[str, Any]:
     # Sleeve is first an inventory/risk philosophy, then a quality gate. A WETH/
     # stable pool does not become a Tactical campaign merely because it is young.
     # Liquidity/risk gates can still reject the pool later.
-    if core_pair or stable_pair:
+    if core_pair or stable_pair or mature_structured_pair:
         preferred = "CORE_INCOME"
     elif not severe_activity_anomaly and core_pre >= 72 and asset_quality >= 90 and age >= 90 and tvl >= 1_000_000:
         preferred = "CORE_INCOME"
@@ -79,10 +80,10 @@ def preliminary_pool_evaluation(pool: dict[str, Any]) -> dict[str, Any]:
         "core_pre_score": round(core_pre, 1),
         "tactical_pre_score": round(tactical_pre, 1),
         "preferred_sleeve": preferred,
-        "pair_policy_sleeve": "CORE_INCOME" if (core_pair or stable_pair) else "TACTICAL_CAMPAIGN",
+        "pair_policy_sleeve": "CORE_INCOME" if (core_pair or stable_pair or mature_structured_pair) else "TACTICAL_CAMPAIGN",
         "quality": {"asset": round(asset_quality,1), "liquidity": round(liquidity_score,1), "activity": round(activity,1), "age_days": round(age,1) if age_known else None, "age_known": age_known, "activity_persistence": round(activity_quality["factor"]*100,1)},
         "quality_flags": activity_quality["flags"],
         "risk_core": assess_pool_risk(candidate, sleeve="CORE_INCOME"),
         "risk_tactical": assess_pool_risk(candidate, sleeve="TACTICAL_CAMPAIGN"),
-        "note": "Pair policy classifies major/stable and stable/stable inventory as Core. Pre-score then measures whether the specific pool is attractive; risk gates may still reject it. Historical fee stability/range durability is added by Profit Lab.",
+        "note": "Pair policy classifies mature-network/stable and mature/mature inventory as Core by default. A mature asset can still participate in a Tactical campaign when paired with a non-mature campaign asset. Pre-score measures whether the specific pool is attractive; risk gates may still reject it.",
     }
