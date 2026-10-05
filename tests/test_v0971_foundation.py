@@ -229,7 +229,7 @@ def test_v0974_opportunity_score_is_final_and_v4_ready():
         _LeaderboardUniverse({"BASE": _leaderboard_snapshot("BASE", [row])}),
     ).rebuild()
     assert result["score_is_final_opportunity_score"] is True
-    assert result["rows"][0]["opportunity_score"]["version"] == "OPPORTUNITY_SCORE_V1"
+    assert result["rows"][0]["opportunity_score"]["version"] == "OPPORTUNITY_SCORE_V2_PROFIT_FIRST"
     assert result["rows"][0]["protocol_version"] == "V4"
 
 
