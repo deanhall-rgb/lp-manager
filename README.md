@@ -491,6 +491,21 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.5.3 profit-first opportunity correction
+
+Live v0.9.7.5.2 testing proved that universe upkeep and full-capital Advisor allocation now work, but also exposed a more important product issue: the Top-25 board was still behaving too much like a market-quality ranking. Multiple economically equivalent ETH/USD and BTC/ETH pools occupied separate seats, low-yield giant pools could outrank materially more profitable campaign opportunities, known mature network assets such as ARB/POL could leak into Tactical, and the background deep queue was deliberately throttled too heavily.
+
+- **Opportunity Score V2 is profit-first.** Expected net economics now carry 45% of the cross-pool score. Durability remains 15%; liquidity, activity, risk and evidence are 10% each. Hard risk/evidence gates remain downstream, so this is not raw-APR chasing.
+- **The 10%/month programme target now matters to Portfolio Advisor.** Advisor exposes an adjustable Target %/mo field (default 10%). A fresh deep result below the selected target is research context, not an allocation recommendation. The selected target is handed into Profit Lab when the operator opens a recommended plan.
+- **Equivalent trade families share one leaderboard seat.** Wrapped/native aliases and stable denominations are normalised for ranking: WETH/USDC, USDT/WETH and equivalent cross-chain ETH/USD pools compete against one another; WBTC/WETH and BTC/ETH do the same. Only the strongest representative is shown, with the number of hidden equivalent alternatives exposed in the UI.
+- **Advisor also deduplicates equivalent trade families.** Tactical/Core filters therefore cannot fill a diversified allocation with four slightly different versions of the same economic exposure.
+- **Mature structured pairs default to Core.** ETH/BTC plus known network-major assets such as ARB, OP and POL, when paired only with another mature/stable asset, are Core by default. A mature asset paired with a true campaign asset (for example DELTA/WETH) can still be Tactical.
+- **Matching deep evidence is enforced.** DEEP RECHECK is now research-only rather than allocatable. Explicit Tactical/Core views cannot allocate capital on an outdated horizon-specific result.
+- **Deep-analysis throughput increased materially.** The background worker now processes up to two candidates sequentially per active cycle, waits about 25 seconds while a queue remains, and falls back to a 60-second idle cadence. ProviderCoordinator still gives foreground work priority and can defer background calls.
+- **Board observability improved.** Queue status exposes batch/cycle speed, the funnel shows unique trade-family count and hidden equivalents, and the board copy explicitly states that ranking is profit-first rather than a generic quality score.
+
+This patch intentionally does **not** make market capitalisation itself a hard sleeve rule. Size is useful evidence of maturity but is not proof that an LP pool is durable or profitable. The safer rule is asset-class maturity plus actual pool economics. Broader rotating/paginated long-tail discovery remains a post-v0.9.7 optimisation; the immediate goal here is to make the existing discovered universe rank and allocate for profit correctly.
+
 ## v0.9.7.5.2 Advisor deployment + faster universe cadence
 
 Live v0.9.7.5.1 testing proved that Candidate Universe maintenance now works without manual six-chain rebuilds and that the persistent leaderboard no longer disappears. The test also exposed one final pre-v0.9.7.6 issue: Best Overall Advisor could leave most deployable capital idle because legacy sleeve-risk inputs were rejecting otherwise strong leaderboard candidates for missing metadata rather than real negative evidence.
