@@ -95,8 +95,12 @@ def test_rotation_targets_top_25_plus_challengers_and_prioritises_recheck_then_u
     assert all(x["rank"] != 5 for x in targets)
 
 
-def test_rotation_skips_retrying_top_rows_and_exposes_rank_26_plus_as_work():
-    rows = [_row(i, "NOT_ANALYSED", score=100-i) for i in range(1, 31)]
+def test_rotation_skips_retrying_top_rows_and_immediately_backfills_from_rank_26_plus():
+    rows = (
+        [_row(i, "NOT_ANALYSED", score=100-i) for i in range(1, 5)]
+        + [_row(i, "DEEP_PROFITABLE", score=100-i) for i in range(5, 26)]
+        + [_row(i, "NOT_ANALYSED", score=100-i) for i in range(26, 31)]
+    )
     service = DeepAnalysisRotationService(object(), _Store(), object(), _Leaderboard(rows))
     now = time.time()
     for rank in range(1, 5):
@@ -105,8 +109,8 @@ def test_rotation_skips_retrying_top_rows_and_exposes_rank_26_plus_as_work():
 
     targets = service.targets()
 
-    assert all(x["rank"] not in {1, 2, 3, 4} for x in targets)
-    assert any(x["rank"] == 26 and x["rotation_zone"] == "CHALLENGER_26_40" for x in targets)
+    assert [x["rank"] for x in targets[:5]] == [26, 27, 28, 29, 30]
+    assert all(x["rotation_zone"] == "CHALLENGER_26_40" for x in targets[:5])
     assert service.TARGET_LIMIT == 40
     assert service.BOARD_LIMIT == 25
 
