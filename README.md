@@ -491,6 +491,23 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.5.5 dynamic sleeve classification + stale-chain recovery
+
+Live v0.9.7.5.4 testing confirmed that Best Overall/Tactical/Core now share one leaderboard evidence path, the monthly target is genuinely interactive, challenger backfill works, and Advisor → Profit Lab → Execution remains aligned. Two final behaviours remained misleading:
+
+- Lowering the monthly target from 10% to 5%/2% did not admit additional profitable rows because some pools were being rejected under the wrong sleeve before the target gate was reached.
+- One universe snapshot remained more than 300 minutes old while upkeep stayed ACTIVE because background refresh still depended on the scarce Gecko path.
+
+Corrections:
+
+- **Sleeve classification is now risk-aware rather than rigid.** Mature/network pairs still default to Core philosophy, but only remain Core when the actual pool clears Core risk. If the same pair fails Core durability/liquidity yet clears Tactical risk, it may become a Tactical fee campaign.
+- **The old pre-score winner fallback is removed.** A non-mature pair such as WLD/USDC can no longer become Core simply because its Core pre-score happens to be fractionally above its Tactical pre-score.
+- **Tactical TVL hard floor is aligned to discovery at $50k.** Pools from $50k-$150k are explicitly marked `TACTICAL_TVL_THIN` rather than rejected outright. Other liquidity/risk gates still apply.
+- **Profit target remains a separate gate.** A Tactical override is not automatically investable: it must still clear current evidence, deep Profit Lab economics and the selected monthly target.
+- **Background universe upkeep no longer calls GeckoTerminal.** Routine maintenance uses TheGraph + DEX Screener and preserves Gecko budget for manual/broader discovery. This prevents a Gecko cooldown from leaving one chain hours stale while the UI still says upkeep is active.
+
+This means a mature pair can legitimately exist in different sleeves depending on the pool itself: a deep, liquid ARB/WETH pool can be Core, while a smaller/high-activity OP/USDC pool may be Tactical if it fails Core but clears Tactical risk and profit requirements.
+
 ## v0.9.7.5.4 Advisor alignment + challenger backfill
 
 Live v0.9.7.5.3 testing confirmed that profit-first ranking and economic-pair deduplication materially improved the board: NVDAon/USDC, SPCXON/USDC and HLX/USDC rose above low-return giant pools, duplicated ETH/USD and BTC/ETH exposures collapsed, and the Profit Lab to Execution Desk hand-off remained correct. The same live test exposed two orchestration inconsistencies.
