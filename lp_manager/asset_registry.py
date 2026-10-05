@@ -28,6 +28,12 @@ NETWORK_MAJOR_SYMBOLS = frozenset({
     "POL", "WPOL", "MATIC", "WMATIC",
     "ARB", "OP", "BNB", "WBNB", "AVAX", "WAVAX", "SOL", "WSOL",
 })
+
+# Mature/structured inventory used for sleeve classification. A pair made only
+# from these assets defaults to Core income. A mature asset paired with a true
+# campaign asset (for example DELTA/WETH) can still be Tactical.
+MATURE_CORE_ASSET_SYMBOLS = frozenset(NETWORK_MAJOR_SYMBOLS | STABLE_SYMBOLS)
+
 PRICE_DISPLAY_SYMBOLS = frozenset(NETWORK_MAJOR_SYMBOLS | STABLE_SYMBOLS)
 
 
