@@ -65,25 +65,48 @@ def preliminary_pool_evaluation(pool: dict[str, Any]) -> dict[str, Any]:
         "activity_quality_factor": activity_quality["factor"],
         "activity_quality_flags": activity_quality["flags"],
     }
+    risk_core = assess_pool_risk(candidate, sleeve="CORE_INCOME")
+    risk_tactical = assess_pool_risk(candidate, sleeve="TACTICAL_CAMPAIGN")
+
     preferred = None
-    # Sleeve is first an inventory/risk philosophy, then a quality gate. A WETH/
-    # stable pool does not become a Tactical campaign merely because it is young.
-    # Liquidity/risk gates can still reject the pool later.
-    if core_pair or stable_pair or mature_structured_pair:
+    sleeve_reason = "UNCLASSIFIED"
+    pair_policy_core = bool(core_pair or stable_pair or mature_structured_pair)
+
+    # Asset maturity defines the *default* inventory philosophy, not an absolute
+    # ban on Tactical use. If a mature pair fails Core durability/liquidity but
+    # genuinely clears Tactical risk, it can be treated as a campaign rather
+    # than disappearing from the opportunity set.
+    if pair_policy_core and risk_core.get("eligible"):
         preferred = "CORE_INCOME"
-    elif not severe_activity_anomaly and core_pre >= 72 and asset_quality >= 90 and age >= 90 and tvl >= 1_000_000:
-        preferred = "CORE_INCOME"
-    elif not severe_activity_anomaly and tactical_pre >= 68 and tvl >= 50_000:
+        sleeve_reason = "MATURE_PAIR_CLEARS_CORE"
+    elif pair_policy_core and not severe_activity_anomaly and risk_tactical.get("eligible"):
         preferred = "TACTICAL_CAMPAIGN"
+        sleeve_reason = "MATURE_PAIR_TACTICAL_OVERRIDE"
+    elif (not pair_policy_core) and not severe_activity_anomaly and risk_tactical.get("eligible"):
+        preferred = "TACTICAL_CAMPAIGN"
+        sleeve_reason = "CAMPAIGN_PAIR_CLEARS_TACTICAL"
+    elif (
+        (not pair_policy_core)
+        and not severe_activity_anomaly
+        and risk_core.get("eligible")
+        and core_pre >= 72
+        and asset_quality >= 90
+        and age >= 90
+        and tvl >= 1_000_000
+    ):
+        preferred = "CORE_INCOME"
+        sleeve_reason = "NON_POLICY_PAIR_EARNS_CORE"
+
     return {
         "preliminary": True,
         "core_pre_score": round(core_pre, 1),
         "tactical_pre_score": round(tactical_pre, 1),
         "preferred_sleeve": preferred,
-        "pair_policy_sleeve": "CORE_INCOME" if (core_pair or stable_pair or mature_structured_pair) else "TACTICAL_CAMPAIGN",
+        "pair_policy_sleeve": "CORE_INCOME" if pair_policy_core else "TACTICAL_CAMPAIGN",
+        "sleeve_reason": sleeve_reason,
         "quality": {"asset": round(asset_quality,1), "liquidity": round(liquidity_score,1), "activity": round(activity,1), "age_days": round(age,1) if age_known else None, "age_known": age_known, "activity_persistence": round(activity_quality["factor"]*100,1)},
         "quality_flags": activity_quality["flags"],
-        "risk_core": assess_pool_risk(candidate, sleeve="CORE_INCOME"),
-        "risk_tactical": assess_pool_risk(candidate, sleeve="TACTICAL_CAMPAIGN"),
-        "note": "Pair policy classifies mature-network/stable and mature/mature inventory as Core by default. A mature asset can still participate in a Tactical campaign when paired with a non-mature campaign asset. Pre-score measures whether the specific pool is attractive; risk gates may still reject it.",
+        "risk_core": risk_core,
+        "risk_tactical": risk_tactical,
+        "note": "Pair policy sets the default inventory philosophy. Mature pairs that clear Core remain Core; if Core fails but the pool clears Tactical risk, the same pair may be treated as a Tactical fee campaign. Non-mature pairs default Tactical when they clear Tactical risk.",
     }
