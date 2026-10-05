@@ -63,7 +63,9 @@ def test_v0964_advisor_defaults_include_all_six_supported_chains_and_shared_univ
     api = (root / "lp_manager" / "api.py").read_text(encoding="utf-8")
 
     assert 'default_chains=["ETHEREUM","BASE","ARBITRUM","OPTIMISM","POLYGON","ROBINHOOD_CHAIN"]' in api
-    assert '"LEADERBOARD_ALIGNED_SHARED_UNIVERSE" if best_overall else "SHARED_CANDIDATE_UNIVERSE"' in api
+    assert 'result["data_source"]="LEADERBOARD_ALIGNED_SHARED_UNIVERSE"' in api
+    assert "advisor_board_limit=40" in api
+    assert "_fair_chain_candidates(enriched,8)" not in api
     assert "_shared_universe_snapshot" in api
     assert "_fair_chain_candidates" in api
     assert 'live.market.network_pools(chain,page=1)' not in api
