@@ -119,8 +119,14 @@ def assess_pool_risk(candidate: dict[str, Any], *, sleeve: str) -> dict[str, Any
             blockers.append("TACTICAL_HISTORY_TOO_SHORT")
         elif not pool_age_known:
             evidence.append("POOL_AGE_UNKNOWN")
-        if tvl < 150_000:
+        # Tactical campaigns may deliberately use smaller, faster pools.
+        # The hard floor is aligned with discovery's viable campaign floor; pools
+        # below the former £/$150k comfort level remain explicitly flagged as
+        # thin rather than being rejected solely for not looking like Core.
+        if tvl < 50_000:
             blockers.append("TACTICAL_TVL_TOO_LOW")
+        elif tvl < 150_000:
+            evidence.append("TACTICAL_TVL_THIN")
         if contract_risk > 60:
             blockers.append("TACTICAL_CONTRACT_RISK")
         max_risk = 58.0
