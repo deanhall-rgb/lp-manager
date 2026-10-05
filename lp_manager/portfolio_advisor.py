@@ -231,7 +231,7 @@ def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str, monthly_t
 def rank_opportunities(
     rows: list[dict[str, Any]], *, available_capital: float, reserve_pct: float = 10.0,
     max_positions: int = 4, sleeve_filter: str = "ANY", allocation_mode: str = "DIVERSIFIED",
-    open_positions: list[dict[str, Any]] | None = None, monthly_target_pct: float = 10.0, _capital_retry: int = 0,
+    open_positions: list[dict[str, Any]] | None = None, monthly_target_pct: float = 0.0, _capital_retry: int = 0,
 ) -> dict[str, Any]:
     capital = max(0.0, _f(available_capital))
     reserve_floor = capital * max(0.0, min(90.0, _f(reserve_pct))) / 100.0
