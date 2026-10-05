@@ -25,8 +25,9 @@ class DeepAnalysisRotationService:
     STANDARD_HORIZON_DAYS = 7.0
     STANDARD_CAPITAL_DISPLAY = 1000.0
     STANDARD_MONTHLY_TARGET_PCT = 10.0
-    TARGET_LIMIT = 25
-    TOP_ZONE = 20
+    BOARD_LIMIT = 25
+    TARGET_LIMIT = 40
+    TOP_ZONE = 25
     BATCH_SIZE = 2
     ACTIVE_CYCLE_SECONDS = 25.0
     IDLE_CYCLE_SECONDS = 60.0
@@ -97,7 +98,7 @@ class DeepAnalysisRotationService:
                 continue
             if now < float(self._retry_after.get(key) or 0):
                 continue
-            row["rotation_zone"] = "TOP_20" if int(row.get("rank") or 999) <= self.TOP_ZONE else "CHALLENGER_21_25"
+            row["rotation_zone"] = "TOP_25" if int(row.get("rank") or 999) <= self.TOP_ZONE else "CHALLENGER_26_40"
             out.append(row)
         out.sort(key=self._priority)
         return out
@@ -224,21 +225,32 @@ class DeepAnalysisRotationService:
 
         try:
             board = self.leaderboard.rebuild(limit=self.TARGET_LIMIT)
-            pending = sum(
-                1 for x in (board.get("rows") or [])
-                if self._needs_analysis(x)
+            rows = [dict(x) for x in (board.get("rows") or [])]
+            now = time.time()
+            needs = [x for x in rows if self._needs_analysis(x)]
+            top_pending = sum(1 for x in needs if int(x.get("rank") or 999) <= self.BOARD_LIMIT)
+            challenger_pending = sum(1 for x in needs if int(x.get("rank") or 999) > self.BOARD_LIMIT)
+            retrying = sum(
+                1 for x in needs
+                if now < float(self._retry_after.get(self._key(x)) or 0)
             )
+            actionable_pending = max(0, len(needs) - retrying)
+            pending = len(needs)
             deep_positive = int((board.get("funnel") or {}).get("allocation_confirmed") or 0)
             deep_analysed = int((board.get("funnel") or {}).get("deep_analysed") or 0)
         except Exception:
             pending = len(self.targets())
+            top_pending = pending
+            challenger_pending = 0
+            retrying = 0
+            actionable_pending = pending
             deep_positive = 0
             deep_analysed = 0
 
         payload = {
             "ok": all(x.get("ok") for x in results) if results else True,
             "enabled": bool(self.market),
-            "mode": "TOP_20_PLUS_5_CHALLENGER_ROTATION",
+            "mode": "TOP_25_PLUS_15_CHALLENGER_ROTATION",
             "standard_basis": {
                 "capital_usd": round(capital_usd, 2),
                     "capital_display": self.STANDARD_CAPITAL_DISPLAY,
@@ -247,12 +259,17 @@ class DeepAnalysisRotationService:
                 "monthly_target_pct": self.STANDARD_MONTHLY_TARGET_PCT,
                 "sleeve": "AUTO",
             },
+            "board_limit": self.BOARD_LIMIT,
             "target_limit": self.TARGET_LIMIT,
             "top_zone": self.TOP_ZONE,
             "batch_size": self.BATCH_SIZE,
             "active_cycle_seconds": self.ACTIVE_CYCLE_SECONDS,
             "idle_cycle_seconds": self.IDLE_CYCLE_SECONDS,
             "pending": pending,
+            "top_pending": top_pending,
+            "challenger_pending": challenger_pending,
+            "retrying": retrying,
+            "actionable_pending": actionable_pending,
             "deep_analysed": deep_analysed,
             "deep_positive": deep_positive,
             "processed": len(results),
@@ -302,10 +319,10 @@ class DeepAnalysisRotationService:
         self._kick.clear()
 
         def worker():
-            # Interactive work still owns provider priority, but once the operator
-            # is idle there is no value in artificially taking ~30 minutes to
-            # deep-analyse a 25-row board. Process two sequential candidates per
-            # active cycle; ProviderCoordinator can still defer either item.
+            # Interactive work still owns provider priority. The working queue is
+            # deliberately deeper than the visible Top 25: when a visible candidate
+            # is in retry/backoff or cannot progress, ranks 26-40 can use the spare
+            # background capacity instead of leaving the worker apparently stuck.
             if self._stop.wait(20.0):
                 return
             while not self._stop.is_set():
