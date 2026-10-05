@@ -179,6 +179,18 @@ def _capital_adjusted_deep(deep: dict[str, Any] | None, amount_usd: float) -> di
     }
 
 
+def _capital_adjusted_monthly_pct(projected: dict[str, Any] | None) -> float | None:
+    p=dict(projected or {})
+    if not p.get("available"):
+        return None
+    capital=max(0.0,_f(p.get("capital_usd")))
+    horizon=max(0.0,_f(p.get("required_horizon_days")))
+    net=_f(p.get("expected_net_usd"))
+    if capital<=0 or horizon<=0:
+        return None
+    return net / capital * 100.0 * (30.0 / horizon)
+
+
 def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str, monthly_target_pct: float = 10.0) -> list[str]:
     economics = _economics(row)
     evaluation = row.get("evaluation") or {}
@@ -219,6 +231,16 @@ def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str, monthly_t
         )
     elif deep_status=="DEEP_CAPITAL_UNVERIFIED":
         reasons.append("deep Profit Lab capital scaling unavailable for proposed allocation")
+    elif deep_status=="DEEP_CAPITAL_BELOW_TARGET":
+        adjusted=deep.get("capital_adjusted") or {}
+        adjusted_monthly=_capital_adjusted_monthly_pct(adjusted)
+        target=max(0.0,_f(monthly_target_pct))
+        if adjusted_monthly is not None and target>0:
+            reasons.append(
+                f"size-adjusted deep net return {adjusted_monthly:.1f}%/month is below {target:.1f}% target"
+            )
+        else:
+            reasons.append("size-adjusted deep Profit Lab return is below the selected monthly target")
     deep_monthly=_deep_monthly_net_pct(deep)
     target=max(0.0,_f(monthly_target_pct))
     if deep_monthly is not None and target>0 and deep_monthly + 1e-9 < target:
@@ -409,12 +431,20 @@ def rank_opportunities(
     # fixed intervention costs turn that smaller hold negative.
     capital_projections: dict[tuple[str, str], dict[str, Any]] = {}
     failed_keys: set[tuple[str, str]] = set()
+    below_target_keys: set[tuple[str, str]] = set()
+    target=max(0.0,_f(monthly_target_pct))
     for row, amount in zip(eligible, amounts):
         key=_pool_key(row)
         projected=_capital_adjusted_deep(row.get("deep_analysis") or {},amount)
+        adjusted_monthly=_capital_adjusted_monthly_pct(projected)
+        if adjusted_monthly is not None:
+            projected["monthly_net_pct"]=round(adjusted_monthly,3)
         capital_projections[key]=projected
         if (not projected.get("available")) or _f(projected.get("expected_net_usd"))<=0:
             failed_keys.add(key)
+        elif target>0 and adjusted_monthly is not None and adjusted_monthly + 1e-9 < target:
+            failed_keys.add(key)
+            below_target_keys.add(key)
     if failed_keys and _capital_retry < 8:
         retry_rows=[]
         for original in rows:
@@ -424,8 +454,12 @@ def rank_opportunities(
                 deep=dict(row.get("deep_analysis") or {})
                 projected=capital_projections.get(key) or {}
                 deep["capital_adjusted"]=projected
-                deep["status"]="DEEP_CAPITAL_NON_POSITIVE" if projected.get("available") else "DEEP_CAPITAL_UNVERIFIED"
-                deep["label"]="DEEP -VE @ SIZE" if projected.get("available") else "DEEP SIZE CHECK"
+                if key in below_target_keys:
+                    deep["status"]="DEEP_CAPITAL_BELOW_TARGET"
+                    deep["label"]="DEEP < TARGET @ SIZE"
+                else:
+                    deep["status"]="DEEP_CAPITAL_NON_POSITIVE" if projected.get("available") else "DEEP_CAPITAL_UNVERIFIED"
+                    deep["label"]="DEEP -VE @ SIZE" if projected.get("available") else "DEEP SIZE CHECK"
                 deep["allocation_confirmed"]=False
                 row["deep_analysis"]=deep
             retry_rows.append(row)
@@ -528,5 +562,5 @@ def rank_opportunities(
             "near_misses": len(near_misses),
         },
         "unallocated_reason": unallocated_reason,
-        "guardrail": "SCREEN_THEN_SIZE_AWARE_DEEP_VALIDATE: current live economics rank candidates; stale cache cannot allocate; matching-horizon Profit Lab evidence must remain positive after scaling to the actual proposed capital while fixed cash costs stay fixed; existing open LP exposure constrains incremental concentration.",
+        "guardrail": "SCREEN_THEN_SIZE_AWARE_DEEP_VALIDATE: current live economics rank candidates; stale cache cannot allocate; matching-horizon Profit Lab evidence must remain positive AND still clear the selected monthly return target after scaling to the actual proposed capital while fixed cash costs stay fixed; existing open LP exposure constrains incremental concentration.",
     }
