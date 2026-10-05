@@ -70,16 +70,20 @@ def preliminary_pool_evaluation(pool: dict[str, Any]) -> dict[str, Any]:
 
     preferred = None
     sleeve_reason = "UNCLASSIFIED"
-    pair_policy_core = bool(core_pair or stable_pair or mature_structured_pair)
+    hard_core_pair = bool(core_pair or stable_pair)
+    pair_policy_core = bool(hard_core_pair or mature_structured_pair)
 
-    # Asset maturity defines the *default* inventory philosophy, not an absolute
-    # ban on Tactical use. If a mature pair fails Core durability/liquidity but
-    # genuinely clears Tactical risk, it can be treated as a campaign rather
-    # than disappearing from the opportunity set.
-    if pair_policy_core and risk_core.get("eligible"):
+    # ETH/BTC + stable and stable/stable inventory remains Core by philosophy:
+    # a weak individual pool is rejected as Core rather than relabelled Tactical.
+    # Network-major structured pairs (OP/ARB/POL etc.) may tactically override
+    # when the pool itself fails Core but genuinely clears Tactical risk.
+    if hard_core_pair:
+        preferred = "CORE_INCOME"
+        sleeve_reason = "HARD_CORE_PAIR_POLICY"
+    elif mature_structured_pair and risk_core.get("eligible"):
         preferred = "CORE_INCOME"
         sleeve_reason = "MATURE_PAIR_CLEARS_CORE"
-    elif pair_policy_core and not severe_activity_anomaly and risk_tactical.get("eligible"):
+    elif mature_structured_pair and not severe_activity_anomaly and risk_tactical.get("eligible"):
         preferred = "TACTICAL_CAMPAIGN"
         sleeve_reason = "MATURE_PAIR_TACTICAL_OVERRIDE"
     elif (not pair_policy_core) and not severe_activity_anomaly and risk_tactical.get("eligible"):
@@ -108,5 +112,5 @@ def preliminary_pool_evaluation(pool: dict[str, Any]) -> dict[str, Any]:
         "quality_flags": activity_quality["flags"],
         "risk_core": risk_core,
         "risk_tactical": risk_tactical,
-        "note": "Pair policy sets the default inventory philosophy. Mature pairs that clear Core remain Core; if Core fails but the pool clears Tactical risk, the same pair may be treated as a Tactical fee campaign. Non-mature pairs default Tactical when they clear Tactical risk.",
+        "note": "ETH/BTC-stable and stable/stable inventory remains Core by policy. Other mature network pairs remain Core when they clear Core risk, but may become Tactical campaigns when Core fails and Tactical genuinely clears. Non-mature pairs default Tactical when they clear Tactical risk.",
     }
