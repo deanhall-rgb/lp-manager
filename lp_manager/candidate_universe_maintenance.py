@@ -103,7 +103,11 @@ class CandidateUniverseMaintenanceService:
                             graph_limit=500,
                             shortlist_limit=40,
                             validate_limit=20,
-                            include_gecko=True,
+                            # Background upkeep must never depend on the
+                            # scarce Gecko budget. TheGraph + DEX Screener are the
+                            # maintenance path; manual discovery can still include
+                            # Gecko for broader validation.
+                            include_gecko=False,
                             preserve_existing_on_failure=True,
                         )
                 else:
@@ -112,7 +116,7 @@ class CandidateUniverseMaintenanceService:
                         graph_limit=500,
                         shortlist_limit=40,
                         validate_limit=20,
-                        include_gecko=True,
+                        include_gecko=False,
                         preserve_existing_on_failure=True,
                     )
                 preserved = bool(snap.get("background_refresh_preserved"))
