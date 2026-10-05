@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import Any
 
+from .asset_registry import STABLE_SYMBOLS, ETH_SYMBOLS, BTC_SYMBOLS
+
 
 def _f(v: Any, default: float = 0.0) -> float:
     try:
@@ -13,9 +15,40 @@ def _economics(row: dict[str, Any]) -> dict[str, Any]:
     return row.get("economics") or row.get("quick_economics") or {}
 
 
+def _economic_symbol(value: str) -> str:
+    symbol=str(value or "").strip().upper()
+    if symbol in STABLE_SYMBOLS:
+        return "USD"
+    if symbol in ETH_SYMBOLS:
+        return "ETH"
+    if symbol in BTC_SYMBOLS:
+        return "BTC"
+    if symbol in {"POL","WPOL","MATIC","WMATIC"}:
+        return "POL"
+    if symbol in {"BNB","WBNB"}:
+        return "BNB"
+    if symbol in {"AVAX","WAVAX"}:
+        return "AVAX"
+    if symbol in {"SOL","WSOL"}:
+        return "SOL"
+    return symbol
+
+
 def _pair_key(pair: str) -> str:
-    parts = [x.strip().upper() for x in str(pair or "").replace("-", "/").split("/") if x.strip()]
+    parts = [_economic_symbol(x) for x in str(pair or "").replace("-", "/").split("/") if x.strip()]
     return "/".join(sorted(parts)) if len(parts) >= 2 else "/".join(parts)
+
+
+def _deep_monthly_net_pct(deep: dict[str, Any] | None) -> float | None:
+    d=dict(deep or {})
+    if str(d.get("status") or "").upper() != "DEEP_PROFITABLE":
+        return None
+    capital=max(0.0,_f(d.get("capital_usd")))
+    horizon=max(0.0,_f(d.get("horizon_days"),_f(d.get("required_horizon_days"))))
+    net=_f(d.get("expected_net_usd"))
+    if capital<=0 or horizon<=0:
+        return None
+    return net / capital * 100.0 * (30.0 / horizon)
 
 
 def _pool_key(row: dict[str, Any]) -> tuple[str, str]:
@@ -146,7 +179,7 @@ def _capital_adjusted_deep(deep: dict[str, Any] | None, amount_usd: float) -> di
     }
 
 
-def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str) -> list[str]:
+def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str, monthly_target_pct: float = 10.0) -> list[str]:
     economics = _economics(row)
     evaluation = row.get("evaluation") or {}
     risk = (evaluation.get("risk_core") if sleeve == "CORE_INCOME" else evaluation.get("risk_tactical")) or {}
@@ -171,6 +204,8 @@ def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str) -> list[s
     deep_status=str(deep.get("status") or "NOT_ANALYSED").upper()
     if deep_status=="NOT_ANALYSED":
         reasons.append("deep Profit Lab validation required before allocation")
+    elif deep_status=="DEEP_RECHECK_REQUIRED":
+        reasons.append("deep Profit Lab validation must be refreshed for this decision horizon")
     elif deep_status=="DEEP_STALE":
         reasons.append("deep Profit Lab validation is stale")
     elif deep_status=="DEEP_NON_POSITIVE":
@@ -184,6 +219,10 @@ def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str) -> list[s
         )
     elif deep_status=="DEEP_CAPITAL_UNVERIFIED":
         reasons.append("deep Profit Lab capital scaling unavailable for proposed allocation")
+    deep_monthly=_deep_monthly_net_pct(deep)
+    target=max(0.0,_f(monthly_target_pct))
+    if deep_monthly is not None and target>0 and deep_monthly + 1e-9 < target:
+        reasons.append(f"deep net return {deep_monthly:.1f}%/month is below {target:.1f}% target")
     if score < threshold:
         reasons.append(f"score {score:.0f} below {threshold:.0f} {sleeve.lower().replace('_',' ')} threshold")
     return reasons
@@ -192,7 +231,7 @@ def _reject_reasons(row: dict[str, Any], *, score: float, sleeve: str) -> list[s
 def rank_opportunities(
     rows: list[dict[str, Any]], *, available_capital: float, reserve_pct: float = 10.0,
     max_positions: int = 4, sleeve_filter: str = "ANY", allocation_mode: str = "DIVERSIFIED",
-    open_positions: list[dict[str, Any]] | None = None, _capital_retry: int = 0,
+    open_positions: list[dict[str, Any]] | None = None, monthly_target_pct: float = 10.0, _capital_retry: int = 0,
 ) -> dict[str, Any]:
     capital = max(0.0, _f(available_capital))
     reserve_floor = capital * max(0.0, min(90.0, _f(reserve_pct))) / 100.0
@@ -253,7 +292,7 @@ def rank_opportunities(
         related_pair_penalty = min(4.0, max(0.0, pair_pct - pool_pct) * 0.08)
         concentration_penalty = min(12.0, pool_penalty + related_pair_penalty)
         score = max(0.0, min(100.0, base_score - concentration_penalty))
-        reject = _reject_reasons(row, score=score, sleeve=sleeve)
+        reject = _reject_reasons(row, score=score, sleeve=sleeve, monthly_target_pct=monthly_target_pct)
         preview_cap_pct = 1.0 if (allocation_mode == "BEST_ONLY" and sleeve == "CORE_INCOME") else 0.35 if allocation_mode == "BEST_ONLY" else 0.75 if sleeve == "CORE_INCOME" else 0.30
         preview_pool_room = max(0.0, portfolio_basis * preview_cap_pct - existing_pool) if portfolio_basis > 0 else deployable * preview_cap_pct
         if portfolio_basis > 0 and preview_pool_room <= 0.01:
@@ -281,6 +320,21 @@ def rank_opportunities(
         })
 
     scored.sort(key=lambda x: (len(x.get("reject_reasons") or []), -x["portfolio_score"], -_f(x.get("operating_net_month"))))
+
+    # Equivalent wrapped/stable denominations and cross-chain versions compete
+    # for a single Advisor slot. Because rejection count sorts first, a valid
+    # equivalent automatically beats a higher-scoring equivalent that fails a
+    # current evidence/risk/target gate.
+    unique_scored=[]
+    seen_families=set()
+    for row in scored:
+        family=_pair_key(str(row.get("pair") or ""))
+        if family and family in seen_families:
+            continue
+        if family:
+            seen_families.add(family)
+        unique_scored.append(row)
+    scored=unique_scored
     eligible = [r for r in scored if not r.get("reject_reasons")]
     if allocation_mode == "BEST_ONLY":
         eligible = eligible[:1]
@@ -382,6 +436,7 @@ def rank_opportunities(
             sleeve_filter=sleeve_filter,
             allocation_mode=allocation_mode,
             open_positions=open_positions,
+            monthly_target_pct=monthly_target_pct,
             _capital_retry=_capital_retry+1,
         )
 
@@ -463,6 +518,7 @@ def rank_opportunities(
         "available_capital": round(capital, 2), "reserve_floor": round(reserve_floor, 2), "unallocated": round(unallocated, 2),
         "reserve": round(reserve_floor + unallocated, 2), "deployable": round(deployable, 2), "allocated": round(allocated, 2),
         "allocations": allocations, "ranked": scored, "near_misses": near_misses, "sleeve_filter": sleeve_filter, "allocation_mode": allocation_mode,
+        "monthly_target_pct": round(max(0.0,_f(monthly_target_pct)),2),
         "portfolio_context": portfolio_context,
         "candidate_gate_summary": {
             "ranked": len(scored),
