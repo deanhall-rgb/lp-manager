@@ -1593,7 +1593,9 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         rate_limits=0
         timeouts=0
         best_overall=str(intent.sleeve_filter or "ANY").upper() in {"ANY","ALL",""}
-        leaderboard_state=opportunity_leaderboard.rebuild(limit=25)
+        visible_board_limit=25
+        advisor_board_limit=40
+        leaderboard_state=opportunity_leaderboard.rebuild(limit=advisor_board_limit)
         leaderboard_by_key={
             (str(x.get("chain") or "").upper(),str(x.get("pool_address") or "").lower()):x
             for x in (leaderboard_state.get("rows") or [])
@@ -1619,20 +1621,25 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             targeted=int(float((snap.get("summary") or {}).get("targeted_live_requests") or 0))
             total_provider_requests+=provider_requests+targeted
             enriched=_enrich_universe_rows(chain,snap,fresh=fresh)
-            if best_overall:
-                selected=[
-                    row for row in enriched
-                    if (chain,str(row.get("pool_address") or "").lower()) in leaderboard_by_key
-                ]
-                selected.sort(
-                    key=lambda row:int(
+            selected=[
+                row for row in enriched
+                if (chain,str(row.get("pool_address") or "").lower()) in leaderboard_by_key
+                and (
+                    not best_overall
+                    or int(
                         leaderboard_by_key.get(
                             (chain,str(row.get("pool_address") or "").lower()),{}
                         ).get("rank") or 999
-                    )
+                    ) <= visible_board_limit
                 )
-            else:
-                selected=_fair_chain_candidates(enriched,8)
+            ]
+            selected.sort(
+                key=lambda row:int(
+                    leaderboard_by_key.get(
+                        (chain,str(row.get("pool_address") or "").lower()),{}
+                    ).get("rank") or 999
+                )
+            )
             for row in selected:
                 leaderboard_row=leaderboard_by_key.get(
                     (chain,str(row.get("pool_address") or "").lower()),{}
@@ -1657,7 +1664,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     "leaderboard_rank":leaderboard_row.get("rank"),
                     "opportunity_score":dict(leaderboard_row.get("opportunity_score") or {}),
                     "deep_analysis":dict(leaderboard_row.get("deep_analysis") or row.get("deep_analysis") or {}),
-                    "advisor_ranking_basis":"LEADERBOARD_OPPORTUNITY_SCORE" if best_overall else "SLEEVE_SCREEN",
+                    "advisor_ranking_basis":"LEADERBOARD_OPPORTUNITY_SCORE",
                 })
             summary=snap.get("summary") or {}
             chain_diagnostics.append({
@@ -1674,8 +1681,6 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 "provider_statuses":{str(x.get("provider") or "UNKNOWN"):str(x.get("status") or "UNKNOWN") for x in providers},
             })
 
-        if not best_overall:
-            candidates=opportunity_leaderboard.attach_analysis_state(candidates)
         result=rank_opportunities(
             candidates,available_capital=max(0.0,_display_capital_to_usd(intent.available_capital)),
             reserve_pct=max(0.0,min(90.0,intent.reserve_pct)),
@@ -1688,9 +1693,13 @@ def create_app(project_root: Path | None = None) -> FastAPI:
         allocated_chains=sorted({str(x.get("chain") or "") for x in result.get("allocations") or [] if x.get("chain")})
         result["scan_errors"]=errors
         result["candidate_count"]=len(candidates)
-        result["data_source"]="LEADERBOARD_ALIGNED_SHARED_UNIVERSE" if best_overall else "SHARED_CANDIDATE_UNIVERSE"
+        result["data_source"]="LEADERBOARD_ALIGNED_SHARED_UNIVERSE"
         result["leaderboard_alignment"]={
-            "enabled":best_overall,
+            "enabled":True,
+            "best_overall":best_overall,
+            "sleeve_filtered":not best_overall,
+            "visible_board_limit":visible_board_limit,
+            "advisor_board_limit":advisor_board_limit,
             "leaderboard_candidates":len(leaderboard_by_key),
             "advisor_candidates":len(candidates),
             "basis":"OPPORTUNITY_SCORE_PLUS_PORTFOLIO_CONCENTRATION_AND_CAPITAL_GATES" if best_overall else "SLEEVE_SPECIFIC_SCREEN",
