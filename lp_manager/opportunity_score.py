@@ -3,15 +3,18 @@ from __future__ import annotations
 import math
 from typing import Any
 
-SCORE_VERSION = "OPPORTUNITY_SCORE_V1"
+SCORE_VERSION = "OPPORTUNITY_SCORE_V2_PROFIT_FIRST"
 
 WEIGHTS = {
-    "net_economics": 0.30,
+    # Ranking is an opportunity-finding surface, not a blue-chip-quality index.
+    # Risk/evidence still gate execution later, but expected net profit must be
+    # strong enough to stop giant low-yield pools occupying the whole Top 25.
+    "net_economics": 0.45,
     "range_durability": 0.15,
-    "liquidity_quality": 0.15,
+    "liquidity_quality": 0.10,
     "activity_quality": 0.10,
-    "risk_quality": 0.15,
-    "evidence_quality": 0.15,
+    "risk_quality": 0.10,
+    "evidence_quality": 0.10,
 }
 
 VALIDATION_STATES = {"CROSS_VALIDATED", "LIVE_VALIDATED", "TVL_MISMATCH"}
@@ -37,12 +40,16 @@ def _log_scale(value: float, floor: float, *, base_score: float = 20.0, per_deca
 
 
 def _return_score(monthly_net_pct: float) -> float:
-    """Smoothly reward positive operating return without letting APR dominate."""
+    """Profit-first return score anchored around the 10%/month programme target.
+
+    A safe but 1-3%/month pool can remain visible, but it should not outrank a
+    well-evidenced 10%+ opportunity merely because its TVL is enormous.
+    """
     x = max(0.0, _f(monthly_net_pct))
     if x <= 0:
         return 0.0
-    # 1%/mo ~= 25, 3% ~= 50, 9% ~= 75; asymptotically approaches 100.
-    return _clamp(100.0 * x / (x + 3.0))
+    # 1% ~= 20, 3% ~= 43, 5% ~= 56, 10% ~= 71, 20% ~= 83.
+    return _clamp(100.0 * x / (x + 4.0))
 
 
 def _turnover_quality(turnover: float) -> float:
@@ -145,6 +152,8 @@ def score_opportunity(row: dict[str, Any]) -> dict[str, Any]:
         economics_score = _return_score(deep_monthly) * deep_authority
         economics_basis = "DEEP_NET"
         notes.append(f"Deep economics imply {deep_monthly:.2f}% net per 30d equivalent.")
+        if deep_monthly < 10.0:
+            notes.append(f"Below the 10%/month programme target by {10.0-deep_monthly:.2f} percentage points.")
         if deep_authority < 0.99:
             notes.append(f"Fee-evidence authority is {deep_authority*100:.0f}% because the position forecast relies on {str(deep.get('economics_evidence_class') or 'typed fallback').lower()}.")
     elif quick_monthly is not None:
