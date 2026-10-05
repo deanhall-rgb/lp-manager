@@ -244,4 +244,4 @@ def test_v09753_ui_is_profit_first_and_target_aware():
     assert "equivalent alternatives hidden" in app
     assert "Target %/mo" in html
     assert "advisor-target" in app
-    assert "/static/app.js?v=0.9.7.5.5" in html
+    assert "/static/app.js?v=0.9.7.6" in html
