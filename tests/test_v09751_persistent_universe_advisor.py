@@ -116,6 +116,7 @@ def test_universe_maintenance_refreshes_oldest_due_chain_at_background_priority(
     assert kwargs["graph_limit"] == 500
     assert kwargs["shortlist_limit"] == 40
     assert kwargs["validate_limit"] == 20
+    assert kwargs["include_gecko"] is False
     assert result["session_refreshed"] == 1
 
 
