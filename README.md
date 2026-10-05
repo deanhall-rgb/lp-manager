@@ -491,6 +491,20 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.5.4 Advisor alignment + challenger backfill
+
+Live v0.9.7.5.3 testing confirmed that profit-first ranking and economic-pair deduplication materially improved the board: NVDAon/USDC, SPCXON/USDC and HLX/USDC rose above low-return giant pools, duplicated ETH/USD and BTC/ETH exposures collapsed, and the Profit Lab to Execution Desk hand-off remained correct. The same live test exposed two orchestration inconsistencies.
+
+- **All Advisor sleeve views now start from the same profit-first leaderboard.** Best Overall, Core only and Tactical only no longer use different candidate-selection engines.
+- **Explicit sleeve filters reuse current AUTO STANDARD deep evidence for the allocation screen.** Selecting Tactical no longer turns a fresh 7-day deep-positive leaderboard candidate into SCREEN ONLY merely because an older path demanded a separate 3-day snapshot; Core no longer invents a 30-day evidence gap either. Profit Lab remains the authority for the final chosen holding-period/range plan.
+- **The monthly target is now actually sent by the browser.** The Target %/mo control is no longer display-only. Core pools can therefore be rejected for the correct reason — for example a deep monthly equivalent below the selected 10% target — instead of appearing to lack analysis.
+- **Deep rotation now has a 40-family working set behind the visible Top 25.** Ranks 26-40 are challenger capacity. If visible rows are in provider retry/backoff or otherwise cannot progress, the worker immediately has later candidates available rather than sleeping on a stuck queue.
+- **Queue diagnostics distinguish Top-25 work, retrying rows and challengers.** This makes a four-row apparent stall diagnosable while still allowing useful background analysis to continue.
+- **Leaderboard row density was tightened.** Equivalent-pool counts now use a compact “+N eqv hidden” marker and standard deep evidence is shown as a shorter 7d-standard line rather than a wide AUTO STANDARD badge.
+- **No-allocation Advisor messages now use the actual backend gate reason.** A Core-only run at a 10% monthly target can explicitly say that current Core candidates fail the return target rather than showing a generic missing-analysis message.
+
+Best Overall is still allowed to recommend an entirely Tactical allocation when those are the only opportunities clearing the selected return target. Core is a risk/inventory sleeve, not a quota that must receive capital regardless of expected return.
+
 ## v0.9.7.5.3 profit-first opportunity correction
 
 Live v0.9.7.5.2 testing proved that universe upkeep and full-capital Advisor allocation now work, but also exposed a more important product issue: the Top-25 board was still behaving too much like a market-quality ranking. Multiple economically equivalent ETH/USD and BTC/ETH pools occupied separate seats, low-yield giant pools could outrank materially more profitable campaign opportunities, known mature network assets such as ARB/POL could leak into Tactical, and the background deep queue was deliberately throttled too heavily.
