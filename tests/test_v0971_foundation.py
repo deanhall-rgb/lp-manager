@@ -209,7 +209,7 @@ def test_v0973_persistent_board_combines_cached_chains():
 
 def test_v0973_stale_chain_remains_visible_but_cannot_confirm_allocation():
     fresh = _leaderboard_candidate("ETHEREUM", "0x" + "3" * 40, "WETH/USDC", 50)
-    stale = _leaderboard_candidate("BASE", "0x" + "4" * 40, "WETH/USDC", 99)
+    stale = _leaderboard_candidate("BASE", "0x" + "4" * 40, "WBTC/USDC", 99)
     board = OpportunityLeaderboard(_LeaderboardStore(), _LeaderboardUniverse({
         "ETHEREUM": _leaderboard_snapshot("ETHEREUM", [fresh], 30),
         "BASE": _leaderboard_snapshot("BASE", [stale], 10800),
