@@ -491,6 +491,23 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.6 persistent candidate continuity
+
+Live v0.9.7.5.5 testing proved the sleeve and monthly-target logic: OP/USDC and WLD/USDC correctly became Tactical at 10%, lowering the target to 5% admitted additional opportunities, and a 20% target correctly rejected every current candidate. The remaining defect was candidate continuity: previously high-value NVDAon/USDC and SPCXON/USDC could disappear entirely after a later provider sample even though nothing had proven the pools invalid.
+
+v0.9.7.6 makes the Candidate Universe genuinely persistent rather than merely persisted:
+
+- **Transient provider misses no longer delete a candidate immediately.** A pool from the previous shortlist can survive for up to six missed refreshes / one hour.
+- **Current discovery always wins.** If a pool is seen normally, its live values replace retained state immediately.
+- **Retained rows are actively revalidated.** They are eligible for exact DEX Screener lookup even when the prior snapshot already had a valid economic-validation label.
+- **Successful exact revalidation restores current status.** Miss counters reset and the row becomes allocation-eligible again subject to all normal Advisor gates.
+- **Unrevalidated rows remain visible but cannot allocate capital.** The leaderboard shows a compact `RETAINED Xm` state with missed-refresh count and the Advisor receives persisted-cache rather than live-current evidence.
+- **Retention expires.** Missing candidates cannot become permanent zombies; after the guardrail window they leave the universe unless rediscovered.
+- **Row-level freshness replaces chain-only freshness for the board.** One freshly rebuilt chain can no longer make an individually retained pool look current.
+- **The board exposes retained/recheck count.** This makes provider-sample jitter visible instead of looking like opportunities mysteriously disappeared.
+
+This patch is deliberately the final functional hardening step before the v0.9.7 consolidation/UI pass and large live test cycle.
+
 ## v0.9.7.5.5 dynamic sleeve classification + stale-chain recovery
 
 Live v0.9.7.5.4 testing confirmed that Best Overall/Tactical/Core now share one leaderboard evidence path, the monthly target is genuinely interactive, challenger backfill works, and Advisor → Profit Lab → Execution remains aligned. Two final behaviours remained misleading:
