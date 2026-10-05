@@ -606,8 +606,18 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 continue
             row["chain"]=str(chain).upper()
             validation=str(row.get("economic_validation") or "").upper()
-            row["market_evidence_status"]="LIVE_CURRENT" if fresh and validation in valid_states else "NOT_REFRESHED"
-            row["market_data_status"]="SHARED_CANDIDATE_UNIVERSE" if fresh else "STALE_UNIVERSE_CACHE"
+            retained=bool(row.get("universe_retained"))
+            row_is_current=bool(fresh and not retained and validation in valid_states)
+            row["market_evidence_status"]=(
+                "LIVE_CURRENT" if row_is_current
+                else "PERSISTED_CACHE" if retained and validation in valid_states
+                else "NOT_REFRESHED"
+            )
+            row["market_data_status"]=(
+                "SHARED_CANDIDATE_UNIVERSE" if row_is_current
+                else "RETAINED_UNIVERSE_CANDIDATE" if retained
+                else "STALE_UNIVERSE_CACHE"
+            )
             evaluation=preliminary_pool_evaluation(row)
             preferred=evaluation.get("preferred_sleeve") or evaluation.get("pair_policy_sleeve") or "TACTICAL_CAMPAIGN"
             quick=estimate_lp_economics(
@@ -617,7 +627,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             )
             enriched={**row,"evaluation":evaluation,"sleeve":preferred,"quick_economics":quick}
             out.append(enriched)
-            if fresh:
+            if row_is_current:
                 try:
                     # Persist the same enriched current context that Scout/Advisor
                     # are using so Profit Lab does not immediately re-fetch the
