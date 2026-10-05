@@ -500,7 +500,7 @@ Live v0.9.7.5.4 testing confirmed that Best Overall/Tactical/Core now share one 
 
 Corrections:
 
-- **Sleeve classification is now risk-aware rather than rigid.** Mature/network pairs still default to Core philosophy, but only remain Core when the actual pool clears Core risk. If the same pair fails Core durability/liquidity yet clears Tactical risk, it may become a Tactical fee campaign.
+- **Sleeve classification is now risk-aware rather than rigid.** ETH/BTC + stable and stable/stable inventory remains Core by policy. Other mature network pairs (such as OP/ARB/POL combinations) remain Core when they clear Core risk, but may become Tactical fee campaigns when the individual pool fails Core and genuinely clears Tactical risk.
 - **The old pre-score winner fallback is removed.** A non-mature pair such as WLD/USDC can no longer become Core simply because its Core pre-score happens to be fractionally above its Tactical pre-score.
 - **Tactical TVL hard floor is aligned to discovery at $50k.** Pools from $50k-$150k are explicitly marked `TACTICAL_TVL_THIN` rather than rejected outright. Other liquidity/risk gates still apply.
 - **Profit target remains a separate gate.** A Tactical override is not automatically investable: it must still clear current evidence, deep Profit Lab economics and the selected monthly target.
