@@ -284,7 +284,7 @@ class CandidateUniverse:
             address = _addr(row.get("pool_address"))
             if not address or address in merged:
                 continue
-            last_seen = _f(row.get("universe_last_seen_at"), prior_generated)
+            last_seen = _f(row.get("universe_last_seen_at")) or prior_generated
             if last_seen <= 0:
                 last_seen = prior_generated or now
             misses = int(_f(row.get("universe_missed_refreshes"))) + 1
