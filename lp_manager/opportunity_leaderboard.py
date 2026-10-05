@@ -164,18 +164,28 @@ class OpportunityLeaderboard:
             age=max(0,now-generated) if generated else None;fr=_fresh(age);short=list(snap.get("shortlist") or [])
             for k,src in (("v3_considered","v3_discovered"),("shortlisted","shortlisted"),("live_validated","live_validated"),("research_ready","research_ready"),("profit_ready","profit_lab_ready")):
                 tot[k]+=int(_f(summary.get(src)))
-            chain_state.append({"chain":chain,"has_snapshot":bool(snap.get("ok") or short),"generated_at":generated or None,"age_seconds":round(age,1) if age is not None else None,"freshness":fr["state"],"shortlisted":len(short)})
+            chain_state.append({
+                "chain":chain,"has_snapshot":bool(snap.get("ok") or short),
+                "generated_at":generated or None,"age_seconds":round(age,1) if age is not None else None,
+                "freshness":fr["state"],"shortlisted":len(short),
+                "retained_in_shortlist":sum(1 for x in short if x.get("universe_retained")),
+            })
             for raw in short:
                 pool=str(raw.get("pool_address") or "").lower()
                 if not pool:continue
                 readiness=dict(raw.get("profit_lab_readiness") or {});validation=str(raw.get("economic_validation") or "").upper()
                 ds=self._deep_state(deep.get((chain,pool)),now);pi=econ.get((chain,pool),{})
-                # Stale market evidence should lower confidence and block capital
-                # confirmation, not erase a previously valid candidate from the
-                # persistent leaderboard. Background universe maintenance will
-                # refresh the chain independently.
+                retained=bool(raw.get("universe_retained"))
+                last_seen=_f(raw.get("universe_last_seen_at"))
+                row_age=max(0.0,now-last_seen) if last_seen>0 else age
+                row_fr=_fresh(row_age)
+                # A pool may remain visible across provider sampling jitter, but
+                # retained evidence cannot confirm an allocation until an exact
+                # live lookup or broad discovery sees it again.
                 eligible=bool(raw.get("research_ready") and validation in VALID)
-                market_fresh_for_allocation=fr["state"]!="STALE"
+                market_fresh_for_allocation=bool(
+                    not retained and row_fr["state"] in {"FRESH","RECENT"}
+                )
                 rows.append({
                     "pair":str(raw.get("pair") or "?"),"chain":chain,"pool_address":raw.get("pool_address"),
                     "protocol":str(raw.get("protocol") or raw.get("protocol_guess") or "UNISWAP_V3"),"protocol_version":_version(raw),
@@ -184,9 +194,14 @@ class OpportunityLeaderboard:
                     "fee_apr_proxy_evidence_class":str(raw.get("fee_apr_proxy_evidence_class") or ds.get("pool_apr_evidence_class") or ""),
                     "fee_apr_proxy_observed":bool(raw.get("fee_apr_proxy_observed") or ds.get("pool_apr_is_observed")),
                     "turnover_24h":_f(raw.get("turnover_24h"),_f(raw.get("volume_24h_usd"))/max(_f(raw.get("tvl_usd")),1.0)),"discovery_score":_f(raw.get("discovery_score")),
-                    "screen_score":self._screen_score(raw,fr),"score_type":"PROVISIONAL_SCREEN_SCORE",
+                    "screen_score":self._screen_score(raw,row_fr),"score_type":"PROVISIONAL_SCREEN_SCORE",
                     "economic_validation":validation or "UNVERIFIED","profit_lab_readiness":readiness,
-                    "freshness":fr,"snapshot_age_seconds":round(age,1) if age is not None else None,
+                    "freshness":row_fr,"snapshot_age_seconds":round(age,1) if age is not None else None,
+                    "market_evidence_age_seconds":round(row_age,1) if row_age is not None else None,
+                    "universe_retained":retained,
+                    "universe_missed_refreshes":int(_f(raw.get("universe_missed_refreshes"))),
+                    "universe_last_seen_at":last_seen or None,
+                    "universe_origin":str(raw.get("universe_origin") or ""),
                     "portfolio_overlap":bool(raw.get("portfolio_overlap")),"portfolio_exposure":_f(raw.get("portfolio_exposure")),
                     "quick_economics":dict(pi.get("quick_economics") or raw.get("quick_economics") or {}),
                     "preferred_sleeve":pi.get("preferred_sleeve") or "","deep_analysis":ds,
@@ -227,8 +242,20 @@ class OpportunityLeaderboard:
         top=unique[:max(1,min(100,int(limit)))]
         for i,r in enumerate(top,1):r["rank"]=i
         alternatives_hidden=max(0,len(eligible)-len(unique))
-        funnel={**tot,"chains_requested":len(chains),"chains_with_snapshots":sum(1 for x in chain_state if x["has_snapshot"]),"persistent_candidates":len(all_rows),"leaderboard_eligible":len(eligible),"unique_pair_families":len(unique),"equivalent_alternatives_hidden":alternatives_hidden,"shown":len(top),"deep_analysed":sum(1 for r in unique if (r["deep_analysis"] or {}).get("status")!="NOT_ANALYSED"),"allocation_confirmed":sum(1 for r in unique if r["allocation_confirmed"])}
-        payload={"ok":True,"mode":"PERSISTENT_CROSS_CHAIN_OPPORTUNITY_SCORE","generated_at":now,"score_version":SCORE_VERSION,"score_is_final_opportunity_score":True,"chains":chain_state,"funnel":funnel,"rows":top,"note":"Profit-first Opportunity Score ranks expected net economics first, then durability, liquidity, sustainable activity, risk/friction and evidence quality. Equivalent wrapped/stable/cross-chain pair families share one leaderboard seat."}
+        funnel={
+            **tot,
+            "chains_requested":len(chains),
+            "chains_with_snapshots":sum(1 for x in chain_state if x["has_snapshot"]),
+            "persistent_candidates":len(all_rows),
+            "retained_candidates":sum(1 for r in all_rows if r.get("universe_retained")),
+            "leaderboard_eligible":len(eligible),
+            "unique_pair_families":len(unique),
+            "equivalent_alternatives_hidden":alternatives_hidden,
+            "shown":len(top),
+            "deep_analysed":sum(1 for r in unique if (r["deep_analysis"] or {}).get("status")!="NOT_ANALYSED"),
+            "allocation_confirmed":sum(1 for r in unique if r["allocation_confirmed"]),
+        }
+        payload={"ok":True,"mode":"PERSISTENT_CROSS_CHAIN_OPPORTUNITY_SCORE","generated_at":now,"score_version":SCORE_VERSION,"score_is_final_opportunity_score":True,"chains":chain_state,"funnel":funnel,"rows":top,"note":"Profit-first Opportunity Score ranks expected net economics first, then durability, liquidity, sustainable activity, risk/friction and evidence quality. Equivalent wrapped/stable/cross-chain pair families share one leaderboard seat. Provider-sample misses are retained briefly but cannot confirm allocation until live-revalidated."}
         try:self.store.set_setting(self.STORE_KEY,payload)
         except Exception:pass
         return payload
