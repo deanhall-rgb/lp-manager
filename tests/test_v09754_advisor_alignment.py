@@ -107,4 +107,4 @@ def test_v09754_api_and_ui_keep_all_advisor_modes_on_one_leaderboard_path():
     assert "top-25 pending" in app
     assert "challengers queued" in app
     assert "+${num(x.equivalent_alternatives_hidden||0,0)} eqv hidden" in app
-    assert "/static/app.js?v=0.9.7.5.4" in html
+    assert "/static/app.js?v=0.9.7.5.5" in html
