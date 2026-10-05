@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-APP_VERSION = "0.9.7.5.4"
-APP_RELEASE = "Profit-First Advisor Alignment"
+APP_VERSION = "0.9.7.5.5"
+APP_RELEASE = "Dynamic Sleeve and Stale-Chain Recovery"
 APP_DISPLAY_VERSION = f"v{APP_VERSION}"
 APP_USER_AGENT = f"LP-Manager/{APP_VERSION}"
 
