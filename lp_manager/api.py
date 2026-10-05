@@ -307,6 +307,7 @@ class ProfitSearchIntent(BaseModel):
 class PortfolioAdvisorIntent(BaseModel):
     available_capital: float = 1000.0
     reserve_pct: float = 10.0
+    monthly_target_pct: float = 10.0
     chains: list[str] | None = None
     max_positions: int = 4
     sleeve_filter: str = "ANY"
@@ -1681,6 +1682,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             max_positions=max(1,min(8,intent.max_positions)),
             sleeve_filter=intent.sleeve_filter,allocation_mode=intent.allocation_mode,
             open_positions=_visible_positions("OPEN"),
+            monthly_target_pct=max(0.0,float(intent.monthly_target_pct)),
         )
         candidate_chains=sorted({str(x.get("chain") or "") for x in candidates if x.get("chain")})
         allocated_chains=sorted({str(x.get("chain") or "") for x in result.get("allocations") or [] if x.get("chain")})
