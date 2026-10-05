@@ -609,10 +609,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             row["market_evidence_status"]="LIVE_CURRENT" if fresh and validation in valid_states else "NOT_REFRESHED"
             row["market_data_status"]="SHARED_CANDIDATE_UNIVERSE" if fresh else "STALE_UNIVERSE_CACHE"
             evaluation=preliminary_pool_evaluation(row)
-            preferred=evaluation.get("preferred_sleeve") or (
-                "CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
-                else "TACTICAL_CAMPAIGN"
-            )
+            preferred=evaluation.get("preferred_sleeve") or evaluation.get("pair_policy_sleeve") or "TACTICAL_CAMPAIGN"
             quick=estimate_lp_economics(
                 row,capital=1000.0,
                 active_time_pct=82.0 if preferred=="CORE_INCOME" else 58.0,
@@ -683,11 +680,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                 continue
             candidate=dict(original)
             evaluation=preliminary_pool_evaluation(candidate)
-            preferred=evaluation.get("preferred_sleeve") or (
-                "CORE_INCOME"
-                if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
-                else "TACTICAL_CAMPAIGN"
-            )
+            preferred=evaluation.get("preferred_sleeve") or evaluation.get("pair_policy_sleeve") or "TACTICAL_CAMPAIGN"
             quick=estimate_lp_economics(
                 candidate,capital=1000.0,
                 active_time_pct=84.0 if preferred=="CORE_INCOME" else 60.0,
@@ -1645,10 +1638,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
                     (chain,str(row.get("pool_address") or "").lower()),{}
                 )
                 evaluation=row.get("evaluation") or preliminary_pool_evaluation(row)
-                sleeve=row.get("sleeve") or evaluation.get("preferred_sleeve") or (
-                    "CORE_INCOME" if float(evaluation.get("core_pre_score") or 0)>=float(evaluation.get("tactical_pre_score") or 0)
-                    else "TACTICAL_CAMPAIGN"
-                )
+                sleeve=row.get("sleeve") or evaluation.get("preferred_sleeve") or evaluation.get("pair_policy_sleeve") or "TACTICAL_CAMPAIGN"
                 live_economics=dict(row.get("quick_economics") or {})
                 if not live_economics:
                     live_economics=estimate_lp_economics(
