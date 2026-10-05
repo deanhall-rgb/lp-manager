@@ -252,4 +252,4 @@ def test_v0975_ui_and_lifecycle_expose_background_rotation():
     assert "deep_analysis_rotation.start_background()" in api
     assert "deep_analysis_rotation.stop_background()" in api
     assert '"background_deep_analysis"' in api
-    assert "/static/app.js?v=0.9.7.5.4" in html
+    assert "/static/app.js?v=0.9.7.5.5" in html
