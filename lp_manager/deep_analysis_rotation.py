@@ -27,6 +27,9 @@ class DeepAnalysisRotationService:
     STANDARD_MONTHLY_TARGET_PCT = 10.0
     TARGET_LIMIT = 25
     TOP_ZONE = 20
+    BATCH_SIZE = 2
+    ACTIVE_CYCLE_SECONDS = 25.0
+    IDLE_CYCLE_SECONDS = 60.0
 
     def __init__(self, settings, store, market, leaderboard, provider_coordinator=None):
         self.settings = settings
@@ -246,6 +249,9 @@ class DeepAnalysisRotationService:
             },
             "target_limit": self.TARGET_LIMIT,
             "top_zone": self.TOP_ZONE,
+            "batch_size": self.BATCH_SIZE,
+            "active_cycle_seconds": self.ACTIVE_CYCLE_SECONDS,
+            "idle_cycle_seconds": self.IDLE_CYCLE_SECONDS,
             "pending": pending,
             "deep_analysed": deep_analysed,
             "deep_positive": deep_positive,
@@ -296,12 +302,16 @@ class DeepAnalysisRotationService:
         self._kick.clear()
 
         def worker():
-            # UI/live wallet/candidate services get first use of the providers.
-            if self._stop.wait(35.0):
+            # Interactive work still owns provider priority, but once the operator
+            # is idle there is no value in artificially taking ~30 minutes to
+            # deep-analyse a 25-row board. Process two sequential candidates per
+            # active cycle; ProviderCoordinator can still defer either item.
+            if self._stop.wait(20.0):
                 return
             while not self._stop.is_set():
+                payload = None
                 try:
-                    self.run_once(max_items=1)
+                    payload = self.run_once(max_items=self.BATCH_SIZE)
                 except Exception as exc:
                     self._persist_status({
                         "ok": False,
@@ -310,10 +320,9 @@ class DeepAnalysisRotationService:
                         "error": str(exc)[:300],
                     })
                 self._kick.clear()
-                # One deep candidate per quiet cycle. Explicit candidate refreshes
-                # may wake us sooner; provider background priority still protects
-                # interactive traffic if the operator is actively using the UI.
-                self._kick.wait(75.0)
+                pending = int((payload or {}).get("pending") or 0)
+                wait_seconds = self.ACTIVE_CYCLE_SECONDS if pending > 0 else self.IDLE_CYCLE_SECONDS
+                self._kick.wait(wait_seconds)
                 if self._stop.is_set():
                     break
 
