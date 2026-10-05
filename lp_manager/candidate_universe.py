@@ -519,6 +519,8 @@ class CandidateUniverse:
             if str((x.get("profit_lab_readiness") or {}).get("status") or "")=="HISTORY_FAILED"
         )
         conflicts=sum(1 for x in shortlist if str(x.get("economic_validation") or "")=="VERSION_CONFLICT")
+        retained_visible=sum(1 for x in shortlist if x.get("universe_retained"))
+        retained_revalidated=sum(1 for x in shortlist if str(x.get("universe_origin") or "")=="TARGETED_REVALIDATION")
 
         provider_summary=[{
             "provider":p.get("provider"),
@@ -548,6 +550,8 @@ class CandidateUniverse:
                 "persistent_pool_set":len(rows),
                 "retained_from_prior":int(retention.get("retained_from_prior") or 0),
                 "expired_retained":int(retention.get("expired_retained") or 0),
+                "retained_in_shortlist":retained_visible,
+                "retained_revalidated":retained_revalidated,
                 "cheap_filtered_out":filtered,
                 "shortlisted":len(shortlist),
                 "live_validated":live_validated,
