@@ -505,6 +505,7 @@ v0.9.7.6 makes the Candidate Universe genuinely persistent rather than merely pe
 - **Retention expires.** Missing candidates cannot become permanent zombies; after the guardrail window they leave the universe unless rediscovered.
 - **Row-level freshness replaces chain-only freshness for the board.** One freshly rebuilt chain can no longer make an individually retained pool look current.
 - **The board exposes retained/recheck count.** This makes provider-sample jitter visible instead of looking like opportunities mysteriously disappeared.
+- **The monthly target is enforced again after real allocation sizing.** A source £/$1,000 deep forecast may clear the target while a £270 Tactical allocation does not once fixed intervention costs are retained. Such a row is now removed and the portfolio is re-ranked instead of slipping through on the larger source-capital percentage.
 
 This patch is deliberately the final functional hardening step before the v0.9.7 consolidation/UI pass and large live test cycle.
 
