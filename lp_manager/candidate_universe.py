@@ -534,7 +534,7 @@ class CandidateUniverse:
         } for p in providers]
 
         snapshot={
-            "ok":bool(rows),
+            "ok":bool(discovered_rows),
             "mode":"SHARED_CANDIDATE_UNIVERSE",
             "feeds_strategy":True,
             "feeds_scout":True,
