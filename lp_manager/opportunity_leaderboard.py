@@ -4,6 +4,7 @@ from typing import Any
 from .chain_registry import CHAINS
 from .opportunity_score import SCORE_VERSION, score_opportunity
 from .product import ECONOMICS_MODEL_VERSION
+from .asset_registry import STABLE_SYMBOLS, ETH_SYMBOLS, BTC_SYMBOLS
 
 DEFAULT_CHAINS=("ETHEREUM","BASE","ARBITRUM","OPTIMISM","POLYGON","ROBINHOOD_CHAIN")
 VALID={"CROSS_VALIDATED","LIVE_VALIDATED","TVL_MISMATCH"}
@@ -29,6 +30,22 @@ def _version(row):
     if "V4" in p or v=="V4":return "V4"
     if "V3" in p or v=="V3":return "V3"
     return v or "UNKNOWN"
+
+def _economic_symbol(symbol):
+    value=str(symbol or "").strip().upper()
+    if value in STABLE_SYMBOLS:return "USD"
+    if value in ETH_SYMBOLS:return "ETH"
+    if value in BTC_SYMBOLS:return "BTC"
+    if value in {"POL","WPOL","MATIC","WMATIC"}:return "POL"
+    if value in {"BNB","WBNB"}:return "BNB"
+    if value in {"AVAX","WAVAX"}:return "AVAX"
+    if value in {"SOL","WSOL"}:return "SOL"
+    return value
+
+def _pair_family(pair):
+    parts=[_economic_symbol(x) for x in str(pair or "").replace("-","/").split("/") if str(x).strip()]
+    if len(parts)<2:return ""
+    return "/".join(sorted(parts[:2]))
 
 class OpportunityLeaderboard:
     STORE_KEY="opportunity_leaderboard:v0974"
@@ -187,10 +204,31 @@ class OpportunityLeaderboard:
             r["opportunity_score"]=score_opportunity(r)
             r["score"]=r["opportunity_score"]["score"]
         all_rows.sort(key=lambda r:(r["leaderboard_eligible"],_f((r.get("opportunity_score") or {}).get("score")),bool((r["deep_analysis"] or {}).get("fresh")),bool((r["profit_lab_readiness"] or {}).get("ready")),r["volume_24h_usd"],r["tvl_usd"]),reverse=True)
-        eligible=[r for r in all_rows if r["leaderboard_eligible"]];top=eligible[:max(1,min(100,int(limit)))]
+        eligible=[r for r in all_rows if r["leaderboard_eligible"]]
+
+        # One economic trade family gets one Top-25 seat. USDC/WETH, WETH/USDT
+        # and their cross-chain equivalents compete against each other and only
+        # the strongest representative survives. This stops safe giant pairs
+        # consuming most of the board through wrappers/stable denominations.
+        family_counts={}
+        for r in eligible:
+            family=_pair_family(r.get("pair")) or f"{r['chain']}:{str(r.get('pool_address') or '').lower()}"
+            r["pair_family"]=family
+            family_counts[family]=family_counts.get(family,0)+1
+        unique=[]
+        seen=set()
+        for r in eligible:
+            family=r.get("pair_family")
+            if family in seen:continue
+            seen.add(family)
+            row=dict(r)
+            row["equivalent_alternatives_hidden"]=max(0,int(family_counts.get(family,1))-1)
+            unique.append(row)
+        top=unique[:max(1,min(100,int(limit)))]
         for i,r in enumerate(top,1):r["rank"]=i
-        funnel={**tot,"chains_requested":len(chains),"chains_with_snapshots":sum(1 for x in chain_state if x["has_snapshot"]),"persistent_candidates":len(all_rows),"leaderboard_eligible":len(eligible),"shown":len(top),"deep_analysed":sum(1 for r in eligible if (r["deep_analysis"] or {}).get("status")!="NOT_ANALYSED"),"allocation_confirmed":sum(1 for r in eligible if r["allocation_confirmed"])}
-        payload={"ok":True,"mode":"PERSISTENT_CROSS_CHAIN_OPPORTUNITY_SCORE","generated_at":now,"score_version":SCORE_VERSION,"score_is_final_opportunity_score":True,"chains":chain_state,"funnel":funnel,"rows":top,"note":"Transparent Opportunity Score ranks net economics, range durability, liquidity, sustainable activity, risk/friction and evidence quality. APR alone cannot dominate the board."}
+        alternatives_hidden=max(0,len(eligible)-len(unique))
+        funnel={**tot,"chains_requested":len(chains),"chains_with_snapshots":sum(1 for x in chain_state if x["has_snapshot"]),"persistent_candidates":len(all_rows),"leaderboard_eligible":len(eligible),"unique_pair_families":len(unique),"equivalent_alternatives_hidden":alternatives_hidden,"shown":len(top),"deep_analysed":sum(1 for r in unique if (r["deep_analysis"] or {}).get("status")!="NOT_ANALYSED"),"allocation_confirmed":sum(1 for r in unique if r["allocation_confirmed"])}
+        payload={"ok":True,"mode":"PERSISTENT_CROSS_CHAIN_OPPORTUNITY_SCORE","generated_at":now,"score_version":SCORE_VERSION,"score_is_final_opportunity_score":True,"chains":chain_state,"funnel":funnel,"rows":top,"note":"Profit-first Opportunity Score ranks expected net economics first, then durability, liquidity, sustainable activity, risk/friction and evidence quality. Equivalent wrapped/stable/cross-chain pair families share one leaderboard seat."}
         try:self.store.set_setting(self.STORE_KEY,payload)
         except Exception:pass
         return payload
