@@ -135,22 +135,22 @@ def test_profit_first_score_beats_giant_low_return_pool():
     assert profitable["score"] > giant["score"]
 
 
-def test_mature_network_pairs_default_to_core_but_campaign_pair_can_stay_tactical():
-    arb = preliminary_pool_evaluation({
+def test_mature_pair_stays_core_when_it_clears_core_but_can_tactically_override_when_it_does_not():
+    durable = preliminary_pool_evaluation({
         "pair": "ARB/WETH",
         "base_token": {"symbol": "ARB"},
         "quote_token": {"symbol": "WETH"},
         "protocol": "UNISWAP_V3",
-        "tvl_usd": 2_000_000,
+        "tvl_usd": 100_000_000,
         "volume_24h_usd": 4_000_000,
     })
-    pol = preliminary_pool_evaluation({
-        "pair": "WPOL/USDT",
-        "base_token": {"symbol": "WPOL"},
-        "quote_token": {"symbol": "USDT"},
+    hot_smaller = preliminary_pool_evaluation({
+        "pair": "OP/USDC",
+        "base_token": {"symbol": "OP"},
+        "quote_token": {"symbol": "USDC"},
         "protocol": "UNISWAP_V3",
-        "tvl_usd": 1_000_000,
-        "volume_24h_usd": 2_000_000,
+        "tvl_usd": 98_000,
+        "volume_24h_usd": 70_000,
     })
     campaign = preliminary_pool_evaluation({
         "pair": "DELTA/WETH",
@@ -161,8 +161,12 @@ def test_mature_network_pairs_default_to_core_but_campaign_pair_can_stay_tactica
         "volume_24h_usd": 2_000_000,
     })
 
-    assert arb["preferred_sleeve"] == "CORE_INCOME"
-    assert pol["preferred_sleeve"] == "CORE_INCOME"
+    assert durable["preferred_sleeve"] == "CORE_INCOME"
+    assert durable["sleeve_reason"] == "MATURE_PAIR_CLEARS_CORE"
+    assert hot_smaller["pair_policy_sleeve"] == "CORE_INCOME"
+    assert hot_smaller["preferred_sleeve"] == "TACTICAL_CAMPAIGN"
+    assert hot_smaller["sleeve_reason"] == "MATURE_PAIR_TACTICAL_OVERRIDE"
+    assert "TACTICAL_TVL_THIN" in hot_smaller["risk_tactical"]["evidence"]
     assert campaign["preferred_sleeve"] == "TACTICAL_CAMPAIGN"
 
 
@@ -240,4 +244,4 @@ def test_v09753_ui_is_profit_first_and_target_aware():
     assert "equivalent alternatives hidden" in app
     assert "Target %/mo" in html
     assert "advisor-target" in app
-    assert "/static/app.js?v=0.9.7.5.4" in html
+    assert "/static/app.js?v=0.9.7.5.5" in html
