@@ -72,6 +72,13 @@ class CandidateUniverse:
     separate and still performs the expensive range/history analysis on demand.
     """
 
+    # A provider sample is allowed to miss a previously useful pool without
+    # immediately deleting it from the persistent universe. Retention is short
+    # enough to avoid zombie candidates, but long enough to survive several
+    # eight-minute maintenance cycles and provider sampling jitter.
+    RETAIN_MISSING_SECONDS = 60 * 60.0
+    RETAIN_MISSING_REFRESHES = 6
+
     def __init__(self, settings, store, discovery_lab):
         self.settings=settings
         self.store=store
@@ -238,6 +245,67 @@ class CandidateUniverse:
             rows.append(row)
         return rows,providers
 
+    def _merge_persistent_candidates(
+        self,
+        current_rows: list[dict[str,Any]],
+        prior: dict[str,Any] | None,
+        *,
+        now: float,
+    ) -> tuple[list[dict[str,Any]], dict[str,int]]:
+        """Keep useful candidates across transient provider-sample misses.
+
+        Current discovery always wins. A row that was present in the previous
+        shortlist but is absent from this provider sample is retained temporarily
+        with explicit row-level age/miss metadata. Retained rows are not allowed
+        to masquerade as current evidence: targeted validation must re-confirm
+        them before Advisor allocation can treat them as live again.
+        """
+        merged: dict[str,dict[str,Any]] = {}
+        current_count = 0
+        retained_count = 0
+        expired_count = 0
+
+        for original in current_rows:
+            row = dict(original)
+            address = _addr(row.get("pool_address"))
+            if not address:
+                continue
+            row["universe_last_seen_at"] = now
+            row["universe_missed_refreshes"] = 0
+            row["universe_retained"] = False
+            row["universe_origin"] = "CURRENT_DISCOVERY"
+            merged[address] = row
+            current_count += 1
+
+        prior_rows = list((prior or {}).get("shortlist") or [])
+        prior_generated = _f((prior or {}).get("generated_at"))
+        for original in prior_rows:
+            row = dict(original)
+            address = _addr(row.get("pool_address"))
+            if not address or address in merged:
+                continue
+            last_seen = _f(row.get("universe_last_seen_at"), prior_generated)
+            if last_seen <= 0:
+                last_seen = prior_generated or now
+            misses = int(_f(row.get("universe_missed_refreshes"))) + 1
+            age = max(0.0, now - last_seen)
+            if age > self.RETAIN_MISSING_SECONDS or misses > self.RETAIN_MISSING_REFRESHES:
+                expired_count += 1
+                continue
+            row["universe_last_seen_at"] = last_seen
+            row["universe_missed_refreshes"] = misses
+            row["universe_retained"] = True
+            row["universe_origin"] = "RETAINED_FROM_PRIOR_SNAPSHOT"
+            row["universe_retained_age_seconds"] = round(age, 1)
+            merged[address] = row
+            retained_count += 1
+
+        return list(merged.values()), {
+            "current_discovery": current_count,
+            "retained_from_prior": retained_count,
+            "expired_retained": expired_count,
+        }
+
     def _cheap_filter(self, rows: list[dict[str,Any]], ctx: dict[str,Any], shortlist_limit: int) -> tuple[list[dict[str,Any]],int]:
         kept=[]
         filtered=0
@@ -273,7 +341,12 @@ class CandidateUniverse:
         errors=[]
         limit=max(0,min(50,int(validate_limit)))
         for row in shortlist[:limit]:
-            if str(row.get("economic_validation") or "") in {"CROSS_VALIDATED","LIVE_VALIDATED","TVL_MISMATCH"}:
+            # A retained row must earn current status again even if its previous
+            # snapshot carried a valid economic-validation label.
+            if (
+                not row.get("universe_retained")
+                and str(row.get("economic_validation") or "") in {"CROSS_VALIDATED","LIVE_VALIDATED","TVL_MISMATCH"}
+            ):
                 continue
             pair,error=self.discovery._dex_pair_lookup(chain_key,str(row.get("pool_address") or ""))
             requests_used+=1
@@ -308,6 +381,11 @@ class CandidateUniverse:
             row["live_tvl_usd"]=live_tvl or None
             row["economic_validation"]="TVL_MISMATCH" if mismatch else "CROSS_VALIDATED"
             row["targeted_live_validation"]=True
+            row["universe_last_seen_at"]=time.time()
+            row["universe_missed_refreshes"]=0
+            row["universe_retained"]=False
+            row["universe_origin"]="TARGETED_REVALIDATION"
+            row.pop("universe_retained_age_seconds",None)
             row.update(self._discovery_metrics(row))
         return requests_used,errors
 
@@ -402,9 +480,15 @@ class CandidateUniverse:
         chain_key=str(chain_key or "").upper()
         if chain_key not in CHAINS:
             raise ValueError(f"Unsupported chain: {chain_key}")
-        prior=self.cached(chain_key) if preserve_existing_on_failure else None
+        # Persistence is a universe invariant, not merely a failure fallback.
+        # Always read the previous shortlist so a transient provider sample miss
+        # does not erase a high-quality candidate such as a previously deep-
+        # analysed Tactical pool.
+        prior=self.cached(chain_key)
         started=time.perf_counter()
-        rows,providers=self._broad_candidates(chain_key,max(50,min(1000,int(graph_limit))),include_gecko=include_gecko)
+        refresh_now=time.time()
+        discovered_rows,providers=self._broad_candidates(chain_key,max(50,min(1000,int(graph_limit))),include_gecko=include_gecko)
+        rows,retention=self._merge_persistent_candidates(discovered_rows,prior,now=refresh_now)
         ctx=self._portfolio_context(chain_key)
         shortlist,filtered=self._cheap_filter(rows,ctx,shortlist_limit)
         targeted_requests,target_errors=self._targeted_validate(chain_key,shortlist,validate_limit)
@@ -460,7 +544,10 @@ class CandidateUniverse:
             "validate_limit":int(validate_limit),
             "include_gecko":bool(include_gecko),
             "summary":{
-                "v3_discovered":len(rows),
+                "v3_discovered":len(discovered_rows),
+                "persistent_pool_set":len(rows),
+                "retained_from_prior":int(retention.get("retained_from_prior") or 0),
+                "expired_retained":int(retention.get("expired_retained") or 0),
                 "cheap_filtered_out":filtered,
                 "shortlisted":len(shortlist),
                 "live_validated":live_validated,
@@ -477,7 +564,7 @@ class CandidateUniverse:
             "providers":provider_summary,
             "shortlist":shortlist,
             "targeted_validation_errors":target_errors[:5],
-            "note":"Discovery score only controls the cheap shortlist. Scout and Portfolio Advisor apply their own risk/economics ranking to this shared universe; Profit Lab remains on-demand.",
+            "note":"Discovery score controls the cheap shortlist. Missing pools are retained briefly across provider-sample jitter, but retained rows must be live-revalidated before Advisor allocation. Scout and Portfolio Advisor apply their own risk/economics ranking; Profit Lab remains on-demand.",
         }
         if preserve_existing_on_failure and not snapshot.get("ok") and isinstance(prior,dict) and prior.get("ok"):
             return {
