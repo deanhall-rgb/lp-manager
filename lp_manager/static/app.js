@@ -771,6 +771,11 @@ function openPositionModal(){modal(`<h2>Prepare new LP position</h2><p>Records s
 
 function leaderboardFreshnessBadge(x){
   const f=x?.freshness||{},state=String(f.state||'UNKNOWN');
+  if(x?.universe_retained){
+    const misses=Number(x.universe_missed_refreshes||0),age=Number(x.market_evidence_age_seconds||0);
+    const ageText=age>=60?num(age/60,0)+'m':'<1m';
+    return badge(`RETAINED ${ageText}`,'watch')+`<div class="meta">${misses} missed refresh${misses===1?'':'es'} · revalidation pending</div>`;
+  }
   return badge(state,state==='FRESH'?'good':state==='RECENT'||state==='AGING'?'watch':'bad');
 }
 function leaderboardDeepBadge(x){
@@ -817,7 +822,7 @@ function renderOpportunityLeaderboard(r){
   }).join('')}</tbody></table>`:'<div class="empty-state">No cross-chain candidates are leaderboard-eligible yet. Build Candidate Universe snapshots on one or more chains, then refresh this board.</div>';
   target.innerHTML=`<div class="notice good"><b>Persistent profit-first board.</b> ${num(f.v3_considered||0,0)} V3 considered → ${num(f.shortlisted||0,0)} shortlisted → ${num(f.research_ready||0,0)} research-ready → ${num(f.profit_ready||0,0)} profit-ready → ${num(f.leaderboard_eligible||0,0)} eligible → ${num(f.unique_pair_families||f.leaderboard_eligible||0,0)} unique trade families → ${num(f.shown||0,0)} shown${Number(f.equivalent_alternatives_hidden||0)>0?` · ${num(f.equivalent_alternatives_hidden||0,0)} equivalent alternatives hidden`:''}.</div>
   <div class="tag-row lower">${chainBadges}</div>
-  <div class="modal-grid lower">${info('Persistent candidates',num(f.persistent_candidates||0,0))}${info('Deep analysed',num(f.deep_analysed||0,0))}${info('Deep positive',num(f.allocation_confirmed||0,0))}${info('Chains with snapshots',`${num(f.chains_with_snapshots||0,0)} / ${num(f.chains_requested||0,0)}`)}${info('Universe upkeep',umHeadline)}${info('Universe refresh',umDetail)}${info('Auto deep rotation',bgHeadline)}${info('Deep queue',bgDetail)}</div>
+  <div class="modal-grid lower">${info('Persistent candidates',num(f.persistent_candidates||0,0))}${info('Retained / recheck',num(f.retained_candidates||0,0))}${info('Deep analysed',num(f.deep_analysed||0,0))}${info('Deep positive',num(f.allocation_confirmed||0,0))}${info('Chains with snapshots',`${num(f.chains_with_snapshots||0,0)} / ${num(f.chains_requested||0,0)}`)}${info('Universe upkeep',umHeadline)}${info('Universe refresh',umDetail)}${info('Auto deep rotation',bgHeadline)}${info('Deep queue',bgDetail)}</div>
   <div class="meta lower">Opportunity Score is profit-first: expected net economics now carry the largest weight, while durability, liquidity, activity, risk and evidence prevent reckless APR-chasing. Equivalent wrapped/stable/cross-chain versions compete for one board seat.</div>
   <div class="lower">${rows}</div>`;
 }
