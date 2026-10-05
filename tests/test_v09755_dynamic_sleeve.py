@@ -74,4 +74,4 @@ def test_v09755_api_has_no_prescore_winner_fallback_for_sleeve():
     assert 'evaluation.get("pair_policy_sleeve") or "TACTICAL_CAMPAIGN"' in api
     assert '"CORE_INCOME" if float(evaluation.get("core_pre_score")' not in api
     assert "include_gecko=False" in maintenance
-    assert "/static/app.js?v=0.9.7.5.5" in html
+    assert "/static/app.js?v=0.9.7.6" in html
