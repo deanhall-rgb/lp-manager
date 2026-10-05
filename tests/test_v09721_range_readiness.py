@@ -190,9 +190,9 @@ def test_v09721_ui_and_version_contracts_are_explicit():
     engine = (root / "lp_manager" / "profit_engine.py").read_text(encoding="utf-8")
     warmer = (root / "lp_manager" / "evidence_warmer.py").read_text(encoding="utf-8")
 
-    assert 'APP_VERSION = "0.9.7.5.5"' in product
-    assert "/static/styles.css?v=0.9.7.5.5" in html
-    assert "/static/app.js?v=0.9.7.5.5" in html
+    assert 'APP_VERSION = "0.9.7.6"' in product
+    assert "/static/styles.css?v=0.9.7.6" in html
+    assert "/static/app.js?v=0.9.7.6" in html
     assert "range quality" in js.lower()
     assert "Range placement:" in js
     assert "profit_lab_readiness" in js
