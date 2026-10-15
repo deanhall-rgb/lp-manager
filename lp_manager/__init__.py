@@ -1,3 +1,3 @@
-"""LP Manager v0.9.7.3.1 - capital-aware Advisor validation hotfix."""
+"""LP Manager package metadata; release identity lives in product.py."""
 
-__version__ = "0.9.7.3.1"
+from .product import APP_VERSION as __version__
