@@ -491,6 +491,29 @@ The Opportunities leaderboard now sorts by Opportunity Score and exposes the sco
 
 The scoring contract is versioned as `OPPORTUNITY_SCORE_V1`. Portfolio Advisor allocation rules and Profit Lab range mathematics are intentionally unchanged in this patch; this is the leaderboard comparison layer.
 
+## v0.9.7.6.1 performance truth + refresh-load hotfix
+
+Live restart testing after several weeks exposed two separate regressions that could not be left for the later UI cleanup.
+
+First, calendar fee reporting could misattribute catch-up fees. The raw fee tracker correctly preserves cumulative token-amount earnings across application downtime, but the calendar layer previously subtracted the last observation before a period from the first observation after restart. If the app had been closed for days or weeks, the entire unobserved increase could therefore appear as **Today** or **This week**, even when every current LP was already far out of range. v0.9.7.6.1 keeps the all-time cumulative total intact but assigns calendar fees only to contiguous observed intervals. Long offline/provider gaps remain valid all-time evidence but are not guessed into a calendar period.
+
+Second, changing the Performance target and the normal one-minute UI refresh path were doing far more work than required. The target endpoint rebuilt the full historical performance log, the browser then refreshed the complete Overview, and the target card immediately rebuilt the profit scorecard again. The Overview itself also captured a new performance sample on every browser redraw. This created repeated accounting/database work and made a simple target update feel stalled.
+
+Corrections:
+
+- **Calendar fee truth:** restart catch-up is excluded from Today/Week/Month unless the fee increase is observed within a contiguous tracker window.
+- **All-time fees remain unchanged:** no real cumulative fee evidence is discarded.
+- **Partial evidence is explicit:** long gaps are reported as partial rather than silently treated as complete.
+- **Targets use the same observed time window:** the fee target is time-weighted only across intervals where fee production was actually observed.
+- **Performance target updates are lightweight:** changing 10% to 1%, 5%, etc. only writes the reporting target and then performs one normal refresh.
+- **Duplicate target clicks are blocked while an update is in flight.**
+- **Overview is read-only for performance sampling:** browser redraws no longer write accounting checkpoints once per minute.
+- **Performance samples move to the live-chain refresh path**, where the underlying position/fee evidence actually changes.
+- **Automatic wallet-audit scans no longer trigger a full Overview rebuild when nothing changed.**
+- **The target calculator reuses the Overview snapshot** instead of recalculating the complete scorecard and financial-truth graph a second time.
+
+This is a correctness hotfix, not a strategy change. Candidate Universe, Opportunity Score, Portfolio Advisor, Profit Lab and Execution Desk rules remain those of v0.9.7.6.
+
 ## v0.9.7.6 persistent candidate continuity
 
 Live v0.9.7.5.5 testing proved the sleeve and monthly-target logic: OP/USDC and WLD/USDC correctly became Tactical at 10%, lowering the target to 5% admitted additional opportunities, and a 20% target correctly rejected every current candidate. The remaining defect was candidate continuity: previously high-value NVDAon/USDC and SPCXON/USDC could disappear entirely after a later provider sample even though nothing had proven the pools invalid.
