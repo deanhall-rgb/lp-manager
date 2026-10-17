@@ -160,12 +160,99 @@ def observed_fee_metrics(tracker: dict[str, Any] | None, capital_usd: float) -> 
     }
 
 
+MAX_CALENDAR_OBSERVATION_GAP_SECONDS = 2 * 3600.0
+
+
+def calendar_fee_window(
+    tracker: dict[str, Any] | None,
+    start_ts: float,
+    end_ts: float,
+    *,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    """Return only fee deltas that can be placed inside this window honestly.
+
+    Cumulative fee trackers survive application downtime. If the app is closed for
+    hours/days and later sees a higher cumulative token amount, that increase is
+    real all-time fee evidence but its exact earning time is unknown. It must not
+    be dumped into the restart day/week/month.
+
+    We therefore count deltas only between observations no more than two hours
+    apart and only once both endpoints are inside the requested reporting window.
+    Larger gaps are retained as unallocated catch-up evidence.
+    """
+    tracker = tracker or {}
+    now = float(now_ts or __import__("time").time())
+    start = float(start_ts)
+    end = min(float(end_ts), now)
+    observations = sorted(
+        [
+            {
+                "timestamp": _f(x.get("timestamp")),
+                "cumulative_earned_usd": max(0.0, _f(x.get("cumulative_earned_usd"))),
+            }
+            for x in (tracker.get("observations") or [])
+            if start <= _f(x.get("timestamp")) < end
+        ],
+        key=lambda x: x["timestamp"],
+    )
+    if not observations:
+        return {
+            "actual_usd": 0.0,
+            "unallocated_gap_usd": 0.0,
+            "observation_count": 0,
+            "segment_count": 0,
+            "gap_count": 0,
+            "coverage_start": None,
+            "coverage_end": None,
+            "quality": "PARTIAL_NO_CONTIGUOUS_OBSERVATIONS",
+        }
+
+    actual = 0.0
+    unallocated = 0.0
+    gap_count = 0
+    segment_count = 1
+    previous = observations[0]
+
+    for current in observations[1:]:
+        delta = max(0.0, current["cumulative_earned_usd"] - previous["cumulative_earned_usd"])
+        gap = max(0.0, current["timestamp"] - previous["timestamp"])
+        if gap <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS:
+            actual += delta
+        else:
+            unallocated += delta
+            gap_count += 1
+            segment_count += 1
+        previous = current
+
+    coverage_start = observations[0]["timestamp"]
+    coverage_end = observations[-1]["timestamp"]
+    near_start = coverage_start - start <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS
+    near_end = end - coverage_end <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS
+    quality = (
+        "COMPLETE_FROM_CONTIGUOUS_TRACKER"
+        if len(observations) >= 2 and gap_count == 0 and near_start and near_end
+        else "PARTIAL_CONTIGUOUS_TRACKER"
+    )
+    return {
+        "actual_usd": round(actual, 4),
+        "unallocated_gap_usd": round(unallocated, 4),
+        "observation_count": len(observations),
+        "segment_count": segment_count,
+        "gap_count": gap_count,
+        "coverage_start": coverage_start,
+        "coverage_end": coverage_end,
+        "quality": quality,
+    }
+
+
 def calendar_fee_metrics(tracker: dict[str, Any] | None, now_ts: float | None = None) -> dict[str, Any]:
     """Fee income in operator-local calendar periods.
 
-    Today resets at local midnight, week resets Monday 00:00, and month resets on
-    the first day. This is reporting logic; rolling 24h/7d/30d metrics remain
-    available separately for forecasting and calibration.
+    Only contiguous observation deltas are assigned to calendar periods. Any fee
+    increase first discovered after a long application/provider gap remains valid
+    all-time evidence but is deliberately excluded from Today/Week/Month because
+    its exact earning time is unknowable.
     """
     tracker=tracker or {}
     now=float(now_ts or __import__("time").time())
@@ -178,33 +265,19 @@ def calendar_fee_metrics(tracker: dict[str, Any] | None, now_ts: float | None = 
         "week":week_dt.timestamp(),
         "month":month_dt.timestamp(),
     }
-    current=max(0.0,_f(tracker.get("cumulative_earned_usd")))
-    opened=max(0.0,_f(tracker.get("opened_at")))
-    observations=sorted(
-        [x for x in (tracker.get("observations") or []) if _f(x.get("timestamp"))>0],
-        key=lambda x:_f(x.get("timestamp")),
-    )
 
     def period(start: float) -> dict[str, Any]:
-        if opened and opened>=start:
-            baseline=0.0
-            quality="COMPLETE_SINCE_POSITION_OPEN"
-        else:
-            before=[x for x in observations if _f(x.get("timestamp"))<=start]
-            if before:
-                baseline=max(0.0,_f(before[-1].get("cumulative_earned_usd")))
-                quality="COMPLETE_FROM_TRACKER_OBSERVATION"
-            else:
-                # We cannot assign old cumulative fees to a newer calendar period.
-                # Understate rather than falsely count pre-period fees.
-                after=[x for x in observations if _f(x.get("timestamp"))>start]
-                baseline=max(0.0,_f(after[0].get("cumulative_earned_usd"))) if after else current
-                quality="PARTIAL_TRACKER_STARTED_AFTER_PERIOD_BOUNDARY"
+        evidence=calendar_fee_window(tracker,start,now,now_ts=now)
         return {
-            "actual_usd":round(max(0.0,current-baseline),4),
+            "actual_usd":evidence["actual_usd"],
             "period_start":start,
-            "baseline_cumulative_usd":round(baseline,4),
-            "quality":quality,
+            "quality":evidence["quality"],
+            "observation_count":evidence["observation_count"],
+            "segment_count":evidence["segment_count"],
+            "gap_count":evidence["gap_count"],
+            "coverage_start":evidence["coverage_start"],
+            "coverage_end":evidence["coverage_end"],
+            "unallocated_gap_usd":evidence["unallocated_gap_usd"],
         }
 
     return {
@@ -213,7 +286,8 @@ def calendar_fee_metrics(tracker: dict[str, Any] | None, now_ts: float | None = 
         "month":period(starts["month"]),
         "timezone":str(dt.tzinfo),
         "as_of":now,
-        "semantics":"CALENDAR_PERIODS_LOCAL_TIME",
+        "semantics":"CALENDAR_PERIODS_CONTIGUOUS_OBSERVED_ONLY",
+        "gap_guard_seconds":MAX_CALENDAR_OBSERVATION_GAP_SECONDS,
     }
 
 
