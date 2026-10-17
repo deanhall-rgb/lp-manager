@@ -201,6 +201,7 @@ def calendar_fee_window(
             "actual_usd": 0.0,
             "unallocated_gap_usd": 0.0,
             "observation_count": 0,
+            "observed_seconds": 0.0,
             "segment_count": 0,
             "gap_count": 0,
             "coverage_start": None,
@@ -210,6 +211,7 @@ def calendar_fee_window(
 
     actual = 0.0
     unallocated = 0.0
+    observed_seconds = 0.0
     gap_count = 0
     segment_count = 1
     previous = observations[0]
@@ -219,6 +221,7 @@ def calendar_fee_window(
         gap = max(0.0, current["timestamp"] - previous["timestamp"])
         if gap <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS:
             actual += delta
+            observed_seconds += gap
         else:
             unallocated += delta
             gap_count += 1
@@ -238,6 +241,7 @@ def calendar_fee_window(
         "actual_usd": round(actual, 4),
         "unallocated_gap_usd": round(unallocated, 4),
         "observation_count": len(observations),
+        "observed_seconds": round(observed_seconds, 3),
         "segment_count": segment_count,
         "gap_count": gap_count,
         "coverage_start": coverage_start,
@@ -273,6 +277,7 @@ def calendar_fee_metrics(tracker: dict[str, Any] | None, now_ts: float | None = 
             "period_start":start,
             "quality":evidence["quality"],
             "observation_count":evidence["observation_count"],
+            "observed_seconds":evidence["observed_seconds"],
             "segment_count":evidence["segment_count"],
             "gap_count":evidence["gap_count"],
             "coverage_start":evidence["coverage_start"],
