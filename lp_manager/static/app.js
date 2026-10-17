@@ -1,5 +1,5 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let state=null, poolRows=[], leaderboardRows=[], selectedPool=null, lastProfitResult=null, lastProfitSearch=null, positionFilter='OPEN', lastRpcHealth=[], decisionCategory='ALL', decisionSleeve='ALL', execPoolMeta=null, execPlan=null, execForecastId=null, execTargetCapitalUsd=null, execCapitalPrefilled=false, browserWallet=null, browserProvider=null, announcedWalletProviders=[], walletShowHidden=false, lastLabResult=null, execQuoteTimer=null, execPriceTimer=null, execLastEditedSide=0, execQuoteBusy=false, execLastRequoteAt=0, refreshPromise=null, targetCacheKey='', targetCacheAt=0, profitDecisionContext=null, execRebalanceContext=null, walletAuditScanBusy=false;
+let state=null, poolRows=[], leaderboardRows=[], selectedPool=null, lastProfitResult=null, lastProfitSearch=null, positionFilter='OPEN', lastRpcHealth=[], decisionCategory='ALL', decisionSleeve='ALL', execPoolMeta=null, execPlan=null, execForecastId=null, execTargetCapitalUsd=null, execCapitalPrefilled=false, browserWallet=null, browserProvider=null, announcedWalletProviders=[], walletShowHidden=false, lastLabResult=null, execQuoteTimer=null, execPriceTimer=null, execLastEditedSide=0, execQuoteBusy=false, execLastRequoteAt=0, refreshPromise=null, targetCacheKey='', targetCacheAt=0, profitDecisionContext=null, execRebalanceContext=null, walletAuditScanBusy=false, performanceTargetBusy=false;
 const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const num=(v,d=2)=>Number(v||0).toLocaleString(undefined,{maximumFractionDigits:d});
 const pct=(v,d=1)=>`${num(v,d)}%`;
@@ -241,8 +241,13 @@ async function scanWalletAudit(silent=false){
  if(btn&&!silent){btn.disabled=true;btn.textContent='Scanning wallet…'}
  try{
   const r=await api('/api/wallet-audit/scan',{method:'POST',timeoutMs:240000,body:JSON.stringify({chains:null})});
-  await refresh();
   const newCount=Number(r.new_transfers||0)+Number(r.new_transactions||0),review=Number(r.needs_review||0),auto=Number(r.auto_classified||0);
+  if(!silent||newCount>0||auto>0){
+   await refresh();
+  }else if(r.audit&&state){
+   state.wallet_audit=r.audit;
+   renderWalletAudit();
+  }
   if(!silent)toast('Wallet scan: '+newCount+' new record'+(newCount===1?'':'s')+' · '+auto+' auto-classified · '+review+' need review');
   else if(review>0&&Number(r.new_transfers||0)>0)toast(review+' wallet movement'+(review===1?'':'s')+' need review in Investor Ledger');
   return r;
@@ -251,7 +256,6 @@ async function scanWalletAudit(silent=false){
   if(btn&&!silent){btn.disabled=false;btn.textContent='Scan wallet history'}
  }
 }
-
 function renderNetworkCards(rows){return (rows||[]).map(r=>`<div class="list-card"><div class="card-head"><div><b>${esc(r.name||r.chain)}</b><div class="meta">${esc(r.rpc_source||'')} ${r.block_number?`· block ${Number(r.block_number).toLocaleString()}`:''}</div></div>${badge(r.status||((r.rpc_configured||r.ok)?'READY':'MISSING'),(r.ok||r.status==='CONNECTED')?'good':r.rpc_source==='PUBLIC_FALLBACK'?'watch':'')}</div>${r.latency_ms?`<div class="meta">${num(r.latency_ms,0)} ms</div>`:''}${r.error?`<div class="meta">${esc(r.error)}</div>`:''}</div>`).join('')||'<div class="empty-state">No network data.</div>'}
 
 function thesisTone(t){const s=String(t?.stance||'UNKNOWN').toUpperCase();return s.includes('BULLISH')?'good':s.includes('BEARISH')?'bad':s==='NEUTRAL'?'watch':''}
@@ -729,12 +733,21 @@ async function showPerformanceDay(dayKey){
  }catch(e){modal('<div class="warning-box"><b>Performance day could not load.</b> '+esc(e.message)+'</div>')}
 }
 async function updatePerformanceTarget(inputId){
+ if(performanceTargetBusy)return;
  const el=$(inputId),rate=Number(el?.value||0);
  if(!Number.isFinite(rate)||rate<0||rate>100){toast('Enter a monthly fee target between 0% and 100%');return}
- await api('/api/performance/target',{method:'POST',body:JSON.stringify({target_monthly_pct:rate})});
- targetCacheKey='';targetCacheAt=0;
- await refresh();
- toast('Fee target updated to '+num(rate,2)+'% monthly');
+ performanceTargetBusy=true;
+ const buttons=['#performance-target-btn','#target-calc-btn'].map(x=>$(x)).filter(Boolean);
+ buttons.forEach(b=>b.disabled=true);
+ try{
+  await api('/api/performance/target',{method:'POST',body:JSON.stringify({target_monthly_pct:rate})});
+  targetCacheKey='';targetCacheAt=0;
+  await refresh();
+  toast('Fee target updated to '+num(rate,2)+'% monthly');
+ }finally{
+  performanceTargetBusy=false;
+  buttons.forEach(b=>b.disabled=false);
+ }
 }
 function openPerformanceCashFlow(){
  const c=esc(state.money?.display_currency||'GBP');
@@ -766,7 +779,26 @@ async function rescanWalletLPs(){toast('Rescanning owned V3 NFTs…');const r=aw
 function importOpeningTransactions(){modal(`<h2>Import LP opening transaction</h2><p class="meta">Normally unnecessary: V0.8.6 auto-discovers owned V3 NFTs. Use this deterministic recovery path if a fresh position has not appeared yet.</p><div class="form-grid"><div class="field"><label>Chain</label><select id="txi-chain"><option>ROBINHOOD_CHAIN</option><option>ETHEREUM</option><option>BASE</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option></select></div><div class="field grow"><label>Opening transaction hash(es)</label><textarea id="txi-hashes" rows="6" placeholder="0x…&#10;0x…"></textarea></div></div><div class="actions"><button class="btn" id="txi-run">Verify & import</button></div><div id="txi-result" class="lower"></div>`);$('#txi-run').onclick=async()=>{const hashes=$('#txi-hashes').value.split(/[\s,]+/).map(x=>x.trim()).filter(Boolean);if(!hashes.length){toast('Paste at least one transaction hash');return}const box=$('#txi-result');box.innerHTML='<div class="empty-state">Reading transaction receipts and verifying current NFT ownership…</div>';try{const r=await api('/api/live/import-opening-transactions',{method:'POST',timeoutMs:120000,body:JSON.stringify({chain:$('#txi-chain').value,transaction_hashes:hashes})});if(!r.ok){box.innerHTML=`<div class="warning-box">${esc(r.error||'No owned V3 NFT found')}</div>`;return}box.innerHTML=`<div class="notice good"><b>Imported ${r.token_ids.length} position NFT(s)</b><br>${r.token_ids.map(x=>`NFT ${x}`).join(' · ')}</div>`;await api('/api/wallet/refresh',{method:'POST',timeoutMs:120000});await refresh();toast('Opening transaction imported')}catch(e){box.innerHTML=`<div class="warning-box">${esc(e.message)}</div>`}}}
 async function syncLegacy(){const r=await api('/api/import/legacy',{method:'POST'});toast(r.ok?`Synced ${r.imported} campaigns (${r.skipped} skipped)`:r.reason);await refresh()}
 async function portfolioBrief(){$('#portfolio-brief').innerHTML='<div class="empty-state">Analysing portfolio…</div>';try{const r=await api('/api/ai/portfolio-brief',{method:'POST',timeoutMs:120000});$('#portfolio-brief').innerHTML=renderBrief(r);await refresh()}catch(e){$('#portfolio-brief').innerHTML=`<div class="warning-box">${esc(e.message)}</div>`}}
-async function calculateTargets(){const s=state.summary||{},rate=Number($('#target-rate').value||0),capital=Number(s.capital_deployed||0),pf=state.profit_scorecard||{},cf=pf.calendar_fees||{},key=[rate,capital,cf.today_usd,cf.week_usd,cf.month_usd,cf.all_time_usd].join(':');if(capital<=0){$('#target-result').innerHTML='<div class="empty-state">No deployed LP capital yet. Performance starts as soon as a live position has value.</div>';return}if(key===targetCacheKey&&Date.now()-targetCacheAt<30000)return;const r=await api('/api/targets/calculate',{method:'POST',body:JSON.stringify({capital:0,target_monthly_pct:rate})});targetCacheKey=key;targetCacheAt=Date.now();const periodBoxes=[['Today',r.today,'resets midnight'],['This week',r.week,'resets Monday'],['This month',r.month,'resets on the 1st']].map(([n,x,reset])=>`<div class="metric"><div class="label">${n}</div><div class="value">${money(x.actual)} / ${money(x.target)}</div><div class="sub">${pct(x.attainment_pct,0)} · ${esc(x.status)} · ${reset}</div></div>`).join('');const allTime=`<div class="metric"><div class="label">All time fees</div><div class="value">${money(r.all_time?.actual||0)}</div><div class="sub">${esc(r.all_time?.quality||'UNKNOWN')} evidence · no target</div></div>`;const breakdown=(r.all_time?.breakdown||[]).filter(x=>Number(x.fees_usd||0)!==0);const audit=breakdown.length?`<details class="fee-audit"><summary>Show all-time fee breakdown</summary>${breakdown.map(x=>`<div class="fee-audit-row"><span><b>${esc(x.display_name||x.position_id)}</b><small>${esc(x.status||'')} · ${esc(x.quality||'')} · ${esc(x.source||'')}</small></span><b>${money(x.fees_usd||0)}</b></div>`).join('')}</details>`:'';$('#target-result').innerHTML=`<div class="performance-four">${periodBoxes}${allTime}</div>${audit}<div class="meta lower-tight">Calendar reporting periods are separate from rolling 24h/7d/30d fee windows used by forecasting. Data quality: ${esc(r.data_quality||'UNKNOWN')}.</div>`}
+async function calculateTargets(){
+ const s=state.summary||{},rate=Number($('#target-rate').value||0),capital=Number(s.capital_deployed||0),pf=state.profit_scorecard||{},cf=pf.calendar_fees||{},truth=pf.financial_truth||{},key=[rate,capital,cf.today_usd,cf.week_usd,cf.month_usd,cf.all_time_usd,cf.quality].join(':');
+ if(capital<=0){$('#target-result').innerHTML='<div class="empty-state">No deployed LP capital yet. Performance starts as soon as a live position has value.</div>';return}
+ if(key===targetCacheKey&&Date.now()-targetCacheAt<30000)return;
+ const r=await api('/api/targets/calculate',{method:'POST',body:JSON.stringify({
+   capital,
+   target_monthly_pct:rate,
+   actual_today:Number(cf.today_usd||0),
+   actual_7d:Number(cf.week_usd||0),
+   actual_30d:Number(cf.month_usd||0)
+ })});
+ targetCacheKey=key;targetCacheAt=Date.now();
+ const periodBoxes=[['Today',r.today,'resets midnight'],['This week',r.week,'resets Monday'],['This month',r.month,'resets on the 1st']].map(([n,x,reset])=>`<div class="metric"><div class="label">${n}</div><div class="value">${money(x.actual)} / ${money(x.target)}</div><div class="sub">${pct(x.attainment_pct,0)} · ${esc(x.status)} · ${reset}</div></div>`).join('');
+ const allTime={actual:Number(cf.all_time_usd||pf.tracked_fees_since_open||0),quality:truth.all_time_fee_quality||'UNKNOWN',breakdown:truth.all_time_fee_breakdown||[]};
+ const allTimeBox=`<div class="metric"><div class="label">All time fees</div><div class="value">${money(allTime.actual||0)}</div><div class="sub">${esc(allTime.quality||'UNKNOWN')} evidence · no target</div></div>`;
+ const breakdown=(allTime.breakdown||[]).filter(x=>Number(x.fees_usd||0)!==0);
+ const audit=breakdown.length?`<details class="fee-audit"><summary>Show all-time fee breakdown</summary>${breakdown.map(x=>`<div class="fee-audit-row"><span><b>${esc(x.display_name||x.position_id)}</b><small>${esc(x.status||'')} · ${esc(x.quality||'')} · ${esc(x.source||'')}</small></span><b>${money(x.fees_usd||0)}</b></div>`).join('')}</details>`:'';
+ const gapNote=String(cf.quality||'UNKNOWN').startsWith('PARTIAL')?' · Long offline/provider gaps are excluded from calendar fee totals rather than guessed into the restart period.':'';
+ $('#target-result').innerHTML=`<div class="performance-four">${periodBoxes}${allTimeBox}</div>${audit}<div class="meta lower-tight">Calendar reporting uses only contiguous observed fee intervals; rolling 24h/7d/30d forecasting remains separate. Data quality: ${esc(cf.quality||'UNKNOWN')}${gapNote}</div>`;
+}
 function openPositionModal(){modal(`<h2>Prepare new LP position</h2><p>Records strategy intent only. Signing and broadcast remain blocked.</p><div class="form-grid"><div class="field"><label>Pair</label><input id="op-pair" value="WETH/USDC"></div><div class="field"><label>Chain</label><select id="op-chain"><option>BASE</option><option>ETHEREUM</option><option>ARBITRUM</option><option>OPTIMISM</option><option>POLYGON</option><option>ROBINHOOD_CHAIN</option></select></div><div class="field"><label>Sleeve</label><select id="op-sleeve"><option value="CORE_INCOME">Core income</option><option value="TACTICAL_CAMPAIGN">Tactical campaign</option></select></div><div class="field"><label>Lower</label><input id="op-low" type="number" step="any"></div><div class="field"><label>Upper</label><input id="op-high" type="number" step="any"></div><div class="field"><label>Capital</label><input id="op-cap" type="number" value="1000"></div><div class="field"><label>Fee tier</label><input id="op-fee" type="number" placeholder="3000"></div></div><div class="actions"><button class="btn" id="op-submit">Prepare</button></div><div id="op-result" class="lower"></div>`);$('#op-submit').onclick=async()=>{try{const sleeve=$('#op-sleeve').value,r=await api('/api/open/prepare',{method:'POST',body:JSON.stringify({pair:$('#op-pair').value,chain:$('#op-chain').value,strategy_sleeve:sleeve,directional_bias:'NEUTRAL',inventory_intent:sleeve==='CORE_INCOME'?'ALLOW_ACCUMULATE_RISK_ASSET_ON_DOWNSIDE':'BALANCED',target_hold_days:sleeve==='CORE_INCOME'?30:3,lower_price:Number($('#op-low').value),upper_price:Number($('#op-high').value),capital_value:Number($('#op-cap').value),fee_tier:$('#op-fee').value?Number($('#op-fee').value):null,protocol:'UNISWAP_V3'})});$('#op-result').innerHTML=`<div class="list-card"><b>Build-only intent prepared</b><p>No funds moved.</p><div class="tag-row">${badge(r.status||'DRAFT')}${badge(r.mode||'build_only')}</div></div>`}catch(e){toast(e.message)}}}
 
 function leaderboardFreshnessBadge(x){
