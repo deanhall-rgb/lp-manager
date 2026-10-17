@@ -160,7 +160,7 @@ def observed_fee_metrics(tracker: dict[str, Any] | None, capital_usd: float) -> 
     }
 
 
-MAX_CALENDAR_OBSERVATION_GAP_SECONDS = 2 * 3600.0
+MAX_CALENDAR_OBSERVATION_GAP_SECONDS = 12 * 3600.0
 
 
 def calendar_fee_window(
@@ -177,7 +177,7 @@ def calendar_fee_window(
     real all-time fee evidence but its exact earning time is unknown. It must not
     be dumped into the restart day/week/month.
 
-    We therefore count deltas only between observations no more than two hours
+    We therefore count deltas only between observations no more than twelve hours
     apart and only once both endpoints are inside the requested reporting window.
     Larger gaps are retained as unallocated catch-up evidence.
     """
