@@ -668,7 +668,7 @@ def test_calendar_fee_metrics_resets_at_local_day_week_and_month_boundaries():
     assert m["month"]["actual_usd"] == pytest.approx(7.0)
     assert m["week"]["unallocated_gap_usd"] == pytest.approx(6.0)
     assert m["month"]["unallocated_gap_usd"] == pytest.approx(12.0)
-    assert m["semantics"]=="CALENDAR_PERIODS_LOCAL_TIME"
+    assert m["semantics"]=="CALENDAR_PERIODS_CONTIGUOUS_OBSERVED_ONLY"
 
 
 def test_opening_basis_can_use_exact_pool_historical_token_usd_marks():
