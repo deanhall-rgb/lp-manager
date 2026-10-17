@@ -881,7 +881,7 @@ def create_app(project_root: Path | None = None) -> FastAPI:
             "ai": intelligence.status(),
             "automation": get_automation_policy(store),
             "profit_scorecard": portfolio_profit_scorecard(store),
-            "performance_log": build_performance_log(store, capture=True),
+            "performance_log": build_performance_log(store, capture=False),
             "wallet_audit": wallet_audit_summary(settings, store),
             "capital_ledger": clean_capital_ledger(settings, store),
             "profit_last_recommendation": store.get_setting("profit:last_recommendation", None),
@@ -1874,28 +1874,19 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     @app.post("/api/targets/calculate")
     def targets_calculate(intent: TargetIntent):
-        # Performance is sourced server-side so internal USD figures are never
-        # accidentally reinterpreted as GBP form inputs. Calendar periods reset
-        # independently of the rolling windows used by forecasting/calibration.
-        score=portfolio_profit_scorecard(store)
-        cal=score.get("calendar_fees") or {}
+        # The browser already holds the current USD accounting snapshot from
+        # /api/overview. Reuse those values instead of rebuilding the complete
+        # scorecard/financial-truth graph just to divide a reporting target.
         result=performance_targets(
-            capital=float(score.get("deployed_value") or 0),
+            capital=max(0.0,float(intent.capital or 0)),
             target_monthly_pct=max(0.0,float(intent.target_monthly_pct)),
-            actual_today=float(cal.get("today_usd") or 0),
-            actual_7d=float(cal.get("week_usd") or 0),
-            actual_30d=float(cal.get("month_usd") or 0),
+            actual_today=max(0.0,float(intent.actual_today or 0)),
+            actual_7d=max(0.0,float(intent.actual_7d or 0)),
+            actual_30d=max(0.0,float(intent.actual_30d or 0)),
         )
-        result["period_semantics"]="CALENDAR_LOCAL_TIME"
-        result["resets"]=cal.get("resets") or {
+        result["period_semantics"]="CALENDAR_CONTIGUOUS_OBSERVED_ONLY"
+        result["resets"]={
             "today":"LOCAL_MIDNIGHT","week":"MONDAY_00:00_LOCAL","month":"FIRST_DAY_00:00_LOCAL"
-        }
-        result["data_quality"]=cal.get("quality") or "UNKNOWN"
-        truth=score.get("financial_truth") or {}
-        result["all_time"]={
-            "actual":float(cal.get("all_time_usd") or score.get("tracked_fees_since_open") or 0),
-            "quality":truth.get("all_time_fee_quality") or "UNKNOWN",
-            "breakdown":truth.get("all_time_fee_breakdown") or [],
         }
         return result
 
@@ -2193,11 +2184,13 @@ def create_app(project_root: Path | None = None) -> FastAPI:
 
     @app.post("/api/performance/target")
     def performance_target(intent: PerformanceTargetIntent):
+        # Changing a reporting reference must be cheap. The previous endpoint
+        # rebuilt the entire historical performance log even though the browser
+        # discarded that payload and immediately refreshed /api/overview again.
         target=set_performance_fee_target_pct(store,intent.target_monthly_pct)
         return {
             "ok":True,
             "target_monthly_pct":target,
-            "performance":build_performance_log(store,capture=False),
             "guardrail":"REPORTING_ONLY_DO_NOT_INCREASE_RISK_TO_HIT_TARGET",
         }
 
