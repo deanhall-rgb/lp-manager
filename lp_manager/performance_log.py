@@ -7,6 +7,7 @@ from typing import Any
 
 from .financial_truth import portfolio_financial_truth
 from .profit_dashboard import portfolio_profit_scorecard
+from .fee_metrics import calendar_fee_window
 
 
 EXTERNAL_DEPOSIT = "EXTERNAL_DEPOSIT"
@@ -199,41 +200,18 @@ def _fee_evidence_for_day(store, day_key: str) -> tuple[float, list[dict[str, An
     total = 0.0
 
     for item in _tracker_rows(store):
-        observations = item["observations"]
-        if observations[-1]["timestamp"] < start or observations[0]["timestamp"] >= effective_end:
-            continue
         pid = str(item["position_id"])
         tracker = item["tracker"]
-        opened = max(0.0, _f(tracker.get("opened_at")))
-        before_start = [x for x in observations if x["timestamp"] <= start]
-        in_day = [x for x in observations if start <= x["timestamp"] < effective_end]
-        before_end = [x for x in observations if x["timestamp"] < effective_end]
-        if not before_end:
+        evidence = calendar_fee_window(
+            tracker,
+            start,
+            effective_end,
+            now_ts=effective_end,
+        )
+        if int(evidence.get("observation_count") or 0) <= 0:
             continue
 
-        last = before_end[-1]
-        if before_start:
-            first = before_start[-1]
-            base_cumulative = first["cumulative_earned_usd"]
-            coverage_start = first["timestamp"]
-        elif opened and start <= opened < end:
-            base_cumulative = 0.0
-            coverage_start = opened
-        elif in_day:
-            first = in_day[0]
-            base_cumulative = first["cumulative_earned_usd"]
-            coverage_start = first["timestamp"]
-        else:
-            continue
-
-        earned = max(0.0, last["cumulative_earned_usd"] - base_cumulative)
-        # A tracker point within two hours of each boundary is strong enough to
-        # describe the calendar day as recorded. Otherwise the delta is still
-        # genuine observed evidence but only covers part of the day.
-        start_ok = abs(coverage_start - start) <= 2 * 3600 or (opened and start <= opened < end)
-        end_ok = (effective_end - last["timestamp"]) <= 2 * 3600
-        quality = "RECORDED" if start_ok and end_ok else "PARTIAL"
-
+        earned=max(0.0,_f(evidence.get("actual_usd")))
         position = positions.get(pid) or {}
         label = str(position.get("display_name") or position.get("pair") or pid)
         row = {
@@ -241,16 +219,19 @@ def _fee_evidence_for_day(store, day_key: str) -> tuple[float, list[dict[str, An
             "display_name": label,
             "pair": str(position.get("pair") or ""),
             "fees_earned_usd": round(earned, 4),
-            "cumulative_start_usd": round(base_cumulative, 4),
-            "cumulative_end_usd": round(last["cumulative_earned_usd"], 4),
-            "coverage_start": coverage_start,
-            "coverage_end": last["timestamp"],
-            "observation_count": len(in_day),
-            "quality": quality,
+            "coverage_start": evidence.get("coverage_start"),
+            "coverage_end": evidence.get("coverage_end"),
+            "observation_count": int(evidence.get("observation_count") or 0),
+            "quality": str(evidence.get("quality") or "PARTIAL_CONTIGUOUS_TRACKER"),
+            "gap_count": int(evidence.get("gap_count") or 0),
+            "unallocated_gap_usd": round(max(0.0,_f(evidence.get("unallocated_gap_usd"))),4),
         }
         detail.append(row)
         total += earned
-        evidence_times.extend([coverage_start, last["timestamp"]])
+        if evidence.get("coverage_start"):
+            evidence_times.append(_f(evidence.get("coverage_start")))
+        if evidence.get("coverage_end"):
+            evidence_times.append(_f(evidence.get("coverage_end")))
 
     detail.sort(key=lambda x: x["fees_earned_usd"], reverse=True)
     return round(total, 4), detail, evidence_times
