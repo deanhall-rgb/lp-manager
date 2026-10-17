@@ -185,17 +185,21 @@ def calendar_fee_window(
     now = float(now_ts or __import__("time").time())
     start = float(start_ts)
     end = min(float(end_ts), now)
-    observations = sorted(
+    all_observations = sorted(
         [
             {
                 "timestamp": _f(x.get("timestamp")),
                 "cumulative_earned_usd": max(0.0, _f(x.get("cumulative_earned_usd"))),
             }
             for x in (tracker.get("observations") or [])
-            if start <= _f(x.get("timestamp")) < end
+            if _f(x.get("timestamp")) > 0 and _f(x.get("timestamp")) <= end
         ],
         key=lambda x: x["timestamp"],
     )
+    inside = [x for x in all_observations if x["timestamp"] >= start]
+    before = [x for x in all_observations if x["timestamp"] < start]
+    prior = before[-1] if before and start - before[-1]["timestamp"] <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS else None
+    observations = ([prior] if prior else []) + inside
     if not observations:
         return {
             "actual_usd": 0.0,
