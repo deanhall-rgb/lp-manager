@@ -149,6 +149,17 @@ class LiveDataService:
             }
             self.store.set_setting("live:last_refresh", payload)
             payload["risk_decisions_recorded"] = self._record_position_risk_decisions()
+            # Capture accounting when live chain evidence is refreshed, not every
+            # time the browser redraws the UI. This keeps the performance log
+            # evidence current without turning /api/overview into a write-heavy
+            # accounting job once per minute.
+            try:
+                from .performance_log import capture_performance_sample
+                capture_performance_sample(self.store)
+                payload["performance_sample_captured"] = True
+            except Exception as exc:
+                payload["performance_sample_captured"] = False
+                payload["performance_sample_error"] = str(exc)[:180]
             return payload
         finally:
             self._refresh_lock.release()
