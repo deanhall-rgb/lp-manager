@@ -114,7 +114,7 @@ def test_pre_v094_fee_tracker_days_are_backfilled_without_inventing_pnl(tmp_path
     detail=performance_day(store,day_key)
     assert detail is not None
     assert detail["performance_pnl_usd"] is None
-    assert detail["historical_positions"][0]["quality"] == "PARTIAL"
+    assert detail["historical_positions"][0]["quality"] == "COMPLETE_FROM_CONTIGUOUS_TRACKER"
 
 
 def test_fee_target_is_movable_and_recalculates_same_evidence_window(tmp_path):
