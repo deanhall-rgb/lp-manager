@@ -222,6 +222,7 @@ def _fee_evidence_for_day(store, day_key: str) -> tuple[float, list[dict[str, An
             "coverage_start": evidence.get("coverage_start"),
             "coverage_end": evidence.get("coverage_end"),
             "observation_count": int(evidence.get("observation_count") or 0),
+            "observed_seconds": max(0.0,_f(evidence.get("observed_seconds"))),
             "quality": str(evidence.get("quality") or "PARTIAL_CONTIGUOUS_TRACKER"),
             "gap_count": int(evidence.get("gap_count") or 0),
             "unallocated_gap_usd": round(max(0.0,_f(evidence.get("unallocated_gap_usd"))),4),
@@ -273,7 +274,9 @@ def _fee_performance_for_day(store, day_key: str, monthly_target_pct: float) -> 
         else:
             active_start,active_end=coverage_start,coverage_end
             capital_quality="MISSING"
-        seconds=max(0.0,active_end-active_start)
+        active_seconds=max(0.0,active_end-active_start)
+        observed_seconds=max(0.0,_f(row.get("observed_seconds")))
+        seconds=min(active_seconds,observed_seconds) if observed_seconds>0 else 0.0
         capital_days=capital*seconds/86400.0
         target=capital_days*monthly_target_pct/100.0/DAYS_IN_MONTH if capital>0 and seconds>0 else None
         if target is not None:
@@ -294,7 +297,7 @@ def _fee_performance_for_day(store, day_key: str, monthly_target_pct: float) -> 
     target_value=round(target_total,4) if comparable else None
     actual_value=round(fees,4)
     attainment,surplus,status=_fee_target_row(actual_value,target_value)
-    span=max(0.0,max(ends)-min(starts)) if starts and ends else 0.0
+    span=max((max(0.0,_f(x.get("target_coverage_hours")))*3600.0 for x in target_rows),default=0.0)
     avg_capital=(capital_seconds/span) if span>0 and capital_seconds>0 else None
     quality="RECORDED" if qualities and all(q=="RECORDED" for q in qualities) else "PARTIAL"
 
