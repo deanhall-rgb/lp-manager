@@ -33,6 +33,7 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
     forecasts=store.list_forecast_snapshots(500) if hasattr(store,"list_forecast_snapshots") else []
 
     opening_verified=0.0
+    verified_open_wealth=0.0
     current_open_wealth=0.0
     current_open_principal=0.0
     all_time_fees=0.0
@@ -102,6 +103,7 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
             )
             if acct.get("basis_ready"):
                 opening_verified+=_f(acct.get("cost_basis_usd"))
+                verified_open_wealth+=_f(acct.get("strategy_wealth_usd"))
                 verified_open_count+=1
             if acct.get("hodl_value_usd") is not None:
                 hodl_total+=_f(acct.get("hodl_value_usd"))
@@ -156,7 +158,9 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
     # not subtracted a second time here.
     realised_gain_loss=realised_open_fee_income-open_position_gas+closed_reported_pnl
 
-    gross_open_pnl=current_open_wealth-opening_verified if verified_open_count and opening_verified>0 else None
+    # Do not treat positions with unknown opening basis as pure profit.
+    # Full current portfolio wealth remains reported separately.
+    gross_open_pnl=verified_open_wealth-opening_verified if verified_open_count and opening_verified>0 else None
     lp_vs_hodl=lp_for_hodl-hodl_total if hodl_count else None
 
     linked=[f for f in forecasts if f.get("position_id")]
