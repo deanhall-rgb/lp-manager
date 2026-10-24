@@ -660,12 +660,15 @@ def test_calendar_fee_metrics_resets_at_local_day_week_and_month_boundaries():
         ],
     }
     m=calendar_fee_metrics(tracker,now)
-    # Calendar reporting counts only fee deltas supported by contiguous
-    # observations. Multi-day gaps remain valid all-time evidence but are not
-    # guessed into week/month performance.
-    assert m["today"]["actual_usd"] == pytest.approx(5.0)
-    assert m["week"]["actual_usd"] == pytest.approx(6.0)
-    assert m["month"]["actual_usd"] == pytest.approx(7.0)
+    # Calendar reporting excludes both multi-day gaps and the short fee
+    # deltas crossing each period's start. The latter are separately retained
+    # as unallocated boundary evidence, not attributed to either day.
+    assert m["today"]["actual_usd"] == pytest.approx(4.0)
+    assert m["week"]["actual_usd"] == pytest.approx(5.0)
+    assert m["month"]["actual_usd"] == pytest.approx(6.0)
+    assert m["today"]["unallocated_boundary_usd"] == pytest.approx(1.0)
+    assert m["week"]["unallocated_boundary_usd"] == pytest.approx(1.0)
+    assert m["month"]["unallocated_boundary_usd"] == pytest.approx(1.0)
     assert m["week"]["unallocated_gap_usd"] == pytest.approx(6.0)
     assert m["month"]["unallocated_gap_usd"] == pytest.approx(12.0)
     assert m["semantics"]=="CALENDAR_PERIODS_CONTIGUOUS_OBSERVED_ONLY"
