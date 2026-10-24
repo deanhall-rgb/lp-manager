@@ -128,26 +128,36 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
             "lp_vs_hodl_usd":acct.get("lp_vs_hodl_usd"),
         })
 
-    event_gas=sum(_f(x.get("gas_usd")) for x in events if str(x.get("status") or "").upper()=="CONFIRMED")
-    recorded_position_gas=sum(max(0.0,_f(p.get("gas_costs"))) for p in positions)
-    transaction_costs=event_gas if event_gas>0 else recorded_position_gas
+    # Receipt-backed gas and imported position gas may overlap. Reconcile them
+    # per position rather than dropping all imported costs whenever any receipt
+    # exists elsewhere in the portfolio. The larger figure is the supported
+    # cumulative cost for that position; summing both would double count.
+    canonical_ids={str(p.get("id") or "") for p in positions}
     open_ids={str(p.get("id") or "") for p in positions if str(p.get("status") or "").upper()=="OPEN"}
-    open_event_gas_by_position={}
+    event_gas_by_position={}
+    unlinked_event_gas=0.0
     for x in events:
+        if str(x.get("status") or "").upper()!="CONFIRMED":
+            continue
         pid=str(x.get("position_id") or "")
-        if pid not in open_ids or str(x.get("status") or "").upper()!="CONFIRMED":
-            continue
-        open_event_gas_by_position[pid]=open_event_gas_by_position.get(pid,0.0)+max(0.0,_f(x.get("gas_usd")))
-    open_position_gas=0.0
-    for p in positions:
+        cost=max(0.0,_f(x.get("gas_usd")))
+        if pid in canonical_ids:
+            event_gas_by_position[pid]=event_gas_by_position.get(pid,0.0)+cost
+        else:
+            # Wallet-level costs (for example, prerequisite wrapping) can
+            # exist before an execution is reconciled to a position.
+            unlinked_event_gas+=cost
+
+    def reconciled_position_gas(p: dict[str, Any]) -> float:
         pid=str(p.get("id") or "")
-        if pid not in open_ids:
-            continue
-        event_cost=open_event_gas_by_position.get(pid,0.0)
-        # New V0.8.8 executions have receipt-backed events. Older imported/live
-        # positions may only have a recorded gas_costs figure, so use that as the
-        # fallback rather than pretending historical transaction cost was zero.
-        open_position_gas+=event_cost if event_cost>0 else max(0.0,_f(p.get("gas_costs")))
+        return max(event_gas_by_position.get(pid,0.0),max(0.0,_f(p.get("gas_costs"))))
+
+    transaction_costs=unlinked_event_gas+sum(reconciled_position_gas(p) for p in positions)
+    open_position_gas=sum(
+        reconciled_position_gas(p)
+        for p in positions
+        if str(p.get("id") or "") in open_ids
+    )
 
     # Realised G/L is intentionally conservative. Collected fees on still-open
     # positions are realised cash and their best available transaction-cost
