@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+import math
 from typing import Any
 
 from .portfolio_policy import CORE_INCOME, TACTICAL_CAMPAIGN
@@ -15,6 +16,32 @@ def _f(value: Any, default: float = 0.0) -> float:
 
 def _clamp(value: float) -> float:
     return max(0.0, min(100.0, value))
+
+
+_NUMERIC_RISK_FIELDS = (
+    "chain_quality", "protocol_quality", "asset_conviction", "token_quality",
+    "liquidity_stability", "fee_consistency", "pool_age_days", "tvl_usd",
+    "historical_volatility", "liquidity_concentration_risk", "contract_risk",
+    "stablecoin_risk", "gas_drag_pct", "exit_liquidity_score",
+)
+
+
+def _invalid_numeric_fields(candidate: dict[str, Any]) -> list[str]:
+    """Fail closed on supplied malformed/non-finite risk evidence.
+
+    Absent/empty provider fields retain the existing conservative defaults.
+    """
+    invalid = []
+    for field in _NUMERIC_RISK_FIELDS:
+        value = candidate.get(field)
+        if value is None or value == "":
+            continue
+        try:
+            if not math.isfinite(float(value)):
+                invalid.append(field)
+        except (TypeError, ValueError, OverflowError):
+            invalid.append(field)
+    return invalid
 
 
 @dataclass(frozen=True)
@@ -41,6 +68,10 @@ def assess_pool_risk(candidate: dict[str, Any], *, sleeve: str) -> dict[str, Any
     core = sleeve == CORE_INCOME
     blockers: list[str] = []
     evidence: list[str] = []
+    invalid_fields = _invalid_numeric_fields(candidate)
+    if invalid_fields:
+        blockers.append("INVALID_NUMERIC_RISK_EVIDENCE")
+        evidence.extend(f"INVALID_NUMERIC_FIELD:{field}" for field in invalid_fields)
 
     chain_quality = _f(candidate.get("chain_quality"), 50.0)
     protocol_quality = _f(candidate.get("protocol_quality"), chain_quality)

@@ -179,7 +179,8 @@ def calendar_fee_window(
 
     We therefore count deltas only between observations no more than twelve hours
     apart and only once both endpoints are inside the requested reporting window.
-    Larger gaps are retained as unallocated catch-up evidence.
+    Larger gaps are retained as unallocated catch-up evidence. Deltas spanning
+    the calendar boundary are also unallocated, even across short intervals.
     """
     tracker = tracker or {}
     now = float(now_ts or __import__("time").time())
@@ -204,6 +205,8 @@ def calendar_fee_window(
         return {
             "actual_usd": 0.0,
             "unallocated_gap_usd": 0.0,
+            "unallocated_boundary_usd": 0.0,
+            "boundary_count": 0,
             "observation_count": 0,
             "observed_seconds": 0.0,
             "segment_count": 0,
@@ -215,6 +218,8 @@ def calendar_fee_window(
 
     actual = 0.0
     unallocated = 0.0
+    unallocated_boundary = 0.0
+    boundary_count = 0
     observed_seconds = 0.0
     gap_count = 0
     segment_count = 1
@@ -223,7 +228,12 @@ def calendar_fee_window(
     for current in observations[1:]:
         delta = max(0.0, current["cumulative_earned_usd"] - previous["cumulative_earned_usd"])
         gap = max(0.0, current["timestamp"] - previous["timestamp"])
-        if gap <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS:
+        if previous["timestamp"] < start:
+            # A delta spanning the calendar boundary cannot be assigned to
+            # either period, even when the observations are close together.
+            unallocated_boundary += delta
+            boundary_count += 1
+        elif gap <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS:
             actual += delta
             observed_seconds += gap
         else:
@@ -232,18 +242,20 @@ def calendar_fee_window(
             segment_count += 1
         previous = current
 
-    coverage_start = observations[0]["timestamp"]
-    coverage_end = observations[-1]["timestamp"]
-    near_start = coverage_start - start <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS
-    near_end = end - coverage_end <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS
+    coverage_start = inside[0]["timestamp"] if inside else None
+    coverage_end = inside[-1]["timestamp"] if inside else None
+    near_start = coverage_start is not None and coverage_start - start <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS
+    near_end = coverage_end is not None and end - coverage_end <= MAX_CALENDAR_OBSERVATION_GAP_SECONDS
     quality = (
         "COMPLETE_FROM_CONTIGUOUS_TRACKER"
-        if len(observations) >= 2 and gap_count == 0 and near_start and near_end
+        if len(inside) >= 2 and gap_count == 0 and boundary_count == 0 and near_start and near_end
         else "PARTIAL_CONTIGUOUS_TRACKER"
     )
     return {
         "actual_usd": round(actual, 4),
         "unallocated_gap_usd": round(unallocated, 4),
+        "unallocated_boundary_usd": round(unallocated_boundary, 4),
+        "boundary_count": boundary_count,
         "observation_count": len(observations),
         "observed_seconds": round(observed_seconds, 3),
         "segment_count": segment_count,
@@ -287,6 +299,8 @@ def calendar_fee_metrics(tracker: dict[str, Any] | None, now_ts: float | None = 
             "coverage_start":evidence["coverage_start"],
             "coverage_end":evidence["coverage_end"],
             "unallocated_gap_usd":evidence["unallocated_gap_usd"],
+            "unallocated_boundary_usd":evidence["unallocated_boundary_usd"],
+            "boundary_count":evidence["boundary_count"],
         }
 
     return {
