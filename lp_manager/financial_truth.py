@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Any
 
 from .portfolio_accounting import position_accounting
@@ -12,6 +13,47 @@ def _f(value: Any, default: float = 0.0) -> float:
         return x if math.isfinite(x) else default
     except Exception:
         return default
+
+
+def _matched_forecast_fees(tracker: dict[str, Any], created_at: Any, horizon_days: Any, now: float) -> tuple[float | None, str, float | None]:
+    """Compare only fee observations covering the same frozen forecast horizon.
+
+    Lifetime earned fees are *not* an actual for a 1/3/7-day forecast.
+    Near-boundary coverage is bounded to five minutes at each edge; gaps over
+    twelve hours and cumulative counter resets invalidate the comparison.
+    """
+    start = _f(created_at)
+    days = _f(horizon_days)
+    if start <= 0 or days <= 0:
+        return None, "INVALID_FORECAST_WINDOW", None
+    end = start + days * 86400.0
+    if not math.isfinite(end):
+        return None, "INVALID_FORECAST_WINDOW", None
+    if end > now:
+        return None, "HORIZON_IN_PROGRESS", None
+    observations = []
+    for item in tracker.get("observations") or []:
+        if not isinstance(item, dict):
+            continue
+        timestamp = _f(item.get("timestamp"), -1.0)
+        cumulative = _f(item.get("cumulative_earned_usd"), -1.0)
+        if start <= timestamp <= end and cumulative >= 0:
+            observations.append((timestamp, cumulative))
+    observations.sort()
+    if len(observations) < 2:
+        return None, "INSUFFICIENT_MATCHED_OBSERVATIONS", None
+    tolerance = min(300.0, (end - start) * 0.005)
+    if observations[0][0] - start > tolerance or end - observations[-1][0] > tolerance:
+        return None, "INCOMPLETE_FORECAST_WINDOW", None
+    earned = 0.0
+    for (previous_ts, previous_fees), (current_ts, current_fees) in zip(observations, observations[1:]):
+        if current_ts <= previous_ts or current_ts - previous_ts > 12 * 3600:
+            return None, "OBSERVATION_GAP", None
+        if current_fees < previous_fees:
+            return None, "CUMULATIVE_FEE_RESET", None
+        earned += current_fees - previous_fees
+    coverage_pct = (observations[-1][0] - observations[0][0]) / (end - start) * 100.0
+    return round(earned, 4), "NEAR_MATCHED_OBSERVATION_WINDOW", round(coverage_pct, 3)
 
 
 def portfolio_financial_truth(store) -> dict[str, Any]:
@@ -161,19 +203,34 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
 
     linked=[f for f in forecasts if f.get("position_id")]
     comparisons=[]
+    unmatched=[]
     by_position={str(r["position_id"]):r for r in rows}
+    now=time.time()
     for f in linked:
-        pos=by_position.get(str(f.get("position_id") or ""))
-        if not pos or pos.get("pnl_incl_fees_usd") is None:
+        pid=str(f.get("position_id") or "")
+        if pid not in by_position:
+            unmatched.append({"forecast_id":f.get("id"),"position_id":pid,"reason":"POSITION_NOT_FOUND"})
             continue
-        actual=_f(pos.get("fees_earned_usd"))
+        tracker=store.get_setting(f"fees:tracker:{pid}",{}) or {}
+        actual,quality,coverage=_matched_forecast_fees(
+            tracker,f.get("created_at"),f.get("horizon_days"),now
+        )
+        if actual is None:
+            unmatched.append({
+                "forecast_id":f.get("id"),"position_id":pid,
+                "horizon_days":f.get("horizon_days"),"reason":quality,
+            })
+            continue
         forecast=_f(f.get("expected_fees_usd"))
         error=actual-forecast
         comparisons.append({
-            "forecast_id":f.get("id"),"position_id":f.get("position_id"),
-            "forecast_fees_usd":round(forecast,4),"actual_fees_usd":round(actual,4),
+            "forecast_id":f.get("id"),"position_id":pid,
+            "forecast_fees_usd":round(forecast,4),"actual_fees_usd":actual,
             "fee_forecast_error_usd":round(error,4),
             "fee_forecast_error_pct":round(error/forecast*100.0,2) if forecast>0 else None,
+            "horizon_days":f.get("horizon_days"),
+            "observation_coverage_pct":coverage,
+            "comparison_quality":quality,
             "model_version":f.get("model_version"),
         })
 
@@ -193,7 +250,12 @@ def portfolio_financial_truth(store) -> dict[str, Any]:
         "hodl_benchmark_usd":round(hodl_total,2) if hodl_count else None,
         "basis_coverage":{"verified_open_positions":verified_open_count,"open_positions":sum(1 for p in positions if str(p.get("status") or "").upper()=="OPEN")},
         "closed_realised_coverage":{"verified_closed_positions":closed_reported_count,"closed_positions":sum(1 for p in positions if str(p.get("status") or "").upper()=="CLOSED")},
-        "forecast_audit":{"snapshots":len(forecasts),"linked_to_positions":len(linked),"comparisons":comparisons[:20]},
+        "forecast_audit":{
+            "snapshots":len(forecasts),"linked_to_positions":len(linked),
+            "comparisons":comparisons[:20],"unmatched_count":len(unmatched),
+            "unmatched":unmatched[:20],
+            "comparison_basis":"NEAR_MATCHED_TRACKER_OBSERVATIONS_OVER_FROZEN_HORIZON",
+        },
         "position_rows":rows,
         "evidence_note":"All-time fees include only canonical LP Manager positions shown in the product: frozen closed evidence plus current live positions. Archived/superseded and legacy campaign-ledger rows are excluded. Realised G/L only includes collected fees on open positions, confirmed transaction costs, and closed-position P/L with explicit evidence.",
     }
