@@ -33,11 +33,14 @@ def pair_class(pair: str) -> str:
 
 def _observed_fee_day(tracker: dict[str, Any]) -> tuple[float, str]:
     age = max(0.0, _f(tracker.get("age_days")))
-    fee24 = max(0.0, _f(tracker.get("fees_24h_usd")))
+    # A measured zero is evidence that the position earned nothing recently.
+    # Only fall back to its since-open average when the rolling measurement is
+    # absent or invalid, never when a valid 24h measurement is exactly zero.
+    fee24 = _f(tracker.get("fees_24h_usd"), float("nan"))
     cumulative = max(0.0, _f(tracker.get("cumulative_earned_usd")))
     if age < 1.0:
         return 0.0, "INSUFFICIENT_UNDER_24H"
-    if fee24 > 0:
+    if math.isfinite(fee24) and fee24 >= 0.0:
         return fee24, "ROLLING_24H"
     if cumulative > 0:
         return cumulative / age, "SINCE_OPEN_DAILY_AVERAGE"
