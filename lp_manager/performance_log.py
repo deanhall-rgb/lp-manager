@@ -87,9 +87,12 @@ def _local_hour_key(timestamp: float | None = None) -> str:
 
 def _local_day_window(day_key: str) -> tuple[float, float]:
     day = datetime.fromisoformat(str(day_key)).date()
-    tz = datetime.now().astimezone().tzinfo
-    start_dt = datetime.combine(day, datetime.min.time(), tzinfo=tz)
-    end_dt = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=tz)
+    # Interpret each midnight in the machine's *local timezone*, allowing its
+    # historical DST offset to differ from today's offset. The tzinfo returned
+    # by datetime.now().astimezone() is a fixed offset and can turn a 23/25-hour
+    # DST transition day into an incorrect 24-hour accounting window.
+    start_dt = datetime.combine(day, datetime.min.time())
+    end_dt = datetime.combine(day + timedelta(days=1), datetime.min.time())
     return start_dt.timestamp(), end_dt.timestamp()
 
 
