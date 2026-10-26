@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from dataclasses import dataclass, asdict, field
@@ -30,6 +31,17 @@ class TransactionPlan:
         return asdict(self)
 
 
+def _finite_number(value: Any) -> float | None:
+    """Parse a numeric plan field without accepting malformed or non-finite input."""
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def validate_transaction_plan(plan: TransactionPlan | dict[str, Any]) -> dict[str, Any]:
     row = plan.to_dict() if isinstance(plan, TransactionPlan) else dict(plan)
     errors: list[str] = []
@@ -44,13 +56,14 @@ def validate_transaction_plan(plan: TransactionPlan | dict[str, Any]) -> dict[st
         errors.append("POSITION_ID_REQUIRED")
     if action in {"OPEN", "RECENTER"}:
         intent = row.get("intent") or {}
-        lower = float(intent.get("lower_price") or 0.0)
-        upper = float(intent.get("upper_price") or 0.0)
-        capital = float(intent.get("capital_value") or 0.0)
-        if lower <= 0 or upper <= lower:
+        lower = _finite_number(intent.get("lower_price"))
+        upper = _finite_number(intent.get("upper_price"))
+        if lower is None or upper is None or lower <= 0 or upper <= lower:
             errors.append("INVALID_RANGE")
-        if action == "OPEN" and capital <= 0:
-            errors.append("INVALID_CAPITAL")
+        if action == "OPEN":
+            capital = _finite_number(intent.get("capital_value"))
+            if capital is None or capital <= 0:
+                errors.append("INVALID_CAPITAL")
     if not row.get("calls"):
         warnings.append("NO_CALLDATA_BUILT")
     if not row.get("simulation"):
