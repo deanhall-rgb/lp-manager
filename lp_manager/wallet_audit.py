@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 import time
@@ -25,9 +26,14 @@ _SUSPICIOUS = re.compile(r"(?i)(https?://|www\.|\bclaim\b|airdrop|reward|voucher
 
 
 def _f(value: Any, default: float = 0.0) -> float:
+    # Explorer and saved wallet evidence must never propagate NaN/Infinity into
+    # gas totals, confirmed cash movements, or the investor P/L response.
+    if isinstance(value, bool):
+        return default
     try:
-        return float(value)
-    except Exception:
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else default
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -1023,18 +1029,25 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
             for x in capital_rows
             if str(x.get("event_type") or "").upper()=="EXTERNAL_WITHDRAWAL"
         )
-    rate=_f(ctx.get("usd_to_display_rate"),1.0)
+    rate=_f(ctx.get("usd_to_display_rate",1.0),float("nan"))
     snapshot=store.get_wallet_snapshot() or {}
-    current_usd=_f(snapshot.get("total_tracked_value_usd"))
-    unclaimed_usd=sum(
-        max(0.0,_f(p.get("unclaimed_fees")))
+    current_usd=_f(snapshot.get("total_tracked_value_usd"),float("nan"))
+    fee_values=[
+        _f(p.get("unclaimed_fees"),float("nan"))
         for p in store.list_positions("OPEN")
         if str(p.get("monitoring_class") or "").upper()!="ARCHIVED_SUPERSEDED"
         and str(p.get("source") or "")!="legacy_campaign_ledger"
+    ]
+    # A missing/invalid wallet valuation must not be represented as a real $0
+    # portfolio or an apparently audited loss equal to all invested capital.
+    valuation_complete=(
+        math.isfinite(rate) and rate>0
+        and math.isfinite(current_usd) and current_usd>=0
+        and snapshot.get("ok") is not False
+        and all(math.isfinite(v) and v>=0 for v in fee_values)
     )
-    current_usd+=unclaimed_usd
-    current_display=current_usd*rate
-    true_pnl=current_display+withdrawals-contributions
+    current_display=(current_usd+sum(fee_values))*rate if valuation_complete else None
+    true_pnl=current_display+withdrawals-contributions if valuation_complete else None
 
     gas_by_chain={}
     for tx in tx_rows:
@@ -1074,9 +1087,10 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
         "metrics":{
             "confirmed_contributions":round(contributions,2),
             "confirmed_withdrawals":round(withdrawals,2),
-            "current_portfolio_value":round(current_display,2),
-            "provisional_true_pnl":round(true_pnl,2),
-            "pnl_complete":len(unresolved)==0 and contributions>0 and bool(last_scan and last_scan.get("coverage_complete")),
+            "current_portfolio_value":round(current_display,2) if current_display is not None else None,
+            "provisional_true_pnl":round(true_pnl,2) if true_pnl is not None else None,
+            "valuation_complete":valuation_complete,
+            "pnl_complete":valuation_complete and len(unresolved)==0 and contributions>0 and bool(last_scan and last_scan.get("coverage_complete")),
             "cash_boundary_source":"CAPITAL_LEDGER" if capital_rows and currency.upper()=="GBP" else "TRANSFER_AUDIT",
             "unresolved_count":len(unresolved),
             "reviewed_count":sum(1 for r in rows if str(r.get("review_status") or "")!="UNRESOLVED"),
