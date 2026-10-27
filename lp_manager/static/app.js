@@ -161,14 +161,16 @@ function renderWalletAudit(){
  const a=state.wallet_audit||{},m=a.metrics||{},currency=a.currency||state?.money?.display_currency||'GBP',note=$('#wallet-audit-note'),metrics=$('#wallet-audit-metrics'),coverage=$('#wallet-audit-coverage'),gaps=$('#wallet-audit-gaps'),activity=$('#wallet-audit-activity'),history=$('#wallet-audit-history');
  if(note){
   const scan=a.last_scan||{},scanned=scan.read_at?when(scan.read_at):'Not scanned yet',full=Number(m.full_history_chains||0),active=Number(m.active_chains||0);
-  note.className='notice '+(Number(m.unresolved_count||0)>0||((scan.chains||[]).some(x=>x.transaction_error))?'warn':'good');
-  note.innerHTML='<b>Audit status:</b> '+num(m.observed_transactions||0,0)+' full transactions + '+num(m.observed_transfers||0,0)+' asset transfers stored. '+num(m.unresolved_count||0,0)+' ambiguous movement'+(Number(m.unresolved_count||0)===1?'':'s')+' need review. Deterministic swaps, bridges and LP/protocol activity are auto-classified. Full transaction history on '+full+'/'+active+' active chains. Last scan: '+esc(scanned)+'.';
+  note.className='notice '+(m.valuation_complete===false||Number(m.unresolved_count||0)>0||((scan.chains||[]).some(x=>x.transaction_error))?'warn':'good');
+  note.innerHTML='<b>Audit status:</b> '+num(m.observed_transactions||0,0)+' full transactions + '+num(m.observed_transfers||0,0)+' asset transfers stored. '+num(m.unresolved_count||0,0)+' ambiguous movement'+(Number(m.unresolved_count||0)===1?'':'s')+' need review. Deterministic swaps, bridges and LP/protocol activity are auto-classified. Full transaction history on '+full+'/'+active+' active chains. Last scan: '+esc(scanned)+'.'+(m.valuation_complete===false?' Wallet valuation evidence is missing or invalid; P/L is unavailable.':'');
  }
+ const equityReady=m.valuation_complete!==false&&m.current_portfolio_value!=null&&Number.isFinite(Number(m.current_portfolio_value));
+ const pnlReady=equityReady&&m.provisional_true_pnl!=null&&Number.isFinite(Number(m.provisional_true_pnl));
  if(metrics)metrics.innerHTML=[
   ['Cash invested',displayMoneyRaw(m.confirmed_contributions||0,currency),'Confirmed real-money cost including provider fees'],
   ['Cash withdrawn',displayMoneyRaw(m.confirmed_withdrawals||0,currency),'Confirmed money returned to you'],
-  ['Current portfolio',displayMoneyRaw(m.current_portfolio_value||0,currency),'Wallet + LP capital currently tracked'],
-  ['True lifetime P/L',displayMoneyRaw(m.provisional_true_pnl||0,currency),m.pnl_complete?'AUDITED':'PROVISIONAL · funding/coverage not complete'],
+  ['Current portfolio',equityReady?displayMoneyRaw(m.current_portfolio_value,currency):'—',equityReady?'Wallet + LP capital currently tracked':'Unavailable · wallet valuation missing or invalid'],
+  ['True lifetime P/L',pnlReady?displayMoneyRaw(m.provisional_true_pnl,currency):'—',m.pnl_complete?'AUDITED':pnlReady?'PROVISIONAL · funding/coverage not complete':'UNAVAILABLE · wallet valuation missing or invalid'],
   ['Needs review',String(m.unresolved_count||0),'Only ambiguous external cash/transfer movements'],
   ['On-chain transactions',String(m.observed_transactions||0),'Contract calls, approvals and transfers']
  ].map(x=>'<div class="metric"><div class="label">'+x[0]+'</div><div class="value">'+x[1]+'</div><div class="sub">'+x[2]+'</div></div>').join('');
