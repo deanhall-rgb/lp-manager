@@ -36,6 +36,8 @@ def test_invalid_provider_timestamps_have_unknown_freshness(bad):
     assert row["freshness"]["analysis"] == "UNKNOWN"
     assert row["freshness"]["market_updated_at"] is None
     assert row["freshness"]["analysed_at"] is None
+    assert row["source_updated_at"] is None
+    assert row["analysed_at"] is None
     json.dumps(row, allow_nan=False)
     assert freshness_state(bad, now=1000) == ("UNKNOWN", None)
 
@@ -51,3 +53,15 @@ def test_finite_numeric_strings_and_valid_freshness_remain_supported():
     assert row["volume_24h_usd"] == 2500.0
     assert row["freshness"]["market"] == "FRESH"
     assert row["freshness"]["analysis"] == "FRESH"
+
+
+def test_invalid_legacy_fallback_timestamp_fields_do_not_leak_nonfinite_values():
+    row = canonical_opportunity({
+        "market_updated_at": float("inf"),
+        "analysis_updated_at": float("nan"),
+    }, now=1000)
+    assert row["market_updated_at"] is None
+    assert row["analysis_updated_at"] is None
+    assert row["freshness"]["market"] == "UNKNOWN"
+    assert row["freshness"]["analysis"] == "UNKNOWN"
+    json.dumps(row, allow_nan=False)
