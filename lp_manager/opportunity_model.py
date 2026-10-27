@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -22,9 +23,14 @@ ANALYSIS_STATES = frozenset({
 
 
 def _f(value: Any, default: float = 0.0) -> float:
+    # Provider metrics and timestamps must not propagate NaN/Infinity into
+    # canonical opportunity data, freshness decisions, or JSON responses.
+    if isinstance(value, bool):
+        return default
     try:
-        return float(value)
-    except Exception:
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else default
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -101,6 +107,12 @@ def canonical_opportunity(
     stable cross-chain/V3/V4 shape to consume.
     """
     out = dict(row or {})
+    # Canonical freshness fields alone are not enough: legacy timestamp keys
+    # remain in the response and raw NaN/Infinity there breaks strict JSON.
+    # Preserve valid legacy values; drop only invalid timestamp evidence.
+    for field in ("source_updated_at", "market_updated_at", "analysed_at", "analysis_updated_at"):
+        if field in out and not math.isfinite(_f(out[field], float("nan"))):
+            out[field] = None
     chain = str(out.get("chain") or "").upper()
     address = str(out.get("pool_address") or out.get("address") or "").strip()
     protocol = normalise_protocol(
