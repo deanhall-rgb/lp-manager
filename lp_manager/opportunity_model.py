@@ -107,6 +107,12 @@ def canonical_opportunity(
     stable cross-chain/V3/V4 shape to consume.
     """
     out = dict(row or {})
+    # Canonical freshness fields alone are not enough: legacy timestamp keys
+    # remain in the response and raw NaN/Infinity there breaks strict JSON.
+    # Preserve valid legacy values; drop only invalid timestamp evidence.
+    for field in ("source_updated_at", "market_updated_at", "analysed_at", "analysis_updated_at"):
+        if field in out and not math.isfinite(_f(out[field], float("nan"))):
+            out[field] = None
     chain = str(out.get("chain") or "").upper()
     address = str(out.get("pool_address") or out.get("address") or "").strip()
     protocol = normalise_protocol(
