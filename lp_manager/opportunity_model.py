@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -22,9 +23,14 @@ ANALYSIS_STATES = frozenset({
 
 
 def _f(value: Any, default: float = 0.0) -> float:
+    # Provider metrics and timestamps must not propagate NaN/Infinity into
+    # canonical opportunity data, freshness decisions, or JSON responses.
+    if isinstance(value, bool):
+        return default
     try:
-        return float(value)
-    except Exception:
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else default
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
