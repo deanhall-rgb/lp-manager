@@ -1038,9 +1038,26 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
         if str(p.get("monitoring_class") or "").upper()!="ARCHIVED_SUPERSEDED"
         and str(p.get("source") or "")!="legacy_campaign_ledger"
     ]
-    # A missing/invalid wallet valuation must not be represented as a real $0
-    # portfolio or an apparently audited loss equal to all invested capital.
+    # Older saved wallet snapshots can say ok=True even when a configured
+    # chain's balance read failed. Never certify partial chain coverage as equity.
+    wallet_coverage_complete=(
+        snapshot.get("coverage_complete") is not False
+        and all(
+            isinstance(chain,dict) and (
+                str(chain.get("status") or "").upper()=="DISABLED"
+                or (
+                    chain.get("ok") is not False
+                    and not chain.get("wallet_error")
+                    and str(chain.get("status") or "").upper() not in {"MISSING","ERROR","WRONG_CHAIN"}
+                )
+            )
+            for chain in (snapshot.get("chains") or [])
+        )
+    )
+    # A missing/invalid/partial wallet valuation must not be represented as
+    # a real $0 portfolio or an apparently audited loss of invested capital.
     valuation_complete=(
+        wallet_coverage_complete
         math.isfinite(rate) and rate>0
         and math.isfinite(current_usd) and current_usd>=0
         and snapshot.get("ok") is not False
@@ -1090,6 +1107,7 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
             "current_portfolio_value":round(current_display,2) if current_display is not None else None,
             "provisional_true_pnl":round(true_pnl,2) if true_pnl is not None else None,
             "valuation_complete":valuation_complete,
+            "wallet_coverage_complete":wallet_coverage_complete,
             "pnl_complete":valuation_complete and len(unresolved)==0 and contributions>0 and bool(last_scan and last_scan.get("coverage_complete")),
             "cash_boundary_source":"CAPITAL_LEDGER" if capital_rows and currency.upper()=="GBP" else "TRANSFER_AUDIT",
             "unresolved_count":len(unresolved),
