@@ -239,7 +239,12 @@ def build_wallet_snapshot(settings, store, market=None, *, include_health: bool 
         except Exception as exc:
             for chain_row in chains:
                 if chain_row.get("chain")==cfg.key:
-                    chain_row["wallet_error"]=str(exc)[:240]; break
+                    # A configured RPC is not proof that its balances were read.
+                    # Retain any partial holdings but flag the failed chain.
+                    chain_row["wallet_error"]=str(exc)[:240]
+                    chain_row["ok"]=False
+                    chain_row["status"]="ERROR"
+                    break
 
     by_symbol=defaultdict(lambda:{"balance":0.0,"value_usd":0.0,"chains":set()})
     for h in holdings:
@@ -248,8 +253,12 @@ def build_wallet_snapshot(settings, store, market=None, *, include_health: bool 
     assets.sort(key=lambda r:r["value_usd"],reverse=True)
     lp_value=sum(_safe_float(p.get("current_value")) for p in store.list_positions("OPEN") if str(p.get("source") or "") == "live_chain")
     wallet_liquid=sum(_safe_float(h.get("value_usd")) for h in holdings)
+    required_chains=[c for c in chains if c.get("status")!="DISABLED"]
+    coverage_complete=bool(required_chains) and all(
+        c.get("ok") is True and not c.get("wallet_error") for c in required_chains
+    )
     snapshot={
-        "ok":True,"wallet":wallet,"read_at":time.time(),"chains":chains,"holdings":holdings,"hidden_holdings":hidden,"assets":assets,
+        "ok":coverage_complete,"coverage_complete":coverage_complete,"wallet":wallet,"read_at":time.time(),"chains":chains,"holdings":holdings,"hidden_holdings":hidden,"assets":assets,
         "hidden_count":len(hidden),"min_visible_value_usd":min_visible,
         "wallet_liquid_value_usd":wallet_liquid,"lp_value_usd":lp_value,"total_tracked_value_usd":wallet_liquid+lp_value,
         "coverage":"ALCHEMY_FULL_ERC20_DISCOVERY_WHEN_KEY_CONFIGURED; ROBINHOOD_BLOCKSCOUT_FALLBACK; BATCHED_GECKOTERMINAL_PRICES; SPAM_AND_DUST_HIDDEN_BY_DEFAULT",
