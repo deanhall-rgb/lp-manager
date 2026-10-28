@@ -86,6 +86,11 @@ def test_successful_zero_balance_rpc_remains_valid_zero(tmp_path, monkeypatch):
             return 0
     class FakeWeb3:
         eth = FakeEth()
+
+        @staticmethod
+        def from_wei(value, _unit):
+            return value / 10**18
+
     monkeypatch.setattr(wallet, "build_read_only_web3", lambda _url: FakeWeb3())
     snapshot = wallet.build_wallet_snapshot(_settings(), store, include_health=False)
     assert snapshot["ok"] is True
