@@ -1058,7 +1058,7 @@ def wallet_audit_summary(settings, store) -> dict[str,Any]:
     # a real $0 portfolio or an apparently audited loss of invested capital.
     valuation_complete=(
         wallet_coverage_complete
-        math.isfinite(rate) and rate>0
+        and math.isfinite(rate) and rate>0
         and math.isfinite(current_usd) and current_usd>=0
         and snapshot.get("ok") is not False
         and all(math.isfinite(v) and v>=0 for v in fee_values)
