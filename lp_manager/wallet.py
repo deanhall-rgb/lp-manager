@@ -118,19 +118,23 @@ def rpc_health(cfg: ChainConfig) -> dict[str, Any]:
 
 
 def _token_holding(w3: Web3, wallet: str, chain: str, address: str) -> dict[str, Any] | None:
+    # A verified zero balance is not the same as an unreadable token balance.
+    # Silently discarding balanceOf RPC failures would let the wallet snapshot
+    # claim complete chain coverage while omitting potentially valuable tokens.
+    address=Web3.to_checksum_address(address)
     try:
-        address=Web3.to_checksum_address(address)
         token=w3.eth.contract(address=address,abi=ERC20_ABI)
         raw=int(token.functions.balanceOf(Web3.to_checksum_address(wallet)).call())
-        if raw <= 0: return None
-        try: symbol=str(token.functions.symbol().call()).strip() or "TOKEN"
-        except Exception: symbol="TOKEN"
-        try: decimals=int(token.functions.decimals().call())
-        except Exception: decimals=18
-        balance=raw/(10**decimals)
-        return {"chain":chain,"type":"ERC20","symbol":symbol,"address":address,"decimals":decimals,"balance":balance,"price_usd":0.0,"value_usd":0.0,"data_quality":"LIVE_BALANCE_NO_PRICE"}
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RuntimeError(f"ERC20 balance read failed for {chain}:{address}") from exc
+    if raw <= 0: return None
+    # Missing token metadata must not discard an otherwise verified balance.
+    try: symbol=str(token.functions.symbol().call()).strip() or "TOKEN"
+    except Exception: symbol="TOKEN"
+    try: decimals=int(token.functions.decimals().call())
+    except Exception: decimals=18
+    balance=raw/(10**decimals)
+    return {"chain":chain,"type":"ERC20","symbol":symbol,"address":address,"decimals":decimals,"balance":balance,"price_usd":0.0,"value_usd":0.0,"data_quality":"LIVE_BALANCE_NO_PRICE"}
 
 
 def _batch_prices(market, chain: str, addresses: list[str]) -> dict[str,float]:
