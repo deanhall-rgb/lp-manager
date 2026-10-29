@@ -107,11 +107,29 @@ def _native_wrap_shortfall(desired_wrapped: float, current_wrapped: float) -> fl
 
 
 def scale_quote_to_capital(*, amount0: float, amount1: float, price0_usd: float, price1_usd: float, capital_usd: float) -> tuple[float,float]:
-    unit_value=float(amount0)*float(price0_usd)+float(amount1)*float(price1_usd)
-    if unit_value<=0 or float(capital_usd)<=0:
+    # Reject malformed/non-finite quotes before returning amounts that might be
+    # passed to an unsigned mint builder. A zero-amount side needs no USD mark.
+    values = (amount0, amount1, price0_usd, price1_usd, capital_usd)
+    if any(isinstance(value, bool) for value in values):
         raise ValueError("Current token prices cannot size this capital budget")
-    scale=float(capital_usd)/unit_value
-    return float(amount0)*scale,float(amount1)*scale
+    try:
+        a0, a1, p0, p1, capital = (float(value) for value in values)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Current token prices cannot size this capital budget") from exc
+    if (
+        not all(math.isfinite(value) for value in (a0, a1, p0, p1, capital))
+        or a0 < 0 or a1 < 0 or p0 < 0 or p1 < 0 or capital <= 0
+        or (a0 > 0 and p0 <= 0) or (a1 > 0 and p1 <= 0)
+    ):
+        raise ValueError("Current token prices cannot size this capital budget")
+    unit_value = a0 * p0 + a1 * p1
+    if not math.isfinite(unit_value) or unit_value <= 0:
+        raise ValueError("Current token prices cannot size this capital budget")
+    scale = capital / unit_value
+    sized0, sized1 = a0 * scale, a1 * scale
+    if not all(math.isfinite(value) for value in (scale, sized0, sized1)) or scale <= 0:
+        raise ValueError("Current token prices cannot size this capital budget")
+    return sized0, sized1
 
 
 def quote_open_position_amounts(*, chain: str, pool_address: str, lower_price: float, upper_price: float, known_side: int, known_amount: float) -> dict[str,Any]:
