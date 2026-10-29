@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .asset_registry import is_stable_symbol
 
 
 def _f(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
+    # Non-finite provider marks must never become executable capital prices.
+    if isinstance(value, bool):
         return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def complete_pool_usd_marks(meta: dict[str, Any], marks: dict[str, float] | None) -> dict[str, Any]:
@@ -23,7 +28,7 @@ def complete_pool_usd_marks(meta: dict[str, Any], marks: dict[str, float] | None
     The function never invents two prices from an unanchored ratio: at least one
     token must have a provider USD mark or be a recognised USD stable.
     """
-    marks = {str(k or "").lower(): _f(v) for k, v in dict(marks or {}).items()}
+    marks = {str(k or "").lower(): max(0.0, _f(v)) for k, v in dict(marks or {}).items()}
     t0 = dict(meta.get("token0") or {})
     t1 = dict(meta.get("token1") or {})
     tokens = [t0, t1]
@@ -51,11 +56,15 @@ def complete_pool_usd_marks(meta: dict[str, Any], marks: dict[str, float] | None
             # "QNT per WETH = 10" means one WETH is worth ten QNT:
             # USD(WETH) = 10 * USD(QNT).
             if prices[ni] > 0 and prices[di] <= 0:
-                prices[di] = prices[ni] * current
-                sources[di] = f"POOL_RATIO_FROM_{symbols[ni]}"
+                derived = prices[ni] * current
+                if math.isfinite(derived) and derived > 0:
+                    prices[di] = derived
+                    sources[di] = f"POOL_RATIO_FROM_{symbols[ni]}"
             elif prices[di] > 0 and prices[ni] <= 0:
-                prices[ni] = prices[di] / current
-                sources[ni] = f"POOL_RATIO_FROM_{symbols[di]}"
+                derived = prices[di] / current
+                if math.isfinite(derived) and derived > 0:
+                    prices[ni] = derived
+                    sources[ni] = f"POOL_RATIO_FROM_{symbols[di]}"
 
     completed = dict(marks)
     for address, price in zip(addresses, prices):
